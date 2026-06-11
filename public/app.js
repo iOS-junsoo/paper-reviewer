@@ -210,6 +210,12 @@ function buildFigure(f) {
     head.appendChild(src);
   }
   fig.appendChild(head);
+  if (f.example) {
+    const ex = document.createElement("div");
+    ex.className = "pfig-example";
+    renderRich(ex, "🧪 " + f.example);
+    fig.appendChild(ex);
+  }
   fig.appendChild(body);
 
   if (f.caption) {
@@ -241,6 +247,14 @@ function buildFlow(blocks) {
       rep.className = "arch-repeat";
       rep.textContent = block.repeat;
       name.appendChild(rep);
+    }
+    if (block.inner_viz) {
+      // 내부 시각화가 있는 블록 표시 — 클릭 유도
+      const lens = document.createElement("span");
+      lens.className = "arch-lens";
+      lens.textContent = "🔍";
+      lens.title = "클릭하면 내부 값 시각화를 볼 수 있습니다";
+      name.appendChild(lens);
     }
     box.appendChild(name);
 
@@ -392,6 +406,10 @@ function buildFlow(blocks) {
         renderRich(ds, "📦 이 시점의 데이터: " + b.data_state);
         rolePanel.appendChild(ds);
       }
+      if (b.inner_viz) {
+        const viz = buildInnerViz(b.inner_viz);
+        if (viz) rolePanel.appendChild(viz);
+      }
       blockEls[i].scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     prevBtn.disabled = current <= 0;
@@ -416,6 +434,160 @@ function buildFlow(blocks) {
 
   activate(-1);
   wrap.append(controls, rolePanel);
+  return wrap;
+}
+
+// ── 블록 내부 값 시각화 (heatmap / vectors / bars) ──
+function buildInnerViz(viz) {
+  let body = null;
+  if (viz.type === "heatmap" && Array.isArray(viz.matrix) && Array.isArray(viz.tokens)) {
+    body = buildVizHeatmap(viz);
+  } else if (viz.type === "vectors" && Array.isArray(viz.vectors)) {
+    body = buildVizVectors(viz);
+  } else if (viz.type === "bars" && Array.isArray(viz.bars)) {
+    body = buildVizBars(viz);
+  }
+  if (!body) return null;
+
+  const wrap = document.createElement("div");
+  wrap.className = "iviz";
+  if (viz.title) {
+    const t = document.createElement("h5");
+    t.className = "iviz-title";
+    t.textContent = viz.title;
+    wrap.appendChild(t);
+  }
+  wrap.appendChild(body);
+  if (viz.explanation) {
+    const ex = document.createElement("p");
+    ex.className = "iviz-expl";
+    renderRich(ex, viz.explanation);
+    wrap.appendChild(ex);
+  }
+  return wrap;
+}
+
+// 히트맵: 행=보는 주체. 셀 호버 툴팁, 행 레이블 클릭 시 그 행 하이라이트
+function buildVizHeatmap(viz) {
+  const tokens = viz.tokens;
+  const grid = document.createElement("div");
+  grid.className = "iviz-heat";
+  grid.style.gridTemplateColumns = `auto repeat(${tokens.length}, 36px)`;
+
+  const focusLine = document.createElement("p");
+  focusLine.className = "iviz-focus";
+  focusLine.textContent = "행 레이블을 클릭하면 그 단어의 시선만 볼 수 있습니다";
+
+  // 헤더 행
+  grid.appendChild(document.createElement("div"));
+  tokens.forEach((t) => {
+    const h = document.createElement("div");
+    h.className = "iviz-heat-col";
+    h.textContent = t;
+    grid.appendChild(h);
+  });
+
+  let focusedRow = -1;
+  const rowEls = [];
+
+  viz.matrix.forEach((row, r) => {
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "iviz-heat-row";
+    label.textContent = tokens[r] ?? `행${r + 1}`;
+    grid.appendChild(label);
+
+    const cells = [];
+    row.forEach((v, c) => {
+      const cell = document.createElement("div");
+      cell.className = "iviz-heat-cell";
+      const val = Number(v) || 0;
+      cell.style.background = `rgba(140, 47, 57, ${Math.min(1, Math.max(0, val))})`;
+      cell.style.color = val > 0.45 ? "#fff" : "#8c2f39";
+      cell.textContent = val.toFixed(2);
+      cell.title = `'${tokens[r]}' → '${tokens[c]}' : ${val.toFixed(2)}`;
+      grid.appendChild(cell);
+      cells.push(cell);
+    });
+    rowEls.push({ label, cells });
+
+    label.addEventListener("click", () => {
+      focusedRow = focusedRow === r ? -1 : r;
+      rowEls.forEach((re, i) => {
+        const dim = focusedRow !== -1 && i !== focusedRow;
+        re.cells.forEach((c) => c.classList.toggle("iviz-dim", dim));
+        re.label.classList.toggle("iviz-row-on", i === focusedRow);
+      });
+      if (focusedRow === -1) {
+        focusLine.textContent = "행 레이블을 클릭하면 그 단어의 시선만 볼 수 있습니다";
+      } else {
+        const row = viz.matrix[focusedRow];
+        const maxC = row.indexOf(Math.max(...row));
+        focusLine.textContent = `'${tokens[focusedRow]}'은(는) '${tokens[maxC]}'을(를) 가장 강하게 참조합니다 (${Number(row[maxC]).toFixed(2)})`;
+      }
+    });
+  });
+
+  const wrap = document.createElement("div");
+  wrap.append(grid, focusLine);
+  return wrap;
+}
+
+// 벡터 색띠: 셀 호버 시 실제 값 툴팁
+function buildVizVectors(viz) {
+  const wrap = document.createElement("div");
+  wrap.className = "iviz-vecs";
+  viz.vectors.forEach((vec) => {
+    const row = document.createElement("div");
+    row.className = "iviz-vec-row";
+    const label = document.createElement("span");
+    label.textContent = vec.label || "";
+    row.appendChild(label);
+    const cells = document.createElement("div");
+    cells.className = "iviz-vec-cells";
+    (vec.values || []).forEach((v) => {
+      const val = Math.max(-1, Math.min(1, Number(v) || 0));
+      const cell = document.createElement("div");
+      cell.className = "iviz-vec-cell";
+      // 양수=따뜻한 색, 음수=차가운 색, 절댓값=진하기
+      cell.style.background = `hsl(${val >= 0 ? 8 : 210}, ${Math.abs(val) * 65 + 20}%, ${88 - Math.abs(val) * 36}%)`;
+      cell.title = Number(v).toFixed(2);
+      cells.appendChild(cell);
+    });
+    row.appendChild(cells);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+// 확률/점수 막대 (렌더 직후 채워지는 애니메이션)
+function buildVizBars(viz) {
+  const wrap = document.createElement("div");
+  wrap.className = "barchart iviz-bars";
+  const max = Math.max(...viz.bars.map((b) => Number(b.value) || 0));
+  viz.bars.forEach((b) => {
+    const row = document.createElement("div");
+    row.className = "bar-row" + (b.highlight ? " bar-highlight" : "");
+    const label = document.createElement("span");
+    label.className = "bar-label";
+    label.textContent = b.label;
+    const track = document.createElement("div");
+    track.className = "bar-track";
+    const fill = document.createElement("div");
+    fill.className = "bar-fill";
+    fill.style.width = "0%";
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        fill.style.width = max > 0 ? `${((Number(b.value) || 0) / max) * 100}%` : "0%";
+      })
+    );
+    track.appendChild(fill);
+    const val = document.createElement("span");
+    val.className = "bar-value";
+    val.textContent = b.value;
+    row.append(label, track, val);
+    wrap.appendChild(row);
+  });
   return wrap;
 }
 

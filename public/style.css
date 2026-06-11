@@ -679,6 +679,102 @@ header h1 {
   50%      { transform: translateY(3px);  opacity: 1; }
 }
 
+/* 내부 시각화 안내 아이콘 */
+.arch-lens { margin-left: 7px; font-size: 0.8rem; }
+
+/* figure 공통 예시 표시 */
+.pfig-example {
+  text-align: center;
+  font-size: 0.84rem;
+  color: #6b5d3f;
+  background: #f6f1e4;
+  border: 1px dashed #ddd2b8;
+  border-radius: 6px;
+  padding: 7px 14px;
+  margin-bottom: 16px;
+}
+
+/* ── 블록 내부 값 시각화 ─────────────────────────────────────────── */
+.iviz {
+  margin-top: 16px;
+  padding: 16px;
+  background: #fbf8f1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  animation: fade 0.25s ease;
+}
+.iviz-title {
+  font-family: var(--serif);
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--ink);
+  margin-bottom: 12px;
+  text-align: center;
+}
+.iviz-expl { font-size: 0.84rem; color: var(--ink-soft); margin-top: 12px; }
+
+/* 히트맵 */
+.iviz-heat {
+  display: grid;
+  gap: 3px;
+  width: fit-content;
+  margin: 0 auto;
+  align-items: center;
+}
+.iviz-heat-col, .iviz-heat-row {
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  text-align: center;
+  font-weight: 600;
+}
+.iviz-heat-row {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: var(--sans);
+  transition: border-color 0.12s, color 0.12s;
+}
+.iviz-heat-row:hover { border-color: var(--accent); color: var(--accent); }
+.iviz-heat-row.iviz-row-on { background: var(--accent); color: #fff; font-weight: 700; }
+.iviz-heat-cell {
+  width: 36px; height: 32px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.66rem;
+  font-weight: 600;
+  cursor: default;
+  transition: opacity 0.2s, transform 0.12s;
+}
+.iviz-heat-cell:hover { transform: scale(1.12); }
+.iviz-heat-cell.iviz-dim { opacity: 0.15; }
+.iviz-focus {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  margin-top: 10px;
+  min-height: 1.2em;
+}
+
+/* 벡터 색띠 */
+.iviz-vecs { display: flex; flex-direction: column; gap: 6px; width: fit-content; margin: 0 auto; }
+.iviz-vec-row { display: flex; align-items: center; gap: 10px; }
+.iviz-vec-row > span {
+  width: 64px; text-align: right;
+  font-size: 0.78rem; font-weight: 600; color: var(--ink-soft);
+}
+.iviz-vec-cells { display: flex; gap: 2px; }
+.iviz-vec-cell {
+  width: 24px; height: 24px; border-radius: 3px;
+  transition: transform 0.12s;
+}
+.iviz-vec-cell:hover { transform: scale(1.18); }
+
+.iviz-bars { max-width: 380px; margin: 0 auto; }
+
 /* role 패널의 데이터 상태 표시 */
 .flow-data {
   margin-top: 10px;
