@@ -1,0 +1,378 @@
+require("dotenv").config();
+
+const crypto = require("crypto");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
+const express = require("express");
+const multer = require("multer");
+const { query } = require("@anthropic-ai/claude-agent-sdk");
+const { PDFDocument } = require("pdf-lib");
+
+// ---------------------------------------------------------------------------
+// 제한 상수
+// 출처: https://platform.claude.com/docs/en/build-with-claude/pdf-support
+//   (2026-06-11 확인)
+//   - API document 블록 기준: 요청 전체 32MB / 최대 600페이지
+//   - 현재는 Claude Agent SDK(Read 도구, 20페이지씩 분할 읽기) 경로를 쓰지만
+//     동일한 상한을 업로드 가드로 유지한다 (과대 PDF 거부 목적)
+// ---------------------------------------------------------------------------
+const MAX_PDF_BYTES = 23 * 1024 * 1024;
+const MAX_PDF_PAGES = 600;
+
+const MODEL = process.env.MODEL || "claude-opus-4-8";
+const PORT = process.env.PORT || 3000;
+
+// ---------------------------------------------------------------------------
+// 저장소: Firebase 서비스 계정 키가 있으면 Firestore, 없으면 메모리 캐시 폴백
+// (메모리 캐시는 서버 재시작 시 사라짐 — 테스트용)
+// ---------------------------------------------------------------------------
+const serviceAccountPath =
+  process.env.FIREBASE_SERVICE_ACCOUNT || "./serviceAccountKey.json";
+
+let store;
+
+if (fs.existsSync(serviceAccountPath)) {
+  const admin = require("firebase-admin");
+  admin.initializeApp({
+    credential: admin.credential.cert(require(path.resolve(serviceAccountPath))),
+  });
+  const analyses = admin.firestore().collection("analyses");
+  store = {
+    kind: "firestore",
+    async get(hash) {
+      const doc = await analyses.doc(hash).get();
+      if (!doc.exists) return null;
+      const data = doc.data();
+      // analysis는 JSON 문자열로 저장됨 (Firestore는 중첩 배열을 허용하지 않음
+      // — 예: 표 figure의 rows: [[...]]). 구버전 객체 저장 레코드도 호환.
+      if (typeof data.analysisJson === "string") {
+        data.analysis = JSON.parse(data.analysisJson);
+      }
+      return data;
+    },
+    async set(hash, record) {
+      const { analysis, ...rest } = record;
+      await analyses.doc(hash).set({
+        ...rest,
+        analysisJson: JSON.stringify(analysis),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    },
+    async list() {
+      const snap = await analyses.orderBy("createdAt", "desc").limit(100).get();
+      return snap.docs.map((d) => {
+        const { hash, title, one_liner, createdAt } = d.data();
+        return {
+          hash,
+          title,
+          one_liner,
+          createdAt: createdAt ? createdAt.toDate().toISOString() : null,
+        };
+      });
+    },
+  };
+  console.log("[저장소] Firestore 사용");
+} else {
+  const mem = new Map();
+  store = {
+    kind: "memory",
+    async get(hash) {
+      return mem.get(hash) || null;
+    },
+    async set(hash, record) {
+      mem.set(hash, { ...record, createdAt: new Date().toISOString() });
+    },
+    async list() {
+      return [...mem.values()]
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+        .map(({ hash, title, one_liner, createdAt }) => ({
+          hash,
+          title,
+          one_liner,
+          createdAt,
+        }));
+    },
+  };
+  console.warn(
+    `[경고] Firebase 서비스 계정 키(${serviceAccountPath})가 없어 메모리 캐시로 동작합니다.\n` +
+      "       서버를 재시작하면 분석 결과가 사라집니다. Firestore를 쓰려면 키를 추가하세요."
+  );
+}
+
+// ---------------------------------------------------------------------------
+// LLM 호출: Claude Agent SDK (Max 구독의 Claude Code 인증 사용 — API 크레딧 불필요)
+// PDF는 임시 파일로 저장 후 Read 도구가 비전으로 읽는다 (20페이지씩 분할).
+// ---------------------------------------------------------------------------
+const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 리서처입니다.
+지정된 논문 PDF 전체(텍스트, 레이아웃, 그림, 표, 수식)를 읽고 아래 JSON 스키마에 맞춰 분석 결과를 작성하세요.
+
+스키마:
+{
+  "title": "논문 원제목 (영어 그대로)",
+  "one_liner": "논문 핵심을 담은 한 줄 요약",
+  "background": "연구 배경 (## 소제목으로 단락 구분)",
+  "problem": "연구에서 해결하려는 것 (## 소제목으로 단락 구분)",
+  "method_steps": [
+    {
+      "title": "단계 이름 (10자 내외로 짧게)",
+      "description": "이 단계에서 무엇을 하는지 + 왜 그렇게 하는지",
+      "analogy": "이 단계를 일상에 빗댄 비유 한 문장 (예: '도서관에서 질문과 가장 관련 있는 책들을 골라 가중 평균하는 것과 같다')"
+    }
+  ],
+  "figures": [
+    {
+      "type": "flow | bar | line",
+      "title": "그림 제목 (한국어)",
+      "source": "원 논문의 어느 Figure를 재구성했는지 (예: 'Figure 1 재구성')",
+      "caption": "이 그림에서 읽어야 할 핵심 한 줄",
+      "flow": [
+        {
+          "name": "블록 이름 (영어 원어)",
+          "sublabel": "보조 설명(선택)",
+          "repeat": "× 6 같은 반복 표기(선택)",
+          "children": ["내부 서브층(영어)", "..."],
+          "lane": "원 그림에서 블록들이 두 기둥으로 나란히 놓여 있으면 그 기둥 이름 (예: 'Encoder', 'Decoder'). 입력/출력처럼 전체 폭 블록은 생략",
+          "role": "이 블록이 데이터에 무슨 일을 하는지 1~2문장 — 사용자가 스테퍼로 한 블록씩 짚을 때 표시됨. 쉬운 비유를 섞어도 좋음"
+        }
+      ],
+      "bars": [ { "label": "항목", "value": 28.4, "highlight": true } ],
+      "unit": "bar 차트의 단위 (예: BLEU, accuracy %)",
+      "lines": [ { "name": "계열 이름", "points": [ { "x": 1, "y": 2.5 }, ... ] } ],
+      "x_label": "line 차트 x축 이름", "y_label": "line 차트 y축 이름"
+    }
+  ],
+  "equation_flow": {
+    "caption": "이 수식 체인이 최종적으로 무엇을 만들어내는지 한 줄",
+    "steps": [
+      { "eq_index": 0, "goal": "이 수식이 무엇을 구하는지 (15자 내외)", "why": "왜 이걸 구해야 다음으로 갈 수 있는지 한 문장" }
+    ]
+  },
+  "equations": [
+    {
+      "latex": "LaTeX 수식 문자열 (KaTeX로 렌더링 가능해야 함, $ 기호 없이 수식 본문만)",
+      "paper_ref": "원 논문에서의 위치 (수식 번호가 있으면 'Eq. 1', 없으면 'Section 3.2' 같은 절 표기, 그것도 없으면 null)",
+      "explanation": "이 수식이 무엇을 하는지, method_steps의 어느 단계에 해당하는지",
+      "analogy": "이 수식 전체를 일상 상황에 빗댄, 읽자마자 그림이 그려지는 비유 한 문장",
+      "variables": [ { "symbol": "Q", "meaning": "query 행렬 — '내가 지금 찾고 있는 것'에 해당" } ]
+    }
+  ]
+}
+
+섹션별 작성 지침 (독자는 세미나 발표를 준비하거나 정독 전 구조를 잡으려는 대학원생):
+- background: "## 소제목" 줄로 2~3개 단락을 나누세요 (예: "## 분야의 흐름", "## 남아 있는 공백"). 분야가 어떤 흐름으로 발전해왔는지 → 현재 어디까지 와 있는지 → 이 논문이 들어갈 공백(gap)이 무엇인지 순서로.
+- problem: "## 소제목"으로 2~3개 단락 구분. 기존 방법(existing methods)들을 구체적으로 거명하고 각각의 한계를 짚은 뒤, 이 논문이 정확히 어떤 문제를 타깃하는지 명시하세요.
+- method_steps: 4~8개 단계. 각 단계는 짧은 title + "무엇을 + 왜"를 담은 description + 일상 비유(analogy). 비유는 그 단계의 핵심 직관을 비전공자도 떠올릴 수 있게. 데이터가 흘러가는 순서대로 배열하세요.
+- figures: **논문에서 정보량이 가장 많은 그림 1~3개를 골라 재구성하세요.** 표(table)는 쓰지 마세요. 시각 유형은 내용에 맞게:
+  · 모델 구조/파이프라인 그림 → "flow". ==원 논문 그림과 같은 모양이 되도록 재구성하세요== — 그림에서 블록들이 두 기둥으로 나란히 서 있으면(예: encoder 기둥과 decoder 기둥) lane으로 그 구조를 보존하고, 입력·출력처럼 기둥 바깥의 블록은 lane 없이 두세요. 블록 배열 순서는 데이터가 흐르는 순서이며, 이 순서대로 사용자가 스테퍼로 한 블록씩 따라가므로 모든 블록에 role(그 블록이 하는 일)을 반드시 채우세요.
+  · 성능/분포 비교 (항목별 수치) → "bar" (highlight: 이 논문 제안 모델에 true)
+  · 추세/학습 곡선/분포 곡선/스케일링 → "line" (점 4~10개로 곡선 형태를 보존)
+  수치는 반드시 논문에서 실제로 읽은 값만 쓰세요. ==수치를 확인할 수 없으면 그 figure는 빼세요 (지어내기 절대 금지)==. figures[0]은 방법론과 가장 관련 깊은 것으로. 각 figure에는 type에 해당하는 데이터 필드만 포함하세요.
+- equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. 수식이 없는 논문이면 빈 배열 [].
+- equation_flow: 수식 탭 맨 위에 표시되는 "수식 로드맵". equations의 순서를 따라 각 수식을 하나의 노드로 잇고, goal에는 그 수식이 구하는 것을 짧게, why에는 왜 그걸 구해야 전체 그림이 완성되는지를 쓰세요. 사용자가 개별 수식을 읽기 전에 "왜 이 수식들이 이 순서로 필요한가"를 먼저 이해하는 용도입니다. 수식이 없으면 null.
+
+강조 마크업 (background / problem / description / role / explanation / analogy / meaning 텍스트 안에서 사용):
+- **핵심 용어** : 중요한 개념·기법·모델명은 별표 두 개로 감싸 볼드 처리. 예: **Self-Attention(셀프 어텐션)**
+- ==결정적 문장== : 그 섹션에서 단 하나만 기억해야 한다면 이것, 이라는 구절은 등호 두 개로 감싸 형광펜 처리. 섹션당 1~2곳만, 남용 금지.
+- $인라인 수식$ : 설명 속 수식 기호·표현식은 $로 감싸면 KaTeX 수식으로 렌더링됩니다. 예: "$p(t_i)$로 추정한다". $ 없이 날것의 LaTeX를 본문에 쓰지 마세요.
+
+규칙:
+1. 최종 응답은 위 스키마의 JSON 객체 하나만 출력하세요. 마크다운 코드 펜스(\`\`\`), 설명 문장, 기타 텍스트를 절대 붙이지 마세요. ==출력하기 전에 괄호 짝({}, []), 콤마, 이스케이프가 유효한 JSON인지 스스로 검증하세요== — 특히 문자열을 닫는 따옴표 뒤에 잘못된 ]나 }가 붙지 않도록.
+2. 설명문은 한국어로 쓰되, ==기법·모델·구성요소 같은 고유명사는 영어 원어를 그대로 쓰고 괄호에 한국어 번역(뜻)을 붙이세요==. 예: "**Scaled Dot-Product Attention**(스케일링된 내적 어텐션)", "**residual connection**(잔차 연결)". 같은 용어가 반복되면 번역 괄호는 처음 한 번만. 논문 내부 인용 키(예: hochreiter1997)나 참조 번호([1], [2])는 절대 쓰지 마세요.
+2-1. 비유(analogy)는 전문 용어 없이, 읽는 즉시 장면이 그려지는 일상 상황(도서관, 회의, 요리, 택배 등)으로 쓰세요.
+3. latex 문자열 안의 백슬래시는 JSON 규칙에 맞게 이스케이프하세요 (예: "\\\\frac{a}{b}").
+4. 정확하고 구체적으로 쓰되 불필요한 수사는 빼세요. 강조 마크업은 위 두 종류만 사용하고 다른 마크다운 문법은 쓰지 마세요.`;
+
+async function runAnalysis(pdfBuffer, pageCount) {
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "paper-reviewer-"));
+  const pdfPath = path.join(tmpDir, "paper.pdf");
+  await fs.promises.writeFile(pdfPath, pdfBuffer);
+
+  try {
+    const prompt =
+      `${pdfPath} 경로에 ${pageCount}페이지짜리 논문 PDF가 있습니다.\n` +
+      `Read 도구로 논문 전체를 읽으세요. 10페이지가 넘으므로 pages 파라미터로 최대 20페이지씩 나눠 끝까지 읽어야 합니다 (예: "1-20", "21-40", ...).\n` +
+      `전부 읽은 뒤, 시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요.`;
+
+    let resultText = null;
+
+    for await (const msg of query({
+      prompt,
+      options: {
+        systemPrompt: SYSTEM_PROMPT,
+        model: MODEL,
+        allowedTools: ["Read"],
+        maxTurns: 80, // 600페이지 = Read 30회 + 여유
+        cwd: tmpDir,
+      },
+    })) {
+      if (msg.type === "result") {
+        if (msg.subtype !== "success") {
+          throw new Error(`분석 에이전트 실행 실패 (${msg.subtype})`);
+        }
+        resultText = msg.result;
+      }
+    }
+
+    if (resultText == null) {
+      throw new Error("분석 에이전트가 결과를 반환하지 않았습니다.");
+    }
+    return resultText;
+  } finally {
+    fs.promises.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// --- 방어적 JSON 파싱 ---------------------------------------------------------
+function parseModelJson(raw) {
+  let text = raw.trim();
+  // ```json ... ``` 펜스 제거
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fence) text = fence[1].trim();
+  // 펜스가 아니어도 앞뒤에 잡설이 붙은 경우: 첫 { 부터 마지막 } 까지 시도
+  if (!text.startsWith("{")) {
+    const first = text.indexOf("{");
+    const last = text.lastIndexOf("}");
+    if (first !== -1 && last > first) text = text.slice(first, last + 1);
+  }
+  return JSON.parse(text); // 실패 시 호출부에서 처리
+}
+
+// --- Express ----------------------------------------------------------------
+const app = express();
+
+// 프론트를 다른 도메인(예: GitHub Pages)에서 서빙할 때만 CORS 허용
+// .env에 ALLOWED_ORIGIN=https://<유저명>.github.io 형태로 설정
+if (process.env.ALLOWED_ORIGIN) {
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", process.env.ALLOWED_ORIGIN);
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+  });
+}
+
+app.use(express.static(path.join(__dirname, "public")));
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PDF_BYTES },
+  fileFilter: (req, file, cb) => {
+    const isPdf =
+      file.mimetype === "application/pdf" ||
+      file.originalname.toLowerCase().endsWith(".pdf");
+    cb(isPdf ? null : new Error("PDF 파일만 업로드할 수 있습니다."), isPdf);
+  },
+});
+
+// --- POST /api/analyze --------------------------------------------------------
+app.post("/api/analyze", (req, res) => {
+  upload.single("pdf")(req, res, async (err) => {
+    try {
+      if (err) {
+        const msg =
+          err.code === "LIMIT_FILE_SIZE"
+            ? `PDF가 너무 큽니다. 최대 ${Math.floor(MAX_PDF_BYTES / 1024 / 1024)}MB까지 업로드할 수 있습니다.`
+            : err.message;
+        return res.status(400).json({ error: msg });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: "PDF 파일이 첨부되지 않았습니다." });
+      }
+
+      const buffer = req.file.buffer;
+
+      // 페이지 수 검사 (텍스트 추출이 아니라 PDF 구조 파싱만 수행)
+      let pageCount;
+      try {
+        const doc = await PDFDocument.load(buffer, { updateMetadata: false });
+        pageCount = doc.getPageCount();
+      } catch (e) {
+        return res.status(400).json({
+          error:
+            "PDF를 읽을 수 없습니다. 손상되었거나 암호화(password-protected)된 파일은 지원되지 않습니다.",
+        });
+      }
+      if (pageCount > MAX_PDF_PAGES) {
+        return res.status(400).json({
+          error: `PDF가 ${pageCount}페이지로 최대 ${MAX_PDF_PAGES}페이지 제한을 초과합니다.`,
+        });
+      }
+
+      // SHA-256 해시 → 캐시 조회
+      const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+      const cached = await store.get(hash);
+      if (cached) {
+        return res.json({ cached: true, hash, ...cached.analysis });
+      }
+
+      // 캐시 미스 → Agent SDK로 분석 (수 분 걸릴 수 있음)
+      console.log(`[분석 시작] ${req.file.originalname} (${pageCount}p, ${hash.slice(0, 12)}…)`);
+
+      // 모델이 가끔 깨진 JSON을 내므로 파싱 실패 시 1회 자동 재시도
+      let analysis = null;
+      let lastRaw = "";
+      for (let attempt = 1; attempt <= 2 && !analysis; attempt++) {
+        lastRaw = await runAnalysis(buffer, pageCount);
+        try {
+          analysis = parseModelJson(lastRaw);
+        } catch (e) {
+          console.warn(`[JSON 파싱 실패 — 시도 ${attempt}/2]`, lastRaw.slice(0, 800));
+          if (attempt === 1) console.log("[재시도] 분석을 다시 실행합니다…");
+        }
+      }
+      if (!analysis) {
+        return res.status(502).json({
+          error: "모델 응답을 JSON으로 파싱하지 못했습니다 (2회 시도). 다시 시도해 주세요.",
+          detail: lastRaw.slice(0, 500),
+        });
+      }
+
+      await store.set(hash, {
+        hash,
+        title: analysis.title || req.file.originalname,
+        one_liner: analysis.one_liner || "",
+        analysis,
+      });
+      console.log(`[분석 완료] ${analysis.title || req.file.originalname}`);
+
+      return res.json({ cached: false, hash, ...analysis });
+    } catch (e) {
+      console.error("[/api/analyze 오류]", e);
+      return res.status(500).json({
+        error: `분석 중 오류가 발생했습니다: ${e.message || "알 수 없는 오류"}`,
+      });
+    }
+  });
+});
+
+// --- GET /api/history -----------------------------------------------------------
+app.get("/api/history", async (req, res) => {
+  try {
+    res.json(await store.list());
+  } catch (e) {
+    console.error("[/api/history 오류]", e);
+    res.status(500).json({ error: `히스토리 조회 실패: ${e.message}` });
+  }
+});
+
+// --- GET /api/history/:hash ------------------------------------------------------
+app.get("/api/history/:hash", async (req, res) => {
+  try {
+    const record = await store.get(req.params.hash);
+    if (!record) {
+      return res.status(404).json({ error: "해당 분석 결과를 찾을 수 없습니다." });
+    }
+    res.json({ cached: true, hash: record.hash, ...record.analysis });
+  } catch (e) {
+    console.error("[/api/history/:hash 오류]", e);
+    res.status(500).json({ error: `조회 실패: ${e.message}` });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(
+    `Paper Reviewer 실행 중: http://localhost:${PORT} (모델: ${MODEL}, 저장소: ${store.kind})`
+  );
+});

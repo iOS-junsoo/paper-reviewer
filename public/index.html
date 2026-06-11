@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paper Reviewer — 논문 구조화 이해 도구</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@500;700;900&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="page">
+    <header>
+      <p class="masthead">PAPER&nbsp;REVIEWER</p>
+      <h1>논문을 읽기 전에,<br />구조부터 잡으세요</h1>
+      <p class="subtitle">PDF를 드롭하면 Claude가 논문 전체를 읽고 네 개의 섹션으로 정리합니다</p>
+    </header>
+
+    <main>
+      <!-- 드롭존 -->
+      <section id="dropzone" class="dropzone">
+        <svg class="dz-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="9" y1="13" x2="15" y2="13"/>
+          <line x1="9" y1="17" x2="13" y2="17"/>
+        </svg>
+        <p class="dz-main">논문 PDF를 여기에 드래그하세요</p>
+        <button id="pick-btn" type="button">파일 선택</button>
+        <input id="file-input" type="file" accept="application/pdf,.pdf" hidden />
+        <p class="dz-limit">PDF · 최대 23MB · 600페이지</p>
+      </section>
+
+      <!-- 로딩 -->
+      <section id="loading" class="loading hidden">
+        <div class="loading-bar"><div class="loading-fill"></div></div>
+        <p id="loading-text">논문을 분석하고 있습니다…</p>
+        <p class="loading-sub">Claude가 논문 전체를 페이지 단위로 읽는 중입니다. 논문 길이에 따라 1~5분 정도 걸릴 수 있어요.</p>
+      </section>
+
+      <!-- 에러 -->
+      <section id="error" class="error hidden"></section>
+
+      <!-- 결과 -->
+      <section id="result" class="result hidden">
+        <div class="result-head">
+          <span id="cache-badge" class="badge hidden">⚡ 캐시에서 불러옴</span>
+          <h2 id="paper-title"></h2>
+          <p id="one-liner"></p>
+        </div>
+
+        <nav class="tabs" id="tabs">
+          <button class="tab active" data-tab="background"><span class="tab-no">Ⅰ</span>연구 배경</button>
+          <button class="tab" data-tab="problem"><span class="tab-no">Ⅱ</span>해결하려는 것</button>
+          <button class="tab" data-tab="method"><span class="tab-no">Ⅲ</span>연구 방법론</button>
+          <button class="tab" data-tab="equations"><span class="tab-no">Ⅳ</span>수식 정리</button>
+        </nav>
+
+        <div class="panels">
+          <div class="panel active" id="panel-background"></div>
+          <div class="panel" id="panel-problem"></div>
+          <div class="panel" id="panel-method"></div>
+          <div class="panel" id="panel-equations"></div>
+        </div>
+      </section>
+
+      <!-- 히스토리 -->
+      <section class="history">
+        <h3>분석 히스토리</h3>
+        <ul id="history-list"><li class="muted">불러오는 중…</li></ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>로컬에서 실행 중 · 분석 결과는 Firestore에 캐시됩니다</p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

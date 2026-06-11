@@ -1,0 +1,19 @@
+{
+  "name": "paper-reviewer",
+  "version": "1.0.0",
+  "description": "논문 PDF를 Claude API로 분석해 4개 섹션으로 정리하는 로컬 웹앱",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.173",
+    "@anthropic-ai/sdk": "^0.104.1",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.2",
+    "firebase-admin": "^13.10.0",
+    "multer": "^1.4.5-lts.1",
+    "pdf-lib": "^1.17.1"
+  }
+}
