@@ -313,10 +313,21 @@ function buildFlow(blocks) {
       flow.appendChild(lanesEl);
     }
   });
-  wrap.appendChild(flow);
+  // 데이터 토큰: 스테퍼 진행 시 블록 사이를 타고 이동하는 빛나는 점
+  const token = document.createElement("div");
+  token.className = "flow-token hidden";
+  flow.appendChild(token);
+
+  // 다이어그램이 길어도 컨트롤이 항상 보이도록 내부 스크롤 영역에 담는다
+  const scroller = document.createElement("div");
+  scroller.className = "arch-scroll";
+  scroller.appendChild(flow);
+  wrap.appendChild(scroller);
 
   // ── 인터랙티브 스테퍼 ──
   let current = -1;
+  let playTimer = null;
+
   const controls = document.createElement("div");
   controls.className = "flow-controls";
 
@@ -330,20 +341,42 @@ function buildFlow(blocks) {
   nextBtn.type = "button";
   nextBtn.className = "flow-btn flow-btn-primary";
   nextBtn.textContent = "다음 ▶";
-  controls.append(prevBtn, counter, nextBtn);
+  const playBtn = document.createElement("button");
+  playBtn.type = "button";
+  playBtn.className = "flow-btn";
+  playBtn.textContent = "▶ 자동 재생";
+  controls.append(prevBtn, counter, nextBtn, playBtn);
 
   const rolePanel = document.createElement("div");
   rolePanel.className = "flow-role hidden";
+
+  function moveToken(i) {
+    const b = blockEls[i].getBoundingClientRect();
+    const f = flow.getBoundingClientRect();
+    token.style.left = `${b.left - f.left + 12}px`;
+    token.style.top = `${b.top - f.top + b.height / 2 - 7}px`;
+  }
+
+  function stopPlay() {
+    if (playTimer) {
+      clearInterval(playTimer);
+      playTimer = null;
+      playBtn.textContent = "▶ 자동 재생";
+    }
+  }
 
   function activate(i) {
     current = i;
     flow.classList.toggle("stepping", i >= 0);
     blockEls.forEach((el, j) => el.classList.toggle("arch-active", j === i));
     if (i < 0) {
-      counter.textContent = "▶ 다음을 눌러 흐름을 따라가 보세요";
+      token.classList.add("hidden");
+      counter.textContent = "▶ 흐름을 따라가 보세요";
       rolePanel.classList.add("hidden");
     } else {
       const b = blocks[i];
+      token.classList.remove("hidden");
+      moveToken(i);
       counter.textContent = `${i + 1} / ${blocks.length}`;
       rolePanel.classList.remove("hidden");
       rolePanel.innerHTML = "";
@@ -353,17 +386,33 @@ function buildFlow(blocks) {
       const roleText = document.createElement("span");
       renderRich(roleText, " — " + (b.role || b.sublabel || "설명이 제공되지 않은 블록입니다."));
       rolePanel.appendChild(roleText);
+      if (b.data_state) {
+        const ds = document.createElement("div");
+        ds.className = "flow-data";
+        renderRich(ds, "📦 이 시점의 데이터: " + b.data_state);
+        rolePanel.appendChild(ds);
+      }
       blockEls[i].scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     prevBtn.disabled = current <= 0;
     nextBtn.textContent = current >= blocks.length - 1 ? "처음으로 ↺" : "다음 ▶";
   }
 
-  prevBtn.addEventListener("click", () => activate(Math.max(0, current - 1)));
-  nextBtn.addEventListener("click", () =>
-    activate(current >= blocks.length - 1 ? 0 : current + 1)
-  );
-  blockEls.forEach((el, i) => el.addEventListener("click", () => activate(i)));
+  prevBtn.addEventListener("click", () => { stopPlay(); activate(Math.max(0, current - 1)); });
+  nextBtn.addEventListener("click", () => {
+    stopPlay();
+    activate(current >= blocks.length - 1 ? 0 : current + 1);
+  });
+  playBtn.addEventListener("click", () => {
+    if (playTimer) return stopPlay();
+    playBtn.textContent = "⏸ 정지";
+    activate(current >= blocks.length - 1 || current < 0 ? 0 : current + 1);
+    playTimer = setInterval(() => {
+      if (current >= blocks.length - 1) stopPlay();
+      else activate(current + 1);
+    }, 2400);
+  });
+  blockEls.forEach((el, i) => el.addEventListener("click", () => { stopPlay(); activate(i); }));
 
   activate(-1);
   wrap.append(controls, rolePanel);
@@ -666,6 +715,27 @@ async function loadHistory() {
       date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
       li.append(title, line, date);
       li.addEventListener("click", () => openHistory(it.hash));
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "h-del";
+      del.title = "이 분석 기록 삭제";
+      del.textContent = "×";
+      del.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm(`'${it.title}' 분석 기록을 삭제할까요?\n(같은 PDF를 다시 올리면 재분석됩니다)`)) return;
+        try {
+          const r = await fetch(`${API_BASE}/api/history/${it.hash}`, { method: "DELETE" });
+          if (!r.ok) {
+            const d = await safeJson(r);
+            throw new Error((d && d.error) || "삭제 실패");
+          }
+          loadHistory();
+        } catch (err) {
+          showError(err.message);
+        }
+      });
+      li.appendChild(del);
       historyList.appendChild(li);
     });
   } catch (e) {

@@ -628,13 +628,67 @@ header h1 {
   margin-bottom: 8px;
 }
 
-/* 스테퍼 인터랙션 */
-.arch-block { cursor: pointer; transition: opacity 0.2s, box-shadow 0.2s, transform 0.2s; }
-.arch-flow.stepping .arch-block:not(.arch-active) { opacity: 0.4; }
+/* 다이어그램 내부 스크롤 — 길어도 컨트롤이 항상 보이게 */
+.arch-scroll {
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 6px 4px;
+  border-radius: 8px;
+  scrollbar-width: thin;
+}
+.arch-flow { position: relative; }
+
+/* 데이터 토큰 — 블록 사이를 타고 흐르는 빛나는 점 */
+.flow-token {
+  position: absolute;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffb3a3, var(--accent) 70%);
+  box-shadow: 0 0 12px 4px rgba(140, 47, 57, 0.45);
+  transition: left 0.55s cubic-bezier(0.5, 0, 0.25, 1), top 0.55s cubic-bezier(0.5, 0, 0.25, 1);
+  z-index: 5;
+  pointer-events: none;
+  animation: tokenpulse 1.4s ease-in-out infinite;
+}
+@keyframes tokenpulse {
+  0%, 100% { box-shadow: 0 0 8px 2px rgba(140, 47, 57, 0.35); }
+  50%      { box-shadow: 0 0 16px 6px rgba(140, 47, 57, 0.55); }
+}
+
+/* 스테퍼 인터랙션 + 입체감 */
+.arch-block {
+  cursor: pointer;
+  background: linear-gradient(180deg, #ffffff 0%, #fbf7ee 100%);
+  border-bottom-width: 3px;
+  border-bottom-color: #d3c7ae;
+  transition: opacity 0.25s, box-shadow 0.25s, transform 0.25s;
+}
+.arch-flow.stepping .arch-block:not(.arch-active) { opacity: 0.38; }
 .arch-block.arch-active {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(140, 47, 57, 0.2), 0 6px 16px -8px rgba(140, 47, 57, 0.5);
-  transform: scale(1.02);
+  background: #fff;
+  box-shadow:
+    0 0 0 3px rgba(140, 47, 57, 0.18),
+    0 14px 26px -12px rgba(140, 47, 57, 0.55);
+  transform: translateY(-3px) scale(1.03);
+}
+/* 진행 중 화살표가 흐르는 느낌 */
+.arch-flow.stepping .arch-arrow { animation: arrowflow 1.1s ease-in-out infinite; }
+@keyframes arrowflow {
+  0%, 100% { transform: translateY(-2px); opacity: 0.45; }
+  50%      { transform: translateY(3px);  opacity: 1; }
+}
+
+/* role 패널의 데이터 상태 표시 */
+.flow-data {
+  margin-top: 10px;
+  display: inline-block;
+  font-size: 0.82rem;
+  color: #6b5d3f;
+  background: #f6f1e4;
+  border: 1px dashed #ddd2b8;
+  padding: 6px 12px;
+  border-radius: 6px;
 }
 
 .flow-controls {
@@ -751,7 +805,23 @@ header h1 {
 }
 #history-list li.muted::before { content: none; }
 
-.h-title { font-weight: 650; font-size: 0.96rem; line-height: 1.5; }
+.h-del {
+  position: absolute;
+  right: 12px;
+  top: 14px;
+  width: 26px; height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  color: var(--ink-faint);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.h-del:hover { color: var(--accent); border-color: var(--accent); }
+
+.h-title { font-weight: 650; font-size: 0.96rem; line-height: 1.5; padding-right: 36px; }
 .h-line { color: var(--ink-soft); font-size: 0.86rem; margin-top: 3px; }
 .h-date {
   color: var(--ink-faint);
