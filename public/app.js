@@ -191,6 +191,7 @@ function renderResult(data) {
   loadPdf(currentHash);
 
   workspaceEl.classList.remove("hidden");
+  chatFab.classList.remove("hidden"); // 분석 결과가 있어야 질문 가능
   switchTab("background");
 }
 
@@ -242,11 +243,23 @@ function renderRelated(papers) {
   box.classList.remove("hidden");
 }
 
-// ---------- 질문하기 ----------
+// ---------- 질문하기 (플로팅 버튼 + 우측 드로어) ----------
 const chatMessages = document.getElementById("chat-messages");
 const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const chatSend = document.getElementById("chat-send");
+const chatFab = document.getElementById("chat-fab");
+const chatDrawer = document.getElementById("chat-drawer");
+
+chatFab.addEventListener("click", () => {
+  const open = chatDrawer.classList.toggle("open");
+  chatDrawer.setAttribute("aria-hidden", String(!open));
+  if (open) chatInput.focus();
+});
+document.getElementById("chat-close").addEventListener("click", () => {
+  chatDrawer.classList.remove("open");
+  chatDrawer.setAttribute("aria-hidden", "true");
+});
 
 function resetChat() {
   chatMessages.innerHTML =

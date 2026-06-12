@@ -69,7 +69,6 @@
             <button class="tab" data-tab="problem"><span class="tab-no">Ⅱ</span>해결하려는 것</button>
             <button class="tab" data-tab="method"><span class="tab-no">Ⅲ</span>연구 방법론</button>
             <button class="tab" data-tab="equations"><span class="tab-no">Ⅳ</span>수식 정리</button>
-            <button class="tab" data-tab="chat"><span class="tab-no">Ⅴ</span>질문하기</button>
           </nav>
 
           <div class="panels">
@@ -77,15 +76,6 @@
             <div class="panel" id="panel-problem"></div>
             <div class="panel" id="panel-method"></div>
             <div class="panel" id="panel-equations"></div>
-            <div class="panel" id="panel-chat">
-              <div id="chat-messages" class="chat-messages">
-                <p class="chat-hint">이 논문에 대해 궁금한 점을 물어보세요. 필요하면 원문 PDF를 직접 찾아 읽고 답합니다.<br />예: "왜 √d_k로 나누나요?", "이 방법의 한계는 뭐죠?"</p>
-              </div>
-              <form id="chat-form" class="chat-form">
-                <input id="chat-input" type="text" placeholder="질문을 입력하세요…" autocomplete="off" />
-                <button type="submit" id="chat-send">질문</button>
-              </form>
-            </div>
           </div>
 
           <div id="related" class="related hidden">
@@ -106,6 +96,22 @@
       <p>로컬에서 실행 중 · 분석 결과는 Firestore에 캐시됩니다</p>
     </footer>
   </div>
+
+  <!-- 질문하기: 우하단 플로팅 버튼 + 우측 슬라이드 채팅 패널 -->
+  <button id="chat-fab" class="chat-fab hidden" type="button" title="이 논문에게 질문하기">💬</button>
+  <aside id="chat-drawer" class="chat-drawer" aria-hidden="true">
+    <div class="chat-drawer-head">
+      <span>💬 논문에게 질문하기</span>
+      <button id="chat-close" type="button" title="닫기">×</button>
+    </div>
+    <div id="chat-messages" class="chat-messages">
+      <p class="chat-hint">이 논문에 대해 궁금한 점을 물어보세요. 필요하면 원문 PDF를 직접 찾아 읽고 답합니다.<br />예: "왜 √d_k로 나누나요?", "이 방법의 한계는 뭐죠?"</p>
+    </div>
+    <form id="chat-form" class="chat-form">
+      <input id="chat-input" type="text" placeholder="질문을 입력하세요…" autocomplete="off" />
+      <button type="submit" id="chat-send">질문</button>
+    </form>
+  </aside>
 
   <script src="app.js"></script>
 </body>
