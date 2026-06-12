@@ -74,8 +74,19 @@ function setLoadingText(msg) {
   document.getElementById("loading-text").textContent = msg;
 }
 
+// 지나간 진행 단계를 ✓ 로그로 쌓는다
+function appendLoadingLog(msg) {
+  const log = document.getElementById("loading-log");
+  const li = document.createElement("li");
+  li.textContent = `✓ ${msg}`;
+  log.appendChild(li);
+  log.scrollTop = log.scrollHeight;
+}
+
 // 서버가 보내는 SSE 스트림(progress/result/error)을 소비하고 최종 결과를 반환
 async function consumeAnalysisStream(res) {
+  document.getElementById("loading-log").innerHTML = "";
+  let lastProgress = null;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
@@ -98,6 +109,8 @@ async function consumeAnalysisStream(res) {
         continue;
       }
       if (ev.type === "progress") {
+        if (lastProgress && lastProgress !== ev.msg) appendLoadingLog(lastProgress);
+        lastProgress = ev.msg;
         setLoadingText(ev.msg);
       } else if (ev.type === "result") {
         result = ev.data;
@@ -185,9 +198,14 @@ function renderResult(data) {
   cacheBadge.classList.toggle("hidden", !data.cached);
 
   renderRich(document.getElementById("panel-background"), data.background || "(내용 없음)");
+  // 분야 발전 타임라인 (배경 탭 상단)
+  if (Array.isArray(data.timeline) && data.timeline.length) {
+    const bg = document.getElementById("panel-background");
+    bg.insertBefore(buildTimeline(data.timeline), bg.firstChild);
+  }
   renderRich(document.getElementById("panel-problem"), data.problem || "(내용 없음)");
   renderMethod(data);
-  renderEquations(data.equations || [], data.equation_flow);
+  renderEquations(data.equations || [], data.equation_flow, data.method_steps || []);
   renderRelated(data.related_papers);
   loadPdf(currentHash);
 
@@ -197,19 +215,56 @@ function renderResult(data) {
   switchTab("background");
 }
 
+// ---------- 분야 발전 타임라인 ----------
+function buildTimeline(items) {
+  const wrap = document.createElement("div");
+  wrap.className = "timeline";
+  items.forEach((it, i) => {
+    const node = document.createElement("div");
+    node.className = "tl-item" + (i === items.length - 1 ? " tl-last" : "");
+    const year = document.createElement("div");
+    year.className = "tl-year";
+    year.textContent = it.year ?? "";
+    const dot = document.createElement("div");
+    dot.className = "tl-dot";
+    const label = document.createElement("div");
+    label.className = "tl-label";
+    renderRich(label, it.label || "");
+    const note = document.createElement("div");
+    note.className = "tl-note";
+    renderRich(note, it.note || "");
+    node.append(year, dot, label, note);
+    wrap.appendChild(node);
+  });
+  return wrap;
+}
+
 // ---------- 원문 PDF 패널 ----------
+let pdfAvailable = false;
+
 async function loadPdf(hash) {
   pdfFrame.classList.add("hidden");
   pdfMissing.classList.add("hidden");
+  pdfAvailable = false;
   if (!hash) return pdfMissing.classList.remove("hidden");
   try {
     const head = await fetch(`${API_BASE}/api/pdf/${hash}`, { method: "HEAD" });
     if (!head.ok) throw new Error();
     pdfFrame.src = `${API_BASE}/api/pdf/${hash}`;
     pdfFrame.classList.remove("hidden");
+    pdfAvailable = true;
   } catch {
     pdfMissing.classList.remove("hidden");
   }
+}
+
+// 수식 배지 클릭 → 좌측 PDF를 해당 페이지로 이동
+function jumpToPdfPage(page) {
+  if (!currentHash || !pdfAvailable) return;
+  workspaceEl.classList.remove("pdf-collapsed");
+  document.getElementById("pdf-toggle").textContent = "접기 ◀";
+  pdfFrame.src = `${API_BASE}/api/pdf/${currentHash}#page=${page}`;
+  pdfFrame.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 // 분석 결과를 보는 중에는 헤더·드롭존을 접고, 이 버튼으로 다시 펼침
@@ -377,8 +432,9 @@ function renderMethod(data) {
   if (Array.isArray(data.method_steps) && data.method_steps.length) {
     const ol = document.createElement("ol");
     ol.className = "stepper";
-    data.method_steps.forEach((step) => {
+    data.method_steps.forEach((step, stepIdx) => {
       const li = document.createElement("li");
+      li.id = `step-${stepIdx}`; // 수식 탭의 단계 배지에서 점프해 오는 앵커
       const title = document.createElement("h4");
       title.className = "step-title";
       renderRich(title, step.title || "");
@@ -593,6 +649,22 @@ function buildFlow(blocks) {
   playBtn.textContent = "▶ 자동 재생";
   controls.append(prevBtn, counter, nextBtn, playBtn);
 
+  // 🔍 내부 시각화가 있는 블록만 순회하는 네비게이터
+  const vizIdxs = blocks.map((b, i) => (b.inner_viz ? i : -1)).filter((i) => i >= 0);
+  if (vizIdxs.length) {
+    const vizBtn = document.createElement("button");
+    vizBtn.type = "button";
+    vizBtn.className = "flow-btn";
+    vizBtn.textContent = `🔍 시각화 ${vizIdxs.length}곳`;
+    vizBtn.title = "내부 값 시각화가 있는 블록만 차례로 이동";
+    vizBtn.addEventListener("click", () => {
+      stopPlay();
+      const next = vizIdxs.find((i) => i > current) ?? vizIdxs[0];
+      activate(next);
+    });
+    controls.appendChild(vizBtn);
+  }
+
   const rolePanel = document.createElement("div");
   rolePanel.className = "flow-role hidden";
 
@@ -680,6 +752,12 @@ function buildInnerViz(viz) {
     body = buildVizVectors(viz);
   } else if (viz.type === "bars" && Array.isArray(viz.bars)) {
     body = buildVizBars(viz);
+  } else if (viz.type === "distribution" && Array.isArray(viz.curves) && viz.curves.length) {
+    body = buildVizDistribution(viz);
+  } else if (viz.type === "scatter" && Array.isArray(viz.points) && viz.points.length) {
+    body = buildVizScatter(viz);
+  } else if (viz.type === "surface" && Array.isArray(viz.grid) && viz.grid.length) {
+    body = buildVizSurface(viz);
   }
   if (!body) return null;
 
@@ -791,6 +869,145 @@ function buildVizVectors(viz) {
     row.appendChild(cells);
     wrap.appendChild(row);
   });
+  return wrap;
+}
+
+// SVG 헬퍼
+function svgEl(tag, attrs, text) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  if (text != null) el.textContent = text;
+  return el;
+}
+const VIZ_COLORS = ["#8c2f39", "#3d5a80", "#b08a3e", "#5b7553", "#7d5a8c"];
+
+// 분포/함수 곡선: 면이 채워진 곡선 1~3개
+function buildVizDistribution(viz) {
+  const W = 360, H = 210, P = { t: 14, r: 14, b: 40, l: 40 };
+  const pts = viz.curves.flatMap((c) => c.points || []);
+  if (!pts.length) return null;
+  const xs = pts.map((p) => Number(p.x)), ys = pts.map((p) => Number(p.y));
+  const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const ymin = Math.min(0, ...ys), ymax = Math.max(...ys);
+  const X = (x) => P.l + ((x - xmin) / (xmax - xmin || 1)) * (W - P.l - P.r);
+  const Y = (y) => H - P.b - ((y - ymin) / (ymax - ymin || 1)) * (H - P.t - P.b);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "linechart" });
+  svg.appendChild(svgEl("line", { x1: P.l, y1: H - P.b, x2: W - P.r, y2: H - P.b, class: "lc-axis" }));
+  svg.appendChild(svgEl("line", { x1: P.l, y1: P.t, x2: P.l, y2: H - P.b, class: "lc-axis" }));
+  if (viz.x_label) svg.appendChild(svgEl("text", { x: (P.l + W - P.r) / 2, y: H - 6, class: "lc-label", "text-anchor": "middle" }, viz.x_label));
+  if (viz.y_label) svg.appendChild(svgEl("text", { x: 12, y: (P.t + H - P.b) / 2, class: "lc-label", "text-anchor": "middle", transform: `rotate(-90 12 ${(P.t + H - P.b) / 2})` }, viz.y_label));
+
+  viz.curves.forEach((curve, i) => {
+    const color = VIZ_COLORS[i % VIZ_COLORS.length];
+    const sorted = [...(curve.points || [])].sort((a, b) => a.x - b.x);
+    if (!sorted.length) return;
+    const line = sorted.map((p) => `${X(p.x)},${Y(p.y)}`).join(" L");
+    // 곡선 아래 면 채우기 (분포 느낌)
+    const area = `M${X(sorted[0].x)},${Y(ymin)} L${line} L${X(sorted[sorted.length - 1].x)},${Y(ymin)} Z`;
+    svg.appendChild(svgEl("path", { d: area, fill: color, opacity: 0.13 }));
+    svg.appendChild(svgEl("path", { d: `M${line}`, fill: "none", stroke: color, "stroke-width": 2.4, "stroke-linejoin": "round" }));
+  });
+
+  const wrap = document.createElement("div");
+  wrap.appendChild(svg);
+  if (viz.curves.length > 1 || viz.curves[0].name) {
+    const legend = document.createElement("div");
+    legend.className = "lc-legend";
+    viz.curves.forEach((c, i) => {
+      const item = document.createElement("span");
+      item.className = "lc-legend-item";
+      const dot = document.createElement("span");
+      dot.className = "lc-dot";
+      dot.style.background = VIZ_COLORS[i % VIZ_COLORS.length];
+      item.append(dot, document.createTextNode(c.name || `곡선 ${i + 1}`));
+      legend.appendChild(item);
+    });
+    wrap.appendChild(legend);
+  }
+  return wrap;
+}
+
+// 산점도: 공간 배치·군집 (group별 색, 점 호버 시 레이블)
+function buildVizScatter(viz) {
+  const W = 360, H = 230, P = { t: 16, r: 16, b: 40, l: 40 };
+  const xs = viz.points.map((p) => Number(p.x)), ys = viz.points.map((p) => Number(p.y));
+  const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const ymin = Math.min(...ys), ymax = Math.max(...ys);
+  const X = (x) => P.l + ((x - xmin) / (xmax - xmin || 1)) * (W - P.l - P.r);
+  const Y = (y) => H - P.b - ((y - ymin) / (ymax - ymin || 1)) * (H - P.t - P.b);
+  const groups = [...new Set(viz.points.map((p) => p.group).filter(Boolean))];
+  const colorOf = (g) => (g ? VIZ_COLORS[groups.indexOf(g) % VIZ_COLORS.length] : VIZ_COLORS[0]);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "linechart" });
+  svg.appendChild(svgEl("line", { x1: P.l, y1: H - P.b, x2: W - P.r, y2: H - P.b, class: "lc-axis" }));
+  svg.appendChild(svgEl("line", { x1: P.l, y1: P.t, x2: P.l, y2: H - P.b, class: "lc-axis" }));
+  if (viz.x_label) svg.appendChild(svgEl("text", { x: (P.l + W - P.r) / 2, y: H - 6, class: "lc-label", "text-anchor": "middle" }, viz.x_label));
+  if (viz.y_label) svg.appendChild(svgEl("text", { x: 12, y: (P.t + H - P.b) / 2, class: "lc-label", "text-anchor": "middle", transform: `rotate(-90 12 ${(P.t + H - P.b) / 2})` }, viz.y_label));
+
+  viz.points.forEach((p) => {
+    const c = svgEl("circle", { cx: X(p.x), cy: Y(p.y), r: 5, fill: colorOf(p.group), opacity: 0.85 });
+    c.appendChild(svgEl("title", {}, (p.label || "") + (p.group ? ` (${p.group})` : "")));
+    svg.appendChild(c);
+    if (p.label) {
+      svg.appendChild(svgEl("text", { x: X(p.x) + 7, y: Y(p.y) + 4, class: "sc-pt-label" }, p.label));
+    }
+  });
+
+  const wrap = document.createElement("div");
+  wrap.appendChild(svg);
+  if (groups.length) {
+    const legend = document.createElement("div");
+    legend.className = "lc-legend";
+    groups.forEach((g) => {
+      const item = document.createElement("span");
+      item.className = "lc-legend-item";
+      const dot = document.createElement("span");
+      dot.className = "lc-dot";
+      dot.style.background = colorOf(g);
+      item.append(dot, document.createTextNode(g));
+      legend.appendChild(item);
+    });
+    wrap.appendChild(legend);
+  }
+  return wrap;
+}
+
+// 3D 막대 지형: 행렬 값의 크기를 의사 3D로 (뒷줄일수록 위·옆으로 밀려나는 아이소메트릭)
+function buildVizSurface(viz) {
+  const grid = viz.grid;
+  const rows = grid.length, cols = Math.max(...grid.map((r) => r.length));
+  const max = Math.max(...grid.flat().map((v) => Number(v) || 0)) || 1;
+  const BAR_W = 22, GAP = 5, MAX_H = 72, OFF_X = 13, OFF_Y = 11;
+
+  const stage = document.createElement("div");
+  stage.className = "surf-stage";
+  stage.style.width = `${cols * (BAR_W + GAP) + rows * OFF_X + 20}px`;
+  stage.style.height = `${MAX_H + rows * OFF_Y + 36}px`;
+
+  // 뒷줄(마지막 행)부터 그려서 앞줄이 가리도록
+  for (let r = rows - 1; r >= 0; r--) {
+    const rowEl = document.createElement("div");
+    rowEl.className = "surf-row";
+    rowEl.style.left = `${(rows - 1 - r) * OFF_X}px`;
+    rowEl.style.bottom = `${(rows - 1 - r) * OFF_Y}px`;
+    rowEl.style.zIndex = r + 1;
+    (grid[r] || []).forEach((v) => {
+      const val = (Number(v) || 0) / max;
+      const bar = document.createElement("div");
+      bar.className = "surf-bar";
+      bar.style.width = `${BAR_W}px`;
+      bar.style.height = `${val * MAX_H + 5}px`;
+      bar.style.background = `linear-gradient(180deg, rgba(140,47,57,${0.35 + val * 0.6}), rgba(140,47,57,${0.2 + val * 0.45}))`;
+      bar.title = Number(v).toFixed(2);
+      rowEl.appendChild(bar);
+    });
+    stage.appendChild(rowEl);
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "surf-wrap";
+  wrap.appendChild(stage);
   return wrap;
 }
 
@@ -948,7 +1165,7 @@ function buildTable(f) {
   return table;
 }
 
-function renderEquations(equations, equationFlow) {
+function renderEquations(equations, equationFlow, methodSteps = []) {
   const panel = document.getElementById("panel-equations");
   panel.innerHTML = "";
   if (!equations.length) {
@@ -1029,10 +1246,37 @@ function renderEquations(equations, equationFlow) {
     item.appendChild(numBadge);
 
     if (eq.paper_ref) {
-      const refBadge = document.createElement("span");
-      refBadge.className = "eq-ref";
-      refBadge.textContent = `원 논문 ${eq.paper_ref}`;
+      const page = Number(eq.paper_page);
+      const refBadge = document.createElement(page > 0 ? "button" : "span");
+      refBadge.className = "eq-ref" + (page > 0 ? " eq-ref-link" : "");
+      refBadge.textContent = `원 논문 ${eq.paper_ref}` + (page > 0 ? ` · p.${page} ↗` : "");
+      if (page > 0) {
+        refBadge.type = "button";
+        refBadge.title = `원문 PDF ${page}페이지로 이동`;
+        refBadge.addEventListener("click", () => jumpToPdfPage(page));
+      }
       item.appendChild(refBadge);
+    }
+
+    // 방법론 단계 연결 배지 — 클릭 시 해당 단계로 점프
+    const si = Number.isInteger(eq.step_index) ? eq.step_index : -1;
+    if (si >= 0 && si < methodSteps.length) {
+      const stepBadge = document.createElement("button");
+      stepBadge.type = "button";
+      stepBadge.className = "eq-step";
+      stepBadge.textContent = `단계 ${si + 1} · ${(methodSteps[si].title || "").slice(0, 16)}`;
+      stepBadge.title = "연구 방법론의 해당 단계로 이동";
+      stepBadge.addEventListener("click", () => {
+        switchTab("method");
+        const target = document.getElementById(`step-${si}`);
+        if (target) {
+          target.scrollIntoView({ block: "center", behavior: "smooth" });
+          target.classList.remove("eq-flash");
+          void target.offsetWidth;
+          target.classList.add("eq-flash");
+        }
+      });
+      item.appendChild(stepBadge);
     }
 
     const latexDiv = document.createElement("div");
@@ -1049,8 +1293,14 @@ function renderEquations(equations, equationFlow) {
 
     item.appendChild(latexDiv);
 
-    // 변수 범례: 기호(KaTeX) + 쉬운 설명
+    // 변수 범례: 기본 접힘, 클릭해서 펼침
     if (Array.isArray(eq.variables) && eq.variables.length) {
+      const details = document.createElement("details");
+      details.className = "eq-vars-wrap";
+      const summary = document.createElement("summary");
+      summary.textContent = `변수 설명 ${eq.variables.length}개 보기`;
+      details.appendChild(summary);
+
       const legend = document.createElement("dl");
       legend.className = "eq-vars";
       eq.variables.forEach((v) => {
@@ -1064,7 +1314,8 @@ function renderEquations(equations, equationFlow) {
         renderRich(dd, v.meaning || "");
         legend.append(dt, dd);
       });
-      item.appendChild(legend);
+      details.appendChild(legend);
+      item.appendChild(details);
     }
 
     const expl = document.createElement("p");

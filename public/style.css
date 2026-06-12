@@ -170,6 +170,17 @@ body.reading .new-analysis { display: inline-block; }
   font-weight: 700;
 }
 .loading-sub { color: var(--ink-soft); font-size: 0.85rem; margin-top: 8px; }
+.loading-log {
+  list-style: none;
+  max-width: 420px;
+  max-height: 150px;
+  overflow-y: auto;
+  margin: 18px auto 0;
+  text-align: left;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  line-height: 1.9;
+}
 
 /* ── error ─────────────────────────────────────────────────────────── */
 .error {
@@ -595,6 +606,106 @@ body.reading .new-analysis { display: inline-block; }
   100% { box-shadow: 0 0 0 0 rgba(140, 47, 57, 0); }
 }
 .eq-flash { animation: eqflash 1.2s ease-out; }
+
+/* 수식 → 방법론 단계 연결 배지 */
+.eq-step {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: none;
+  border: 1px solid #e3cdd0;
+  border-radius: 999px;
+  padding: 2px 12px;
+  margin-left: 6px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.eq-step:hover { background: var(--accent); color: #fff; }
+.eq-ref-link { cursor: pointer; font-family: var(--sans); background: #fff; transition: border-color 0.12s, color 0.12s; }
+.eq-ref-link:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 변수 범례 접기 */
+.eq-vars-wrap { margin-bottom: 14px; }
+.eq-vars-wrap summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  padding: 6px 0;
+  user-select: none;
+}
+.eq-vars-wrap summary:hover { color: var(--accent); }
+.eq-vars-wrap[open] summary { color: var(--accent); }
+
+/* 분야 발전 타임라인 */
+.timeline {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  overflow-x: auto;
+  padding: 6px 2px 22px;
+  margin-bottom: 26px;
+  border-bottom: 1px solid var(--line);
+  white-space: normal;
+}
+.tl-item {
+  position: relative;
+  flex: 1;
+  min-width: 110px;
+  text-align: center;
+  padding: 0 8px;
+}
+.tl-item:not(:last-child)::after { /* 점 사이 연결선 */
+  content: "";
+  position: absolute;
+  top: 31px;
+  left: calc(50% + 9px);
+  width: calc(100% - 18px);
+  height: 1.5px;
+  background: var(--line);
+}
+.tl-year {
+  font-family: var(--serif);
+  font-weight: 800;
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+.tl-dot {
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: #cfc2a8;
+  margin: 0 auto 8px;
+  position: relative;
+  z-index: 1;
+}
+.tl-last .tl-dot { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+.tl-last .tl-year { color: var(--accent); }
+.tl-label { font-weight: 700; font-size: 0.82rem; color: var(--ink); line-height: 1.4; }
+.tl-last .tl-label { color: var(--accent); }
+.tl-note { font-size: 0.72rem; color: var(--ink-faint); margin-top: 3px; line-height: 1.5; }
+
+/* 산점도 점 레이블 */
+.sc-pt-label { font-size: 10px; fill: var(--ink-soft); }
+
+/* 3D 막대 지형 (surface) */
+.surf-wrap { display: flex; justify-content: center; padding: 8px 0 4px; overflow-x: auto; }
+.surf-stage { position: relative; }
+.surf-row {
+  position: absolute;
+  display: flex;
+  gap: 5px;
+  align-items: flex-end;
+}
+.surf-bar {
+  border-radius: 3px 3px 1px 1px;
+  box-shadow: 2px -2px 0 rgba(255, 255, 255, 0.35) inset, 3px 2px 5px -2px rgba(33, 29, 25, 0.35);
+  transition: transform 0.12s;
+}
+.surf-bar:hover { transform: translateY(-3px); }
 
 /* 수식 변수 범례 */
 .eq-vars {
