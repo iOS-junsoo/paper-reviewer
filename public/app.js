@@ -336,7 +336,18 @@ function buildFlow(blocks) {
   const scroller = document.createElement("div");
   scroller.className = "arch-scroll";
   scroller.appendChild(flow);
-  wrap.appendChild(scroller);
+
+  // 좌: 다이어그램 / 우: 내부 값 시각화
+  const VIZ_EMPTY =
+    '<div class="flow-viz-empty">🔍 표시가 있는 블록을 클릭하면<br/>내부 값 시각화가 여기에 나타납니다</div>';
+  const vizPanel = document.createElement("div");
+  vizPanel.className = "flow-viz-panel";
+  vizPanel.innerHTML = VIZ_EMPTY;
+
+  const grid = document.createElement("div");
+  grid.className = "flow-grid";
+  grid.append(scroller, vizPanel);
+  wrap.appendChild(grid);
 
   // ── 인터랙티브 스테퍼 ──
   let current = -1;
@@ -387,6 +398,7 @@ function buildFlow(blocks) {
       token.classList.add("hidden");
       counter.textContent = "▶ 흐름을 따라가 보세요";
       rolePanel.classList.add("hidden");
+      vizPanel.innerHTML = VIZ_EMPTY;
     } else {
       const b = blocks[i];
       token.classList.remove("hidden");
@@ -406,10 +418,11 @@ function buildFlow(blocks) {
         renderRich(ds, "📦 이 시점의 데이터: " + b.data_state);
         rolePanel.appendChild(ds);
       }
-      if (b.inner_viz) {
-        const viz = buildInnerViz(b.inner_viz);
-        if (viz) rolePanel.appendChild(viz);
-      }
+      // 내부 값 시각화는 오른쪽 패널에
+      vizPanel.innerHTML = "";
+      const viz = b.inner_viz ? buildInnerViz(b.inner_viz) : null;
+      if (viz) vizPanel.appendChild(viz);
+      else vizPanel.innerHTML = VIZ_EMPTY;
       blockEls[i].scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     prevBtn.disabled = current <= 0;
