@@ -324,6 +324,35 @@ document.getElementById("chat-close").addEventListener("click", () => {
   chatDrawer.setAttribute("aria-hidden", "true");
 });
 
+// 드로어 왼쪽 모서리 드래그로 폭 조절 (localStorage에 저장)
+(() => {
+  const handle = document.getElementById("chat-resize");
+  const saved = Number(localStorage.getItem("chatDrawerWidth"));
+  if (saved >= 320) chatDrawer.style.width = `${saved}px`;
+
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("chat-resizing"); // iframe이 마우스를 삼키지 않도록
+    chatDrawer.style.transition = "none";
+
+    const onMove = (ev) => {
+      const w = Math.min(window.innerWidth * 0.85, Math.max(320, window.innerWidth - ev.clientX));
+      chatDrawer.style.width = `${w}px`;
+    };
+    const onUp = (ev) => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("chat-resizing");
+      chatDrawer.style.transition = "";
+      localStorage.setItem("chatDrawerWidth", String(Math.round(chatDrawer.getBoundingClientRect().width)));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  });
+})();
+
 function renderChatLog() {
   chatMessages.innerHTML = "";
   if (!chatHistory.length) {

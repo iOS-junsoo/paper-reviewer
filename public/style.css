@@ -1127,6 +1127,21 @@ body.reading .new-analysis { display: inline-block; }
   transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .chat-drawer.open { transform: translateX(0); }
+
+/* 폭 조절 핸들 (왼쪽 모서리 드래그) */
+.chat-resize {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 7px;
+  cursor: ew-resize;
+  z-index: 2;
+  border-left: 2px solid transparent;
+  transition: border-color 0.15s;
+  touch-action: none;
+}
+.chat-resize:hover { border-left-color: var(--accent); }
+body.chat-resizing { user-select: none; cursor: ew-resize; }
+body.chat-resizing #pdf-frame { pointer-events: none; }
 .chat-drawer-head {
   display: flex;
   justify-content: space-between;
