@@ -1069,6 +1069,7 @@ body.reading .new-analysis { display: inline-block; }
   white-space: pre-wrap;
 }
 .chat-a strong { color: var(--ink); }
+.chat-a { overflow-x: auto; } /* 긴 수식이 드로어 폭을 넘으면 가로 스크롤 */
 .chat-thinking { color: var(--ink-faint); font-style: italic; animation: pulseop 1.4s ease-in-out infinite; }
 @keyframes pulseop { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 /* 추천 질문 칩 */

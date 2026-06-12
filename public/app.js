@@ -181,7 +181,7 @@ function renderResult(data) {
   loadChat(currentHash); // 저장된 채팅 기록 비동기 로드
 
   document.getElementById("paper-title").textContent = data.title || "(제목 없음)";
-  document.getElementById("one-liner").textContent = data.one_liner || "";
+  renderRich(document.getElementById("one-liner"), data.one_liner || "");
   cacheBadge.classList.toggle("hidden", !data.cached);
 
   renderRich(document.getElementById("panel-background"), data.background || "(내용 없음)");
@@ -381,7 +381,7 @@ function renderMethod(data) {
       const li = document.createElement("li");
       const title = document.createElement("h4");
       title.className = "step-title";
-      title.textContent = step.title || "";
+      renderRich(title, step.title || "");
       const desc = document.createElement("p");
       desc.className = "step-desc";
       renderRich(desc, step.description || "");
@@ -460,7 +460,9 @@ function buildFlow(blocks) {
 
     const name = document.createElement("div");
     name.className = "arch-name";
-    name.textContent = block.name || "";
+    const nameText = document.createElement("span");
+    renderRich(nameText, block.name || ""); // 블록 이름에 $수식$ 허용
+    name.appendChild(nameText);
     if (block.repeat) {
       const rep = document.createElement("span");
       rep.className = "arch-repeat";
@@ -480,7 +482,7 @@ function buildFlow(blocks) {
     if (block.sublabel) {
       const sub = document.createElement("div");
       sub.className = "arch-sub";
-      sub.textContent = block.sublabel;
+      renderRich(sub, block.sublabel); // $수식$ 렌더링
       box.appendChild(sub);
     }
     if (Array.isArray(block.children) && block.children.length) {
@@ -489,7 +491,7 @@ function buildFlow(blocks) {
       block.children.forEach((c) => {
         const chip = document.createElement("span");
         chip.className = "arch-chip";
-        chip.textContent = c;
+        renderRich(chip, c);
         chips.appendChild(chip);
       });
       box.appendChild(chips);
@@ -686,7 +688,7 @@ function buildInnerViz(viz) {
   if (viz.title) {
     const t = document.createElement("h5");
     t.className = "iviz-title";
-    t.textContent = viz.title;
+    renderRich(t, viz.title);
     wrap.appendChild(t);
   }
   wrap.appendChild(body);
@@ -986,12 +988,12 @@ function renderEquations(equations, equationFlow) {
       body.className = "eqflow-body";
       const goal = document.createElement("span");
       goal.className = "eqflow-goal";
-      goal.textContent = step.goal || "";
+      renderRich(goal, step.goal || "");
       body.appendChild(goal);
       if (step.why) {
         const why = document.createElement("span");
         why.className = "eqflow-why";
-        why.textContent = step.why;
+        renderRich(why, step.why);
         body.appendChild(why);
       }
       node.append(no, body);
@@ -1113,7 +1115,7 @@ async function loadHistory() {
       title.textContent = it.title || "(제목 없음)";
       const line = document.createElement("div");
       line.className = "h-line";
-      line.textContent = it.one_liner || "";
+      renderRich(line, it.one_liner || "");
       const date = document.createElement("div");
       date.className = "h-date";
       date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
