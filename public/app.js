@@ -3,9 +3,14 @@ const pickBtn = document.getElementById("pick-btn");
 const fileInput = document.getElementById("file-input");
 const loadingEl = document.getElementById("loading");
 const errorEl = document.getElementById("error");
-const resultEl = document.getElementById("result");
+const workspaceEl = document.getElementById("workspace");
 const cacheBadge = document.getElementById("cache-badge");
 const historyList = document.getElementById("history-list");
+const pdfFrame = document.getElementById("pdf-frame");
+const pdfMissing = document.getElementById("pdf-missing");
+
+let currentHash = null;
+let chatHistory = [];
 
 // 백엔드를 다른 도메인에 둘 때(예: 프론트는 GitHub Pages, 백엔드는 Render)
 // index.html에서 <script>window.API_BASE = "https://...";</script> 로 지정
@@ -39,26 +44,71 @@ async function analyzeFile(file) {
     return showError("PDF 파일만 업로드할 수 있습니다.");
   }
   hideError();
-  resultEl.classList.add("hidden");
+  workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
+  setLoadingText("논문을 업로드하는 중…");
 
   const form = new FormData();
   form.append("pdf", file);
 
   try {
     const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST", body: form });
-    const data = await safeJson(res);
     if (!res.ok) {
+      const data = await safeJson(res);
       throw new Error(formatApiError(data, res.status));
     }
+    const data = await consumeAnalysisStream(res); // SSE: 진행 메시지 → 최종 결과
     renderResult(data);
     loadHistory();
   } catch (e) {
     showError(e.message);
   } finally {
     loadingEl.classList.add("hidden");
+    setLoadingText("논문을 분석하고 있습니다…");
     fileInput.value = "";
   }
+}
+
+function setLoadingText(msg) {
+  document.getElementById("loading-text").textContent = msg;
+}
+
+// 서버가 보내는 SSE 스트림(progress/result/error)을 소비하고 최종 결과를 반환
+async function consumeAnalysisStream(res) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let result = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      let ev;
+      try {
+        ev = JSON.parse(line.slice(6));
+      } catch {
+        continue;
+      }
+      if (ev.type === "progress") {
+        setLoadingText(ev.msg);
+      } else if (ev.type === "result") {
+        result = ev.data;
+      } else if (ev.type === "error") {
+        let msg = ev.error || "분석 실패";
+        if (ev.detail) msg += `\n\n모델 응답 일부:\n${ev.detail}`;
+        throw new Error(msg);
+      }
+    }
+  }
+  if (!result) throw new Error("서버 연결이 중간에 끊어졌습니다. 다시 시도해 주세요.");
+  return result;
 }
 
 async function safeJson(res) {
@@ -125,6 +175,10 @@ function renderRich(el, text) {
 }
 
 function renderResult(data) {
+  currentHash = data.hash || null;
+  chatHistory = [];
+  resetChat();
+
   document.getElementById("paper-title").textContent = data.title || "(제목 없음)";
   document.getElementById("one-liner").textContent = data.one_liner || "";
   cacheBadge.classList.toggle("hidden", !data.cached);
@@ -133,10 +187,111 @@ function renderResult(data) {
   renderRich(document.getElementById("panel-problem"), data.problem || "(내용 없음)");
   renderMethod(data);
   renderEquations(data.equations || [], data.equation_flow);
+  renderRelated(data.related_papers);
+  loadPdf(currentHash);
 
-  resultEl.classList.remove("hidden");
+  workspaceEl.classList.remove("hidden");
   switchTab("background");
 }
+
+// ---------- 원문 PDF 패널 ----------
+async function loadPdf(hash) {
+  pdfFrame.classList.add("hidden");
+  pdfMissing.classList.add("hidden");
+  if (!hash) return pdfMissing.classList.remove("hidden");
+  try {
+    const head = await fetch(`${API_BASE}/api/pdf/${hash}`, { method: "HEAD" });
+    if (!head.ok) throw new Error();
+    pdfFrame.src = `${API_BASE}/api/pdf/${hash}`;
+    pdfFrame.classList.remove("hidden");
+  } catch {
+    pdfMissing.classList.remove("hidden");
+  }
+}
+
+document.getElementById("pdf-toggle").addEventListener("click", () => {
+  const collapsed = workspaceEl.classList.toggle("pdf-collapsed");
+  document.getElementById("pdf-toggle").textContent = collapsed ? "펼치기 ▶" : "접기 ◀";
+});
+
+// ---------- 관련 논문 ----------
+function renderRelated(papers) {
+  const box = document.getElementById("related");
+  const list = document.getElementById("related-list");
+  list.innerHTML = "";
+  if (!Array.isArray(papers) || !papers.length) {
+    box.classList.add("hidden");
+    return;
+  }
+  papers.forEach((p) => {
+    const li = document.createElement("li");
+    const title = document.createElement(p.link ? "a" : "span");
+    title.className = "rel-title";
+    title.textContent = p.title + (p.year ? ` (${p.year})` : "");
+    if (p.link) {
+      title.href = p.link;
+      title.target = "_blank";
+      title.rel = "noopener";
+    }
+    const reason = document.createElement("p");
+    reason.className = "rel-reason";
+    renderRich(reason, p.reason || "");
+    li.append(title, reason);
+    list.appendChild(li);
+  });
+  box.classList.remove("hidden");
+}
+
+// ---------- 질문하기 ----------
+const chatMessages = document.getElementById("chat-messages");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+const chatSend = document.getElementById("chat-send");
+
+function resetChat() {
+  chatMessages.innerHTML =
+    '<p class="chat-hint">이 논문에 대해 궁금한 점을 물어보세요. 필요하면 원문 PDF를 직접 찾아 읽고 답합니다.<br />예: "왜 √d_k로 나누나요?", "이 방법의 한계는 뭐죠?"</p>';
+}
+
+function appendChat(role, text) {
+  const div = document.createElement("div");
+  div.className = role === "q" ? "chat-q" : "chat-a";
+  renderRich(div, text);
+  chatMessages.querySelector(".chat-hint")?.remove();
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return div;
+}
+
+chatForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = chatInput.value.trim();
+  if (!q || !currentHash || chatSend.disabled) return;
+  chatInput.value = "";
+  appendChat("q", q);
+  const thinking = appendChat("a", "🤔 논문을 확인하며 생각 중… (보통 30초~2분)");
+  thinking.classList.add("chat-thinking");
+  chatSend.disabled = true;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/ask/${currentHash}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q, history: chatHistory }),
+    });
+    const data = await safeJson(res);
+    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    thinking.remove();
+    appendChat("a", data.answer);
+    chatHistory.push({ q, a: data.answer });
+  } catch (err) {
+    thinking.remove();
+    appendChat("a", "⚠️ " + err.message);
+  } finally {
+    chatSend.disabled = false;
+    chatInput.focus();
+  }
+});
 
 // ---------- 연구 방법론: 재구성 figure들 + 스테퍼 ----------
 function renderMethod(data) {
@@ -900,6 +1055,37 @@ async function loadHistory() {
       date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
       li.append(title, line, date);
       li.addEventListener("click", () => openHistory(it.hash));
+
+      const re = document.createElement("button");
+      re.type = "button";
+      re.className = "h-del h-re";
+      re.title = "최신 분석 방식으로 재분석";
+      re.textContent = "🔄";
+      re.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (!confirm(`'${it.title}'을(를) 최신 분석 방식으로 재분석할까요?\n(몇 분 걸리며, 기존 결과는 대체됩니다)`)) return;
+        hideError();
+        workspaceEl.classList.add("hidden");
+        loadingEl.classList.remove("hidden");
+        setLoadingText("재분석을 시작하는 중…");
+        try {
+          const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, { method: "POST" });
+          if (!res.ok) {
+            const d = await safeJson(res);
+            throw new Error((d && d.error) || `HTTP ${res.status}`);
+          }
+          const data = await consumeAnalysisStream(res);
+          renderResult(data);
+          loadHistory();
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } catch (err) {
+          showError(err.message);
+        } finally {
+          loadingEl.classList.add("hidden");
+          setLoadingText("논문을 분석하고 있습니다…");
+        }
+      });
+      li.appendChild(re);
 
       const del = document.createElement("button");
       del.type = "button";

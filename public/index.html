@@ -44,27 +44,55 @@
       <!-- 에러 -->
       <section id="error" class="error hidden"></section>
 
-      <!-- 결과 -->
-      <section id="result" class="result hidden">
-        <div class="result-head">
-          <span id="cache-badge" class="badge hidden">⚡ 캐시에서 불러옴</span>
-          <h2 id="paper-title"></h2>
-          <p id="one-liner"></p>
-        </div>
+      <!-- 워크스페이스: 좌 원문 PDF / 우 분석 결과 -->
+      <section id="workspace" class="workspace hidden">
+        <aside class="pdf-pane" id="pdf-pane">
+          <div class="pdf-head">
+            <span>📄 원문 PDF</span>
+            <button id="pdf-toggle" type="button" title="PDF 패널 접기/펼치기">접기 ◀</button>
+          </div>
+          <iframe id="pdf-frame" title="논문 원문"></iframe>
+          <div id="pdf-missing" class="pdf-missing hidden">
+            저장된 원문 PDF가 없습니다.<br />같은 PDF를 다시 업로드하면 연결됩니다.
+          </div>
+        </aside>
 
-        <nav class="tabs" id="tabs">
-          <button class="tab active" data-tab="background"><span class="tab-no">Ⅰ</span>연구 배경</button>
-          <button class="tab" data-tab="problem"><span class="tab-no">Ⅱ</span>해결하려는 것</button>
-          <button class="tab" data-tab="method"><span class="tab-no">Ⅲ</span>연구 방법론</button>
-          <button class="tab" data-tab="equations"><span class="tab-no">Ⅳ</span>수식 정리</button>
-        </nav>
+        <section id="result" class="result">
+          <div class="result-head">
+            <span id="cache-badge" class="badge hidden">⚡ 캐시에서 불러옴</span>
+            <h2 id="paper-title"></h2>
+            <p id="one-liner"></p>
+          </div>
 
-        <div class="panels">
-          <div class="panel active" id="panel-background"></div>
-          <div class="panel" id="panel-problem"></div>
-          <div class="panel" id="panel-method"></div>
-          <div class="panel" id="panel-equations"></div>
-        </div>
+          <nav class="tabs" id="tabs">
+            <button class="tab active" data-tab="background"><span class="tab-no">Ⅰ</span>연구 배경</button>
+            <button class="tab" data-tab="problem"><span class="tab-no">Ⅱ</span>해결하려는 것</button>
+            <button class="tab" data-tab="method"><span class="tab-no">Ⅲ</span>연구 방법론</button>
+            <button class="tab" data-tab="equations"><span class="tab-no">Ⅳ</span>수식 정리</button>
+            <button class="tab" data-tab="chat"><span class="tab-no">Ⅴ</span>질문하기</button>
+          </nav>
+
+          <div class="panels">
+            <div class="panel active" id="panel-background"></div>
+            <div class="panel" id="panel-problem"></div>
+            <div class="panel" id="panel-method"></div>
+            <div class="panel" id="panel-equations"></div>
+            <div class="panel" id="panel-chat">
+              <div id="chat-messages" class="chat-messages">
+                <p class="chat-hint">이 논문에 대해 궁금한 점을 물어보세요. 필요하면 원문 PDF를 직접 찾아 읽고 답합니다.<br />예: "왜 √d_k로 나누나요?", "이 방법의 한계는 뭐죠?"</p>
+              </div>
+              <form id="chat-form" class="chat-form">
+                <input id="chat-input" type="text" placeholder="질문을 입력하세요…" autocomplete="off" />
+                <button type="submit" id="chat-send">질문</button>
+              </form>
+            </div>
+          </div>
+
+          <div id="related" class="related hidden">
+            <h3>📚 먼저 보면 좋은 논문</h3>
+            <ul id="related-list"></ul>
+          </div>
+        </section>
       </section>
 
       <!-- 히스토리 -->
