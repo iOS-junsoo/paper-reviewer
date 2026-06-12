@@ -11,6 +11,7 @@ const pdfMissing = document.getElementById("pdf-missing");
 
 let currentHash = null;
 let chatHistory = [];
+let currentSuggested = [];
 
 // 백엔드를 다른 도메인에 둘 때(예: 프론트는 GitHub Pages, 백엔드는 Render)
 // index.html에서 <script>window.API_BASE = "https://...";</script> 로 지정
@@ -176,8 +177,8 @@ function renderRich(el, text) {
 
 function renderResult(data) {
   currentHash = data.hash || null;
-  chatHistory = [];
-  resetChat();
+  currentSuggested = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
+  loadChat(currentHash); // 저장된 채팅 기록 비동기 로드
 
   document.getElementById("paper-title").textContent = data.title || "(제목 없음)";
   document.getElementById("one-liner").textContent = data.one_liner || "";
@@ -192,6 +193,7 @@ function renderResult(data) {
 
   workspaceEl.classList.remove("hidden");
   chatFab.classList.remove("hidden"); // 분석 결과가 있어야 질문 가능
+  document.body.classList.add("reading"); // 상단 헤더·드롭존 축소
   switchTab("background");
 }
 
@@ -209,6 +211,12 @@ async function loadPdf(hash) {
     pdfMissing.classList.remove("hidden");
   }
 }
+
+// 분석 결과를 보는 중에는 헤더·드롭존을 접고, 이 버튼으로 다시 펼침
+document.getElementById("new-analysis").addEventListener("click", () => {
+  document.body.classList.remove("reading");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
 
 document.getElementById("pdf-toggle").addEventListener("click", () => {
   const collapsed = workspaceEl.classList.toggle("pdf-collapsed");
@@ -261,9 +269,51 @@ document.getElementById("chat-close").addEventListener("click", () => {
   chatDrawer.setAttribute("aria-hidden", "true");
 });
 
-function resetChat() {
-  chatMessages.innerHTML =
-    '<p class="chat-hint">이 논문에 대해 궁금한 점을 물어보세요. 필요하면 원문 PDF를 직접 찾아 읽고 답합니다.<br />예: "왜 √d_k로 나누나요?", "이 방법의 한계는 뭐죠?"</p>';
+function renderChatLog() {
+  chatMessages.innerHTML = "";
+  if (!chatHistory.length) {
+    chatMessages.innerHTML =
+      '<p class="chat-hint">이 논문에 대해 궁금한 점을 물어보세요. 필요하면 원문 PDF를 직접 찾아 읽고 답합니다.</p>';
+  } else {
+    chatHistory.forEach((m) => {
+      appendChat("q", m.q);
+      appendChat("a", m.a);
+    });
+  }
+  // 추천 질문 칩 (분석 시 모델이 만든 예상 질문)
+  if (currentSuggested.length) {
+    const chips = document.createElement("div");
+    chips.className = "chat-chips";
+    currentSuggested.forEach((q) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chat-chip";
+      b.textContent = q;
+      b.addEventListener("click", () => {
+        chatInput.value = q;
+        chatForm.requestSubmit();
+      });
+      chips.appendChild(b);
+    });
+    chatMessages.appendChild(chips);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+}
+
+async function loadChat(hash) {
+  chatHistory = [];
+  renderChatLog();
+  if (!hash) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/chat/${hash}`);
+    if (r.ok) {
+      const d = await r.json();
+      if (hash === currentHash && Array.isArray(d.messages) && d.messages.length) {
+        chatHistory = d.messages;
+        renderChatLog();
+      }
+    }
+  } catch {}
 }
 
 function appendChat(role, text) {
@@ -281,6 +331,7 @@ chatForm.addEventListener("submit", async (e) => {
   const q = chatInput.value.trim();
   if (!q || !currentHash || chatSend.disabled) return;
   chatInput.value = "";
+  chatMessages.querySelector(".chat-chips")?.remove(); // 첫 질문 후 추천 칩 제거
   appendChat("q", q);
   const thinking = appendChat("a", "🤔 논문을 확인하며 생각 중… (보통 30초~2분)");
   thinking.classList.add("chat-thinking");
