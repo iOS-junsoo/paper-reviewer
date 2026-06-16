@@ -34,8 +34,11 @@ const serviceAccountPath =
   process.env.FIREBASE_SERVICE_ACCOUNT || "./serviceAccountKey.json";
 
 let store;
+let firestoreReady = false;
 
+// 서비스 계정 키가 있으면 Firestore 시도 — 손상/오류 시 던지지 말고 메모리로 폴백
 if (fs.existsSync(serviceAccountPath)) {
+ try {
   const admin = require("firebase-admin");
   admin.initializeApp({
     credential: admin.credential.cert(require(path.resolve(serviceAccountPath))),
@@ -91,8 +94,17 @@ if (fs.existsSync(serviceAccountPath)) {
       });
     },
   };
+  firestoreReady = true;
   console.log("[저장소] Firestore 사용");
-} else {
+ } catch (e) {
+  console.error(
+    `[경고] Firebase 초기화 실패 — 메모리 캐시로 폴백합니다: ${e.message}\n` +
+      "       serviceAccountKey.json이 손상되었거나 형식이 잘못되었는지 확인하세요."
+  );
+ }
+}
+
+if (!firestoreReady) {
   const mem = new Map();
   const chatMem = new Map();
   store = {
@@ -160,6 +172,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "source": "원 논문의 어느 Figure를 재구성했는지 (예: 'Figure 1 재구성')",
       "caption": "이 그림에서 읽어야 할 핵심 한 줄",
       "example": "flow 전체를 관통하는 하나의 구체적 예시 (예: \\"예시 문장: 'The cat sat'\\" — 모든 inner_viz가 이 예시를 공유)",
+      "svg": "원 논문 figure를 그대로 재현한 SVG 문자열 (flow 타입이면 반드시 포함 — 아래 'SVG 작성 규칙' 참고)",
       "flow": [
         {
           "name": "블록 이름 (영어 원어)",
@@ -220,7 +233,13 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 - problem: "## 소제목"으로 2~3개 단락 구분. 기존 방법(existing methods)들을 구체적으로 거명하고 각각의 한계를 짚은 뒤, 이 논문이 정확히 어떤 문제를 타깃하는지 명시하세요.
 - method_steps: 4~8개 단계. 각 단계는 짧은 title + "무엇을 + 왜"를 담은 description + 일상 비유(analogy). 비유는 그 단계의 핵심 직관을 비전공자도 떠올릴 수 있게. 데이터가 흘러가는 순서대로 배열하세요.
 - figures: ==논문의 핵심 방법론(method)을 보여주는 그림만 1~2개 재구성하세요== — 모델 구조, 파이프라인, 방법의 동작 원리를 담은 그림. ==성능 비교·실험 결과 그림과 표(table)는 재구성하지 마세요== (BLEU/accuracy 비교 막대, 벤치마크 표 등 금지). 시각 유형은 내용에 맞게:
-  · 모델 구조/파이프라인 그림 → "flow". ==원 논문 그림과 같은 모양이 되도록 재구성하세요== — 그림에서 블록들이 두 기둥으로 나란히 서 있으면(예: encoder 기둥과 decoder 기둥) lane으로 그 구조를 보존하고, 입력·출력처럼 기둥 바깥의 블록은 lane 없이 두세요. 블록 배열 순서는 데이터가 흐르는 순서이며, 이 순서대로 사용자가 스테퍼로 한 블록씩 따라가므로 모든 블록에 role과 data_state를 반드시 채우세요.
+  · 모델 구조/파이프라인 그림 → "flow". ==원 논문 figure와 똑같이 생긴 SVG를 svg 필드에 직접 그리세요== (재배치·단순화 금지). flow 배열은 그 그림의 의미 블록 목록으로, 배열 순서 = 데이터가 흐르는 순서(스테퍼 진행 순서)이며 모든 블록에 role과 data_state를 채우세요.
+  **SVG 작성 규칙 (flow 타입 필수)**:
+  - 원 figure의 ==모든 구성요소를 같은 배치로== 재현: 흐름 방향(논문 그림이 아래→위면 그대로), 좌우 기둥 배치, 잔차 연결(residual)의 우회 화살표, ⊕/⊗ 합류점, "N×" 반복 라벨, 블록을 감싸는 외곽 그룹 상자, 입력·출력 라벨까지.
+  - viewBox는 "0 0 480 H" (H는 필요한 만큼). width/height 속성은 넣지 마세요.
+  - 색상 테마: 배경 투명, 블록은 fill="#fff" stroke="#d8cfbc" (윗변 강조는 #8c2f39), 화살표·강조 #8c2f39, 텍스트 #211d19 (보조 텍스트 #9b9285), 글꼴 font-family="sans-serif" font-size 11~13.
+  - ==flow 배열의 i번째 블록에 해당하는 SVG 요소들을 <g data-block="i">로 감싸세요== (스테퍼가 이 그룹을 하이라이트함). 화살표·장식은 g 밖에 둬도 됩니다.
+  - rect는 rx="6" 둥근 모서리, 블록 안 텍스트는 <text text-anchor="middle">. JSON 문자열 안이므로 큰따옴표 이스케이프에 주의.
   · 방법 자체가 분포·수치 변화를 다루는 경우에만 → "bar" 또는 "line" (예: 방법이 만드는 분포의 모양, 방법 내부 함수의 곡선)
   수치는 반드시 논문에서 실제로 읽은 값만 쓰세요. ==수치를 확인할 수 없으면 그 figure는 빼세요 (지어내기 절대 금지)==. 각 figure에는 type에 해당하는 데이터 필드만 포함하세요.
 - inner_viz (블록 내부 시각화): flow의 핵심 블록 2~4개에, 그 블록 안에서 ==구체적인 예시 값이 어떻게 변하는지== 보여주는 미니 시각화를 넣으세요.
@@ -241,6 +260,12 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 - **핵심 용어** : 중요한 개념·기법·모델명은 별표 두 개로 감싸 볼드 처리. 예: **Self-Attention(셀프 어텐션)**
 - ==결정적 문장== : 그 섹션에서 단 하나만 기억해야 한다면 이것, 이라는 구절은 등호 두 개로 감싸 형광펜 처리. 섹션당 1~2곳만, 남용 금지.
 - $인라인 수식$ : 설명 속 수식 기호·표현식은 $로 감싸면 KaTeX 수식으로 렌더링됩니다. 예: "$p(t_i)$로 추정한다". $ 없이 날것의 LaTeX를 본문에 쓰지 마세요.
+- [[p7]] 또는 [[p7|원문 근거 구절]] : ==논문 PDF에서 직접 확인한 사실 주장 뒤에 출처 페이지를 다세요==. 클릭하면 좌측 원문 PDF의 그 페이지로 이동합니다. p 뒤 숫자는 PDF 페이지 번호(1부터). | 뒤에 근거가 된 원문 구절(짧게)을 넣으면 배지에 마우스를 올렸을 때 보입니다. 예: "잔차 연결을 6번 반복한다[[p3|each sub-layer ... LayerNorm(x + Sublayer(x))]]".
+
+근거 표기 원칙 (중요):
+- background / problem / method_steps.description / equations.explanation 등 사실 주장에는 가능한 한 [[p..]] 근거를 다세요.
+- ==논문에서 직접 확인한 내용에만 근거를 달고, 당신의 배경지식·추론·일반론에는 근거를 달지 마세요==. 근거 없는 문장은 "모델의 해석"으로 읽힙니다. 지어낸 페이지 번호는 절대 금지.
+- 비유(analogy)·도입 문장 등 사실이 아닌 부분에는 근거를 달지 않습니다.
 
 규칙:
 1. 최종 응답은 위 스키마의 JSON 객체 하나만 출력하세요. 마크다운 코드 펜스(\`\`\`), 설명 문장, 기타 텍스트를 절대 붙이지 마세요. ==출력하기 전에 괄호 짝({}, []), 콤마, 이스케이프가 유효한 JSON인지 스스로 검증하세요== — 특히 문자열을 닫는 따옴표 뒤에 잘못된 ]나 }가 붙지 않도록.
@@ -541,7 +566,7 @@ app.post("/api/ask/:hash", async (req, res) => {
         : `원문 PDF는 없으므로 분석 요약과 일반 지식으로 답하세요.`,
       histText ? `이전 대화:\n${histText}` : "",
       `질문: ${question}`,
-      `규칙: 한국어로 간결히(보통 3~8문장, 필요할 때만 길게). 고유명사는 영어 원어 그대로 + 괄호 번역. 인라인 수식은 $...$, 강조는 **볼드**/==형광펜== 사용 가능. 마크다운 헤더·리스트·코드펜스는 쓰지 말고, 답변 텍스트만 출력하세요.`,
+      `규칙: 한국어로 간결히(보통 3~8문장, 필요할 때만 길게). 고유명사는 영어 원어 그대로 + 괄호 번역. 인라인 수식은 $...$, 강조는 **볼드**/==형광펜== 사용 가능. 마크다운 헤더·리스트·코드펜스는 쓰지 말고, 답변 텍스트만 출력하세요. ==원문 PDF에서 확인한 사실에는 [[p7]] 또는 [[p7|근거 구절]] 형식으로 출처 페이지를 다세요(클릭 시 그 페이지로 이동). 직접 확인한 것에만 달고, 추론·일반론에는 달지 마세요. 페이지를 지어내지 마세요.==`,
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -611,13 +636,31 @@ app.get("/api/history/:hash", async (req, res) => {
 // --- DELETE /api/history/:hash ---------------------------------------------------
 app.delete("/api/history/:hash", async (req, res) => {
   try {
-    await store.delete(req.params.hash);
+    const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+    await store.delete(hash);
+    // 원문 PDF도 함께 제거 (재분석 경로는 store.delete만 호출하므로 여기서만 지운다)
+    await fs.promises.rm(path.join(PDF_DIR, `${hash}.pdf`), { force: true }).catch(() => {});
     res.json({ ok: true });
   } catch (e) {
     console.error("[DELETE /api/history/:hash 오류]", e);
     res.status(500).json({ error: `삭제 실패: ${e.message}` });
   }
 });
+
+// 상시 구동(Tailscale) 서버라 단발 예외로 죽지 않도록 — 로그만 남기고 유지
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException] 처리되지 않은 예외 — 서버는 계속 실행됩니다:", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection] 처리되지 않은 Promise 거부:", reason);
+});
+
+if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+  console.warn(
+    "[경고] CLAUDE_CODE_OAUTH_TOKEN이 설정되어 있지 않습니다.\n" +
+      "       `claude setup-token`으로 발급한 토큰을 .env에 넣어야 분석이 동작합니다."
+  );
+}
 
 app.listen(PORT, () => {
   console.log(

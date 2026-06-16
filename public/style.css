@@ -358,6 +358,25 @@ body.reading .new-analysis { display: inline-block; }
   font-weight: 800;
   color: var(--ink);
 }
+/* 원문 근거 배지 — 본문/채팅 어디서든 클릭 시 PDF 해당 페이지로 점프 */
+.ev-badge {
+  font-family: var(--sans);
+  display: inline-block;
+  vertical-align: super;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid #e8cfd1;
+  border-radius: 5px;
+  padding: 0 5px;
+  margin: 0 1px 0 2px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.ev-badge:hover { background: var(--accent); color: #fff; }
+
 .panel mark, .eq-explanation mark {
   background: linear-gradient(transparent 42%, #ffe26e 42%, #ffe26e 92%, transparent 92%);
   color: var(--ink);
@@ -856,6 +875,17 @@ body.reading .new-analysis { display: inline-block; }
 @media (max-width: 760px) {
   .flow-grid { grid-template-columns: 1fr; }
   .flow-viz-panel { position: static; }
+}
+
+/* 모델이 그린 SVG figure 모드 */
+.arch-svg svg { display: block; width: 100%; height: auto; }
+.arch-svg [data-block] { cursor: pointer; transition: opacity 0.25s, filter 0.25s; }
+.arch-svg [data-block]:hover { filter: drop-shadow(0 2px 5px rgba(140, 47, 57, 0.45)); }
+.arch-flow.stepping .arch-svg-root [data-block]:not(.arch-active),
+.arch-flow.arch-svg.stepping [data-block]:not(.arch-active) { opacity: 0.32; }
+.arch-svg [data-block].arch-active {
+  filter: drop-shadow(0 0 7px rgba(140, 47, 57, 0.85));
+  opacity: 1;
 }
 
 /* 다이어그램 내부 스크롤 — 길어도 컨트롤이 항상 보이게 */

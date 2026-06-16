@@ -177,7 +177,12 @@ function richHtml(text) {
   html = html
     .replace(/\n+(<h4)/g, "$1") // 소제목 앞 빈 줄 제거
     .replace(/==([^=\n][^=]*?)==/g, "<mark>$1</mark>")
-    .replace(/\*\*([^*\n][^*]*?)\*\*/g, "<strong>$1</strong>");
+    .replace(/\*\*([^*\n][^*]*?)\*\*/g, "<strong>$1</strong>")
+    // [[p7]] / [[p7|근거 구절]] → 원문 PDF 페이지로 점프하는 근거 배지
+    .replace(/\[\[\s*p\.?\s*(\d+)\s*(?:\|\s*([^\]]+?))?\s*\]\]/gi, (m, page, quote) => {
+      const title = quote ? ` title="${quote.replace(/"/g, "&quot;")}"` : "";
+      return `<button type="button" class="ev-badge" data-page="${page}"${title}>p.${page}</button>`;
+    });
 
   // 3) 수식 플레이스홀더 복원
   html = html.replace(/\u0000(\d+)\u0000/g, (m, i) => mathParts[+i]);
@@ -260,12 +265,24 @@ async function loadPdf(hash) {
 
 // 수식 배지 클릭 → 좌측 PDF를 해당 페이지로 이동
 function jumpToPdfPage(page) {
-  if (!currentHash || !pdfAvailable) return;
+  if (!currentHash) return;
+  if (!pdfAvailable) {
+    showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
+    return;
+  }
   workspaceEl.classList.remove("pdf-collapsed");
   document.getElementById("pdf-toggle").textContent = "접기 ◀";
   pdfFrame.src = `${API_BASE}/api/pdf/${currentHash}#page=${page}`;
   pdfFrame.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
+
+// 본문·채팅 어디서든 근거 배지(.ev-badge) 클릭 → 해당 PDF 페이지로 (이벤트 위임)
+document.addEventListener("click", (e) => {
+  const badge = e.target.closest(".ev-badge");
+  if (!badge) return;
+  const page = Number(badge.dataset.page);
+  if (page > 0) jumpToPdfPage(page);
+});
 
 // 분석 결과를 보는 중에는 헤더·드롭존을 접고, 이 버튼으로 다시 펼침
 document.getElementById("new-analysis").addEventListener("click", () => {
@@ -492,7 +509,7 @@ function renderMethod(data) {
 // ---------- figure 렌더러 (flow / bar / line / table) ----------
 function buildFigure(f) {
   let body;
-  if (f.type === "flow" && Array.isArray(f.flow) && f.flow.length) body = buildFlow(f.flow);
+  if (f.type === "flow" && Array.isArray(f.flow) && f.flow.length) body = buildFlow(f);
   else if (f.type === "bar" && Array.isArray(f.bars) && f.bars.length) body = buildBars(f);
   else if (f.type === "line" && Array.isArray(f.lines) && f.lines.length) body = buildLines(f);
   else if (f.type === "table" && Array.isArray(f.rows) && f.rows.length) body = buildTable(f);
@@ -532,11 +549,56 @@ function buildFigure(f) {
 
 // flow: 원 그림의 모양(기둥 구조)을 보존해 렌더링하고,
 // ◀ ▶ 스테퍼로 한 블록씩 짚어가며 role 설명을 보여준다.
-function buildFlow(blocks) {
+// 모델이 그린 SVG를 안전하게 파싱 (script·이벤트 핸들러 제거)
+function sanitizeSvg(svgText) {
+  try {
+    const doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
+    const svg = doc.documentElement;
+    if (!svg || svg.nodeName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) return null;
+    svg.querySelectorAll("script, foreignObject").forEach((n) => n.remove());
+    [svg, ...svg.querySelectorAll("*")].forEach((el) => {
+      [...el.attributes].forEach((a) => {
+        if (/^on/i.test(a.name) || /javascript:/i.test(a.value)) el.removeAttribute(a.name);
+      });
+    });
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+    return document.importNode(svg, true);
+  } catch {
+    return null;
+  }
+}
+
+function buildFlow(fig) {
+  const blocks = fig.flow;
   const wrap = document.createElement("div");
   const flow = document.createElement("div");
   flow.className = "arch-flow";
 
+  // ── 모드 1: 모델이 원 figure를 그대로 그린 SVG가 있으면 그것을 사용 ──
+  let blockEls = null;
+  if (fig.svg) {
+    const svgRoot = sanitizeSvg(fig.svg);
+    if (svgRoot) {
+      const els = blocks.map((_, i) => svgRoot.querySelector(`[data-block="${i}"]`));
+      // data-block 매핑이 절반 이상 살아 있으면 SVG 모드 채택
+      if (els.filter(Boolean).length >= Math.ceil(blocks.length / 2)) {
+        flow.classList.add("arch-svg");
+        flow.appendChild(svgRoot);
+        blockEls = els;
+      }
+    }
+  }
+
+  if (!blockEls) {
+    blockEls = buildFlowDom(blocks, flow);
+  }
+
+  return assembleFlowUI(wrap, flow, blocks, blockEls);
+}
+
+// ── 모드 2 (폴백): 블록 정보로 다이어그램을 직접 조립 ──
+function buildFlowDom(blocks, flow) {
   // 블록 DOM 생성 (원래 배열 순서 = 스테퍼 진행 순서)
   const blockEls = blocks.map((block, idx) => {
     const box = document.createElement("div");
@@ -633,6 +695,11 @@ function buildFlow(blocks) {
       flow.appendChild(lanesEl);
     }
   });
+  return blockEls;
+}
+
+// 토큰·스크롤·우측 패널·스테퍼 컨트롤 조립 (SVG 모드/DOM 모드 공용)
+function assembleFlowUI(wrap, flow, blocks, blockEls) {
   // 데이터 토큰: 스테퍼 진행 시 블록 사이를 타고 이동하는 빛나는 점
   const token = document.createElement("div");
   token.className = "flow-token hidden";
@@ -698,6 +765,7 @@ function buildFlow(blocks) {
   rolePanel.className = "flow-role hidden";
 
   function moveToken(i) {
+    if (!blockEls[i]) return token.classList.add("hidden");
     const b = blockEls[i].getBoundingClientRect();
     const f = flow.getBoundingClientRect();
     token.style.left = `${b.left - f.left + 12}px`;
@@ -715,7 +783,7 @@ function buildFlow(blocks) {
   function activate(i) {
     current = i;
     flow.classList.toggle("stepping", i >= 0);
-    blockEls.forEach((el, j) => el.classList.toggle("arch-active", j === i));
+    blockEls.forEach((el, j) => el && el.classList.toggle("arch-active", j === i));
     if (i < 0) {
       token.classList.add("hidden");
       counter.textContent = "▶ 흐름을 따라가 보세요";
@@ -745,7 +813,7 @@ function buildFlow(blocks) {
       const viz = b.inner_viz ? buildInnerViz(b.inner_viz) : null;
       if (viz) vizPanel.appendChild(viz);
       else vizPanel.innerHTML = VIZ_EMPTY;
-      blockEls[i].scrollIntoView({ block: "nearest", behavior: "smooth" });
+      blockEls[i]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     prevBtn.disabled = current <= 0;
     nextBtn.textContent = current >= blocks.length - 1 ? "처음으로 ↺" : "다음 ▶";
@@ -765,7 +833,7 @@ function buildFlow(blocks) {
       else activate(current + 1);
     }, 2400);
   });
-  blockEls.forEach((el, i) => el.addEventListener("click", () => { stopPlay(); activate(i); }));
+  blockEls.forEach((el, i) => el && el.addEventListener("click", () => { stopPlay(); activate(i); }));
 
   activate(-1);
   wrap.append(controls, rolePanel);
