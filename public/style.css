@@ -1035,6 +1035,38 @@ body.reading .new-analysis { display: inline-block; }
 
 .iviz-bars { max-width: 380px; margin: 0 auto; }
 
+/* 데이터 변환 시각화 (transform) */
+.tfm { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0; }
+.tfm-card {
+  width: min(280px, 100%);
+  text-align: center;
+  background: #fff;
+  border: 1.5px solid #d8cfbc;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.tfm-from { border-top: 3px solid #c9b89a; }
+.tfm-to { border-top: 3px solid var(--accent); }
+.tfm-label { font-weight: 750; font-size: 0.9rem; color: var(--ink); }
+.tfm-shape {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  color: var(--accent);
+  margin-top: 4px;
+}
+.tfm-kind { font-size: 0.72rem; color: var(--ink-faint); margin-top: 2px; }
+.tfm-op { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 2px 0; }
+.tfm-arrow { color: var(--accent); font-size: 1.2rem; line-height: 1; }
+.tfm-op-text {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  background: var(--paper-deep);
+  border-radius: 999px;
+  padding: 3px 12px;
+  max-width: 260px;
+  text-align: center;
+}
+
 /* role 패널의 데이터 상태 표시 — 항상 설명 한 줄 아래에 고정 */
 .flow-data {
   display: block;

@@ -183,8 +183,8 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
           "role": "이 블록이 데이터에 무슨 일을 하는지 1~2문장 — 사용자가 스테퍼로 한 블록씩 짚을 때 표시됨. 쉬운 비유를 섞어도 좋음",
           "data_state": "이 블록을 통과한 직후 데이터가 어떤 형태·의미인지 짧게 (예: '토큰마다 512차원 벡터', '단어 간 관련도 가중치 행렬') — 데이터가 변해가는 흐름을 보여주는 용도",
           "inner_viz": {
-            "설명": "이 블록 '내부'에서 예시 값이 어떻게 변하는지 보여주는 미니 시각화. 가장 중요한 블록 2~4개에만 넣고 나머지는 생략",
-            "type": "heatmap | vectors | bars | distribution | scatter | surface",
+            "설명": "이 블록 '내부'에서 예시 값/데이터가 어떻게 변하는지 보여주는 미니 시각화. ==flow의 모든 블록에 반드시 하나씩 넣으세요(빈 블록 금지)==",
+            "type": "heatmap | vectors | bars | distribution | scatter | surface | transform",
             "title": "시각화 제목 (예: '단어×단어 어텐션 가중치')",
             "tokens": ["heatmap/vectors의 행·열 레이블 (예시 문장의 토큰들, 3~6개)"],
             "matrix": [[0.8, 0.15, 0.05]],
@@ -193,6 +193,9 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
             "curves": [ { "name": "곡선 이름", "points": [ { "x": 0, "y": 0.1 }, "... 8~20개로 곡선 모양 보존" ] } ],
             "points": [ { "x": 1.2, "y": 0.8, "label": "선택 레이블", "group": "군집 이름(선택)" } ],
             "grid": [[0.1, 0.8], [0.4, 0.2]],
+            "from": { "label": "입력 데이터 이름", "shape": "[n, 512]", "kind": "tokens|vector|matrix|image|scalar(선택)" },
+            "to": { "label": "출력 데이터 이름", "shape": "[n, 512]", "kind": "vector(선택)" },
+            "op": "transform에서 이 블록이 가하는 연산 한마디 (예: 'LayerNorm으로 분포 정규화', '잔차 더하기 ⊕')",
             "x_label": "x축 이름 (distribution/scatter)", "y_label": "y축 이름",
             "explanation": "이 시각화에서 읽어야 할 패턴 1~2문장 (예: \\"'sat' 행에서 'cat' 칸이 가장 진함 — 동사가 주어를 찾는 패턴\\")"
           }
@@ -242,7 +245,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
   - rect는 rx="6" 둥근 모서리, 블록 안 텍스트는 <text text-anchor="middle">. JSON 문자열 안이므로 큰따옴표 이스케이프에 주의.
   · 방법 자체가 분포·수치 변화를 다루는 경우에만 → "bar" 또는 "line" (예: 방법이 만드는 분포의 모양, 방법 내부 함수의 곡선)
   수치는 반드시 논문에서 실제로 읽은 값만 쓰세요. ==수치를 확인할 수 없으면 그 figure는 빼세요 (지어내기 절대 금지)==. 각 figure에는 type에 해당하는 데이터 필드만 포함하세요.
-- inner_viz (블록 내부 시각화): flow의 핵심 블록 2~4개에, 그 블록 안에서 ==구체적인 예시 값이 어떻게 변하는지== 보여주는 미니 시각화를 넣으세요.
+- inner_viz (블록 내부 시각화): ==flow의 모든 블록에 빠짐없이 하나씩== 넣으세요(빈 블록 금지). 그 블록 안에서 구체적인 예시 값/데이터가 어떻게 변하는지 보여줍니다.
   · figure의 example에 하나의 구체적 예시(짧은 문장, 이미지 패치 등)를 정하고, 모든 inner_viz가 같은 예시를 따라가게 하세요 (연속성).
   · ==시각화를 만들기 전에 WebSearch로 이 논문의 유명 해설·시각화 자료를 1~2회 검색해 참고하세요== (예: "illustrated transformer", "<논문명> explained visualization"). 널리 알려진 예시(예: 어텐션 논문의 "The animal didn't cross the street because it was too tired")가 있으면 그것을 쓰세요.
   · 값은 논문이 명시한 수치가 있으면 그대로, 없으면 ==논문이 설명하는 정성적 패턴을 정확히 반영한 예시값==으로 (예: 동사는 주어에 높은 어텐션, 합이 1인 softmax 행 등). explanation에 "예시값"임이 드러나게 쓰지 말고, 읽어야 할 패턴을 설명하세요.
@@ -250,7 +253,9 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
     heatmap: 관계·가중치 행렬 (행=보는 주체, 각 행 합 ≈ 1) / vectors: 벡터·표현의 변화 (값 -1~1, 4~8칸) / bars: 이산 확률·점수 비교 /
     distribution: 연속 분포·함수 곡선이 핵심일 때 (예: softmax 온도에 따른 분포 모양, 가우시안 초기화, 게이트 함수 곡선 — curves에 점 8~20개) /
     scatter: 공간 배치·군집·임베딩 관계 (예: 임베딩 공간에서 단어들의 위치, 클래스 분리 — group으로 군집 구분) /
-    surface: 행렬의 값 크기 지형이 핵심일 때 3D 막대 지형으로 (예: low-rank 행렬의 구조, 마스킹 패턴 — grid는 4×4 ~ 8×8, 값 0~1 정규화).
+    surface: 행렬의 값 크기 지형이 핵심일 때 3D 막대 지형으로 (예: low-rank 행렬의 구조, 마스킹 패턴 — grid는 4×4 ~ 8×8, 값 0~1 정규화) /
+    transform: ==보여줄 흥미로운 내부 수치가 없는 블록(Add & Norm, residual 덧셈, reshape, projection, dropout 등)의 기본 선택==. 입력 데이터(from)가 이 블록을 거쳐 출력 데이터(to)로 어떤 형태(shape)·의미로 바뀌는지 from/to/op로 보여줍니다. 예: from {label:"임베딩", shape:"[n, 512]"} op:"잔차 더하기 ⊕ 후 LayerNorm" to {label:"정규화된 표현", shape:"[n, 512]"}.
+  어떤 블록이든 위 6개로 표현이 애매하면 transform을 쓰세요. ==전체 flow에서 같은 type만 반복하지 말고, 데이터가 토큰→벡터→가중치행렬→확률처럼 변해가는 흐름이 type 선택에서 드러나게== 하세요.
 - equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. 수식이 없는 논문이면 빈 배열 [].
 - suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 3개 (예: 방법의 한계, 실험 설계의 빈틈, 다른 접근과의 비교). 질문하기 기능의 추천 칩으로 표시됩니다.
 - related_papers: 이 논문을 이해하기 위해 ==먼저 읽으면 좋은 선행 논문 3~5편==. 본문에서 중요하게 인용된 것 위주로, reason에 "왜 먼저"를 한 줄로. link는 WebSearch로 실제 arXiv URL(https://arxiv.org/abs/...)을 확인해 넣고, 확인 못 하면 null (가짜 URL 금지).

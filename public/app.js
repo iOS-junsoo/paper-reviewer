@@ -552,9 +552,19 @@ function buildFigure(f) {
 // 모델이 그린 SVG를 안전하게 파싱 (script·이벤트 핸들러 제거)
 function sanitizeSvg(svgText) {
   try {
-    const doc = new DOMParser().parseFromString(svgText, "image/svg+xml");
+    let s = String(svgText).trim();
+    // 모델이 xmlns를 빠뜨리면 SVG 네임스페이스가 아닌 null 네임스페이스로 파싱돼
+    // 도형(rect/line 등)은 안 그려지고 <text>만 흘러나온다 → 없으면 주입
+    if (!/\sxmlns\s*=/.test(s)) {
+      s = s.replace(/<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    const doc = new DOMParser().parseFromString(s, "image/svg+xml");
     const svg = doc.documentElement;
     if (!svg || svg.nodeName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) return null;
+    // 네임스페이스가 SVG가 아니면(파싱 실패의 다른 징후) 폴백
+    if (svg.namespaceURI !== "http://www.w3.org/2000/svg") return null;
+    // 도형 요소가 하나도 없으면 텍스트만 있는 깨진 그림 → 폴백(텍스트 박스 다이어그램)
+    if (!svg.querySelector("rect, path, line, circle, polygon, polyline, ellipse")) return null;
     svg.querySelectorAll("script, foreignObject").forEach((n) => n.remove());
     [svg, ...svg.querySelectorAll("*")].forEach((el) => {
       [...el.attributes].forEach((a) => {
@@ -712,7 +722,7 @@ function assembleFlowUI(wrap, flow, blocks, blockEls) {
 
   // 좌: 다이어그램 / 우: 내부 값 시각화
   const VIZ_EMPTY =
-    '<div class="flow-viz-empty">🔍 표시가 있는 블록을 클릭하면<br/>내부 값 시각화가 여기에 나타납니다</div>';
+    '<div class="flow-viz-empty">왼쪽 다이어그램의 블록을 클릭하거나 "다음 ▶"으로 시작하세요<br/>각 단계의 내부 데이터가 여기에 시각화됩니다</div>';
   const vizPanel = document.createElement("div");
   vizPanel.className = "flow-viz-panel";
   vizPanel.innerHTML = VIZ_EMPTY;
@@ -808,9 +818,19 @@ function assembleFlowUI(wrap, flow, blocks, blockEls) {
         renderRich(ds, "📦 이 시점의 데이터: " + b.data_state);
         rolePanel.appendChild(ds);
       }
-      // 내부 값 시각화는 오른쪽 패널에
+      // 내부 값 시각화는 오른쪽 패널에 — 빈 블록은 data_state로 transform 합성(빈 placeholder 금지)
       vizPanel.innerHTML = "";
-      const viz = b.inner_viz ? buildInnerViz(b.inner_viz) : null;
+      let viz = b.inner_viz ? buildInnerViz(b.inner_viz) : null;
+      if (!viz) {
+        const prev = blocks[i - 1];
+        viz = buildInnerViz({
+          type: "transform",
+          title: b.name || "이 단계의 데이터 변화",
+          from: { label: (prev && prev.data_state) || prev?.name || "입력" },
+          op: b.role || b.sublabel || "",
+          to: { label: b.data_state || b.name || "출력" },
+        });
+      }
       if (viz) vizPanel.appendChild(viz);
       else vizPanel.innerHTML = VIZ_EMPTY;
       blockEls[i]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
@@ -855,6 +875,8 @@ function buildInnerViz(viz) {
     body = buildVizScatter(viz);
   } else if (viz.type === "surface" && Array.isArray(viz.grid) && viz.grid.length) {
     body = buildVizSurface(viz);
+  } else if (viz.type === "transform" || viz.from || viz.to) {
+    body = buildVizTransform(viz);
   }
   if (!body) return null;
 
@@ -1105,6 +1127,50 @@ function buildVizSurface(viz) {
   const wrap = document.createElement("div");
   wrap.className = "surf-wrap";
   wrap.appendChild(stage);
+  return wrap;
+}
+
+// 데이터 변환: 입력 → (연산) → 출력. 흥미로운 수치가 없는 블록의 기본 시각화
+function buildVizTransform(viz) {
+  const from = viz.from || { label: "입력", shape: "" };
+  const to = viz.to || { label: viz.data_state || "출력", shape: "" };
+  const wrap = document.createElement("div");
+  wrap.className = "tfm";
+
+  const card = (node, role) => {
+    const c = document.createElement("div");
+    c.className = "tfm-card tfm-" + role;
+    const lab = document.createElement("div");
+    lab.className = "tfm-label";
+    renderRich(lab, node.label || "");
+    c.appendChild(lab);
+    if (node.shape) {
+      const sh = document.createElement("div");
+      sh.className = "tfm-shape";
+      sh.textContent = node.shape;
+      c.appendChild(sh);
+    }
+    if (node.kind) {
+      const k = document.createElement("div");
+      k.className = "tfm-kind";
+      k.textContent = node.kind;
+      c.appendChild(k);
+    }
+    return c;
+  };
+
+  wrap.appendChild(card(from, "from"));
+  const mid = document.createElement("div");
+  mid.className = "tfm-op";
+  mid.innerHTML = '<span class="tfm-arrow">↓</span>';
+  if (viz.op) {
+    const op = document.createElement("span");
+    op.className = "tfm-op-text";
+    renderRich(op, viz.op);
+    mid.appendChild(op);
+  }
+  wrap.appendChild(mid);
+  wrap.appendChild(card(to, "to"));
   return wrap;
 }
 
