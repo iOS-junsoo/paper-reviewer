@@ -15,7 +15,10 @@
   <div class="app">
     <!-- 좌측 사이드바: 브랜드 · 새 분석 · 분석 중 · 히스토리 -->
     <aside class="sidebar" id="sidebar">
-      <div class="sb-brand">📄 Paper&nbsp;Reviewer</div>
+      <div class="sb-top">
+        <div class="sb-brand">📄 Paper&nbsp;Reviewer</div>
+        <button id="sb-collapse" class="sb-collapse" type="button" title="사이드바 접기" aria-label="사이드바 접기">◀</button>
+      </div>
       <button id="sb-new" class="sb-new" type="button">＋ 새 논문 분석</button>
 
       <!-- 분석 중 표시 (진행 중일 때만) -->
@@ -31,6 +34,8 @@
       <div class="sb-label">히스토리</div>
       <ul id="history-list" class="sb-history"><li class="muted">불러오는 중…</li></ul>
     </aside>
+
+    <button id="sb-open" class="sb-open" type="button" title="사이드바 열기" aria-label="사이드바 열기">☰</button>
 
     <main class="app-main">
       <header>

@@ -43,13 +43,63 @@ body {
   padding: 20px 14px;
   scrollbar-width: thin;
 }
+.sb-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 14px;
+}
 .sb-brand {
   font-family: var(--serif);
   font-weight: 900;
   font-size: 1.02rem;
   color: var(--ink);
-  padding: 4px 6px 14px;
+  white-space: nowrap;
 }
+.sb-collapse {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 4px 7px;
+  border-radius: 6px;
+  transition: color 0.12s, background 0.12s;
+}
+.sb-collapse:hover { color: var(--accent); background: var(--paper-deep); }
+
+/* 사이드바 너비 전환 + 접힘 */
+.sidebar { transition: width 0.25s ease, padding 0.25s ease; }
+.app.sb-collapsed .sidebar {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  border-right: none;
+  overflow: hidden;
+}
+
+/* 접혔을 때 좌상단 열기 버튼 */
+.sb-open {
+  position: fixed;
+  left: 14px;
+  top: 14px;
+  z-index: 50;
+  display: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 1.1rem;
+  cursor: pointer;
+  box-shadow: 0 5px 16px -8px rgba(33, 29, 25, 0.4);
+  transition: border-color 0.12s, color 0.12s;
+}
+.sb-open:hover { border-color: var(--accent); color: var(--accent); }
+.app.sb-collapsed .sb-open { display: block; }
 .sb-new {
   width: 100%;
   font-family: var(--sans);

@@ -301,6 +301,18 @@ document.addEventListener("click", (e) => {
   if (page > 0) jumpToPdfPage(page);
 });
 
+// 사이드바 열기/접기 (localStorage에 상태 저장)
+(() => {
+  const app = document.querySelector(".app");
+  const setCollapsed = (c) => {
+    app.classList.toggle("sb-collapsed", c);
+    localStorage.setItem("sbCollapsed", c ? "1" : "0");
+  };
+  document.getElementById("sb-collapse").addEventListener("click", () => setCollapsed(true));
+  document.getElementById("sb-open").addEventListener("click", () => setCollapsed(false));
+  setCollapsed(localStorage.getItem("sbCollapsed") === "1");
+})();
+
 // 사이드바 "새 논문 분석" → 워크스페이스 닫고 드롭존으로
 document.getElementById("sb-new").addEventListener("click", () => {
   document.body.classList.remove("reading");
