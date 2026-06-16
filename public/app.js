@@ -47,6 +47,7 @@ async function analyzeFile(file) {
   hideError();
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
+  setActiveAnalysis(file.name.replace(/\.pdf$/i, ""));
   setLoadingText("논문을 업로드하는 중…");
 
   const form = new FormData();
@@ -65,6 +66,7 @@ async function analyzeFile(file) {
     showError(e.message);
   } finally {
     loadingEl.classList.add("hidden");
+    setActiveAnalysis(null);
     setLoadingText("논문을 분석하고 있습니다…");
     fileInput.value = "";
   }
@@ -72,6 +74,20 @@ async function analyzeFile(file) {
 
 function setLoadingText(msg) {
   document.getElementById("loading-text").textContent = msg;
+  const prog = document.getElementById("sb-active-prog");
+  if (prog) prog.textContent = msg;
+}
+
+// 사이드바 "분석 중" 표시 — title이 있으면 표시, null이면 숨김
+function setActiveAnalysis(title) {
+  const box = document.getElementById("sb-active");
+  if (!box) return;
+  if (title) {
+    document.getElementById("sb-active-title").textContent = title;
+    box.classList.remove("hidden");
+  } else {
+    box.classList.add("hidden");
+  }
 }
 
 // 지나간 진행 단계를 ✓ 로그로 쌓는다
@@ -217,6 +233,7 @@ function renderResult(data) {
   workspaceEl.classList.remove("hidden");
   chatFab.classList.remove("hidden"); // 분석 결과가 있어야 질문 가능
   document.body.classList.add("reading"); // 상단 헤더·드롭존 축소
+  highlightActiveHistory(); // 사이드바에서 현재 논문 강조
   switchTab("background");
 }
 
@@ -284,9 +301,13 @@ document.addEventListener("click", (e) => {
   if (page > 0) jumpToPdfPage(page);
 });
 
-// 분석 결과를 보는 중에는 헤더·드롭존을 접고, 이 버튼으로 다시 펼침
-document.getElementById("new-analysis").addEventListener("click", () => {
+// 사이드바 "새 논문 분석" → 워크스페이스 닫고 드롭존으로
+document.getElementById("sb-new").addEventListener("click", () => {
   document.body.classList.remove("reading");
+  workspaceEl.classList.add("hidden");
+  hideError();
+  currentHash = null;
+  highlightActiveHistory();
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
 
@@ -1511,6 +1532,13 @@ function switchTab(name) {
 }
 
 // ---------- 히스토리 ----------
+// 현재 열린 논문을 사이드바에서 강조
+function highlightActiveHistory() {
+  document.querySelectorAll("#history-list li[data-hash]").forEach((li) =>
+    li.classList.toggle("h-active", li.dataset.hash === currentHash)
+  );
+}
+
 async function loadHistory() {
   try {
     const res = await fetch(`${API_BASE}/api/history`);
@@ -1533,6 +1561,8 @@ async function loadHistory() {
       const date = document.createElement("div");
       date.className = "h-date";
       date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
+      li.dataset.hash = it.hash;
+      if (it.hash === currentHash) li.classList.add("h-active");
       li.append(title, line, date);
       li.addEventListener("click", () => openHistory(it.hash));
 
@@ -1547,6 +1577,7 @@ async function loadHistory() {
         hideError();
         workspaceEl.classList.add("hidden");
         loadingEl.classList.remove("hidden");
+        setActiveAnalysis(it.title || "재분석");
         setLoadingText("재분석을 시작하는 중…");
         try {
           const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, { method: "POST" });
@@ -1562,6 +1593,7 @@ async function loadHistory() {
           showError(err.message);
         } finally {
           loadingEl.classList.add("hidden");
+          setActiveAnalysis(null);
           setLoadingText("논문을 분석하고 있습니다…");
         }
       });
