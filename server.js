@@ -523,8 +523,9 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
     const buffer = await fs.promises.readFile(pdfPath);
     const doc = await PDFDocument.load(buffer, { updateMetadata: false });
     const pageCount = doc.getPageCount();
+    // 기존 분석을 미리 지우지 않는다 — 재분석이 끝에서 store.set으로 덮어쓰므로,
+    // 재분석 중에도 기존 결과가 유지되고(채팅·열람 가능) 실패해도 기존 분석이 보존된다.
     const prev = await store.get(hash);
-    await store.delete(hash);
     sseInit(res);
     await runAnalysisJob(res, hash, pageCount, (prev && prev.title) || "재분석");
   } catch (e) {

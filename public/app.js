@@ -289,8 +289,38 @@ function jumpToPdfPage(page) {
   }
   workspaceEl.classList.remove("pdf-collapsed");
   document.getElementById("pdf-toggle").textContent = "접기 ◀";
-  pdfFrame.src = `${API_BASE}/api/pdf/${currentHash}#page=${page}`;
+
+  const url = `${API_BASE}/api/pdf/${currentHash}#page=${page}`;
+  const sameDoc = pdfFrame.src.split("#")[0] === url.split("#")[0];
+  if (sameDoc) {
+    // 같은 PDF가 이미 떠 있으면 프래그먼트(#page)만 바뀌어선 내장 뷰어가 이동하지 않는다 → 강제 리로드
+    pdfFrame.src = "about:blank";
+    setTimeout(() => { pdfFrame.src = url; }, 60);
+  } else {
+    pdfFrame.src = url;
+  }
   pdfFrame.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  flagPdfJump(page);
+}
+
+// PDF 패널에 "여기로 이동했다"는 시각 표시 (펄스 + 페이지 플래그)
+function flagPdfJump(page) {
+  const pane = document.getElementById("pdf-pane");
+  pane.classList.remove("pdf-pulse");
+  void pane.offsetWidth;
+  pane.classList.add("pdf-pulse");
+
+  let flag = document.getElementById("pdf-jump-flag");
+  if (!flag) {
+    flag = document.createElement("div");
+    flag.id = "pdf-jump-flag";
+    flag.className = "pdf-jump-flag";
+    pane.appendChild(flag);
+  }
+  flag.textContent = `📍 ${page}페이지로 이동`;
+  flag.classList.remove("show");
+  void flag.offsetWidth;
+  flag.classList.add("show");
 }
 
 // 본문·채팅 어디서든 근거 배지(.ev-badge) 클릭 → 해당 PDF 페이지로 (이벤트 위임)
