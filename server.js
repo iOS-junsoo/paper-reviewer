@@ -161,6 +161,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 {
   "title": "논문 원제목 (영어 그대로)",
   "one_liner": "논문 핵심을 담은 한 줄 요약",
+  "contributions": ["이 논문의 핵심 기여 2~4개 — 각각 한 문장, 가장 중요한 것부터"],
   "background": "연구 배경 (## 소제목으로 단락 구분)",
   "timeline": [
     { "year": 2014, "label": "Seq2Seq", "note": "인코더-디코더 등장 (한 줄)" }
@@ -215,6 +216,14 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "x_label": "line 차트 x축 이름", "y_label": "line 차트 y축 이름"
     }
   ],
+  "experiments": {
+    "datasets": [ { "name": "데이터셋 이름(영어)", "detail": "규모·특징 한 줄" } ],
+    "baselines": ["논문이 비교한 기존 방법들(영어명)"],
+    "metrics": [ { "label": "지표·세팅 (예: 'BLEU (En→De)')", "value": 28.4, "unit": "BLEU", "highlight": true, "note": "비교 맥락 한 줄 (예: '이전 최고 대비 +2.0')" } ],
+    "ablations": ["구성요소 제거/분석 실험에서 얻은 핵심 발견 한 줄씩 (강조 마크업 가능)"],
+    "limitations": "저자가 인정한 한계와 향후 연구 (## 소제목으로 단락 구분 가능, 마크업·[[p..]] 근거 사용 가능)",
+    "takeaway": "실험 결과를 한 문장으로 요약 (이 논문이 '무엇을 얼마나' 개선했는지)"
+  },
   "suggested_questions": ["이 논문에 대해 독자(세미나 청중)가 던질 법한 좋은 질문 3개 — 짧은 한 문장씩"],
   "related_papers": [
     { "title": "선행 논문 제목 (영어 원제)", "year": 2015, "reason": "이 논문을 이해하는 데 왜 먼저 읽으면 좋은지 한 줄", "link": "arXiv 등 실제 URL — WebSearch로 확인, 확실하지 않으면 null" }
@@ -238,6 +247,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 }
 
 섹션별 작성 지침 (독자는 세미나 발표를 준비하거나 정독 전 구조를 잡으려는 대학원생):
+- contributions: 이 논문이 기존과 다르게 새로 해낸 것 2~4개. 방법·성능·관점 중에서 "이전엔 못 했는데 이 논문이 가능케 한 것"을 한 문장씩, 가장 중요한 것부터. 도입부(제목 아래)에 표시됩니다. 강조 마크업 사용 가능.
 - background: "## 소제목" 줄로 2~3개 단락을 나누세요 (예: "## 분야의 흐름", "## 남아 있는 공백"). 분야가 어떤 흐름으로 발전해왔는지 → 현재 어디까지 와 있는지 → 이 논문이 들어갈 공백(gap)이 무엇인지 순서로.
 - timeline: 연구 배경 탭 상단에 표시될 분야 발전 이정표 3~6개 (연도순). label은 기법/모델명(영어), note는 한 줄 의미. 마지막 항목은 이 논문 자신으로.
 - problem: "## 소제목"으로 2~3개 단락 구분. 기존 방법(existing methods)들을 구체적으로 거명하고 각각의 한계를 짚은 뒤, 이 논문이 정확히 어떤 문제를 타깃하는지 명시하세요.
@@ -272,6 +282,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
     transform: ==보여줄 흥미로운 내부 수치가 없는 블록(Add & Norm, residual 덧셈, reshape, projection, dropout 등)의 기본 선택==. 입력 데이터(from)가 이 블록을 거쳐 출력 데이터(to)로 어떤 형태(shape)·의미로 바뀌는지 from/to/op로 보여줍니다. 예: from {label:"임베딩", shape:"[n, 512]"} op:"잔차 더하기 ⊕ 후 LayerNorm" to {label:"정규화된 표현", shape:"[n, 512]"}.
   어떤 블록이든 위 6개로 표현이 애매하면 transform을 쓰세요. ==전체 flow에서 같은 type만 반복하지 말고, 데이터가 토큰→벡터→가중치행렬→확률처럼 변해가는 흐름이 type 선택에서 드러나게== 하세요.
 - equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
+- experiments: 실험·결과 섹션 (전용 탭). ==방법론 figures와 달리 여기서는 성능 수치·벤치마크를 적극적으로 담으세요==. datasets(사용한 데이터셋과 규모), baselines(비교한 기존 방법들), metrics(핵심 지표 — 논문이 보고한 ==실제 수치만==, highlight=true는 이 논문의 결과, note에 비교 맥락), ablations(구성요소를 빼보는 실험에서 얻은 통찰), limitations(저자가 스스로 인정한 한계 + 향후 연구), takeaway(결과 한 줄 결론). ==수치는 논문에서 실제로 읽은 값만 쓰고, 확인 못 한 항목은 비우세요(지어내기 절대 금지)==. 실험이 거의 없는 이론/서베이 논문이면 metrics·datasets는 비우고 limitations·takeaway만 채우거나 experiments 자체를 생략하세요.
 - suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 3개 (예: 방법의 한계, 실험 설계의 빈틈, 다른 접근과의 비교). 질문하기 기능의 추천 칩으로 표시됩니다.
 - related_papers: 이 논문을 이해하기 위해 ==먼저 읽으면 좋은 선행 논문 3~5편==. 본문에서 중요하게 인용된 것 위주로, reason에 "왜 먼저"를 한 줄로. link는 WebSearch로 실제 arXiv URL(https://arxiv.org/abs/...)을 확인해 넣고, 확인 못 하면 null (가짜 URL 금지).
 - equation_flow: 수식 탭 맨 위에 표시되는 "수식 로드맵". equations의 순서를 따라 각 수식을 하나의 노드로 잇고, goal에는 그 수식이 구하는 것을 짧게, why에는 왜 그걸 구해야 전체 그림이 완성되는지를 쓰세요. 사용자가 개별 수식을 읽기 전에 "왜 이 수식들이 이 순서로 필요한가"를 먼저 이해하는 용도입니다. 수식이 없으면 null.
@@ -642,9 +653,11 @@ app.post("/api/ask/:hash", async (req, res) => {
     const context = JSON.stringify({
       title: a.title,
       one_liner: a.one_liner,
+      contributions: a.contributions,
       background: a.background,
       problem: a.problem,
       method_steps: a.method_steps,
+      experiments: a.experiments,
       equations: (a.equations || []).map((e) => ({ latex: e.latex, explanation: e.explanation })),
     }).slice(0, 14000);
     const histText = (history || [])

@@ -30,11 +30,95 @@ function beginCancellable() {
   return ac;
 }
 // 이 흐름 종료 정리 — 그 사이 다른 흐름이 시작돼 컨트롤러가 바뀌었으면 건드리지 않는다.
+// 반환값: 이 흐름이 아직 '현재' 흐름이었으면 true (UI 정리해도 되는지 판단용).
 function endCancellable(ac) {
   if (analysisAbort === ac) {
     analysisAbort = null;
     cancelBtn.classList.add("hidden");
+    return true;
   }
+  return false;
+}
+
+// 재분석 배너의 "취소"도 동일하게 진행 중 분석을 중단한다
+document.getElementById("rebar-cancel").addEventListener("click", () => {
+  if (analysisAbort) analysisAbort.abort();
+});
+
+// ── 읽기 테마 (기본 → 세피아 → 다크 순환). 속성은 <html>(documentElement)에 둔다
+// — head의 인라인 스크립트가 첫 페인트 전에 미리 적용해 깜빡임(FOUC)을 막는다. ──
+const THEMES = ["light", "sepia", "dark"];
+(function initTheme() {
+  let t = document.documentElement.dataset.theme; // head 스크립트가 이미 설정했을 수 있음
+  if (!THEMES.includes(t)) {
+    try { t = localStorage.getItem("theme"); } catch {}
+    document.documentElement.dataset.theme = THEMES.includes(t) ? t : "light";
+  }
+})();
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || "light";
+  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("theme", next); } catch {}
+});
+
+// ── 히스토리 검색 필터 (제목·요약 부분일치) ──
+let historyFilter = "";
+const historySearch = document.getElementById("history-search");
+historySearch.addEventListener("input", () => {
+  historyFilter = historySearch.value.trim().toLowerCase();
+  applyHistoryFilter();
+});
+function applyHistoryFilter() {
+  document.querySelectorAll("#history-list li[data-hash]").forEach((li) => {
+    // 제목·요약만 대상으로 (날짜·버튼 글리프는 제외 — placeholder 약속과 일치)
+    const text = (
+      (li.querySelector(".h-title")?.textContent || "") + " " +
+      (li.querySelector(".h-line")?.textContent || "")
+    ).toLowerCase();
+    li.style.display = !historyFilter || text.includes(historyFilter) ? "" : "none";
+  });
+}
+
+// ── URL 딥링크 (#p=<hash>&tab=<tab>) — 북마크·뒤로가기로 논문·탭 복원 ──
+let activeTab = "background";
+function parseHash() {
+  const params = {};
+  location.hash.replace(/^#/, "").split("&").forEach((kv) => {
+    const i = kv.indexOf("=");
+    if (i > 0) {
+      const k = kv.slice(0, i), v = kv.slice(i + 1);
+      try { params[k] = decodeURIComponent(v); } catch { params[k] = v; } // 잘못된 % 시퀀스에도 죽지 않게
+    }
+  });
+  return params;
+}
+function updateHash() {
+  if (!currentHash) return;
+  const want = `#p=${currentHash}&tab=${activeTab}`;
+  // 탭/논문 전환은 새 history 항목을 쌓지 않도록 replaceState로 교체 (뒤로가기 오염 방지)
+  if (location.hash !== want) {
+    try { history.replaceState(null, "", want); } catch { location.hash = want; }
+  }
+}
+function clearHash() {
+  try { history.replaceState(null, "", location.pathname + location.search); }
+  catch {}
+}
+window.addEventListener("hashchange", () => {
+  if (analysisAbort) return; // 분석 진행 중엔 뒤로/앞으로가 분석을 끊지 않도록
+  const { p, tab } = parseHash();
+  if (p && p !== currentHash) {
+    openHistory(p).then((ok) => { if (ok && tab && tab !== activeTab) switchTab(tab); });
+  } else if (tab && tab !== activeTab) {
+    switchTab(tab);
+  }
+});
+async function restoreFromHash() {
+  const { p, tab } = parseHash();
+  if (!p) return;
+  const ok = await openHistory(p);
+  if (ok && tab && tab !== activeTab) switchTab(tab); // 404 등 실패 시 탭 전환 안 함
 }
 
 // 백엔드를 다른 도메인에 둘 때(예: 프론트는 GitHub Pages, 백엔드는 Render)
@@ -93,10 +177,12 @@ async function analyzeFile(file) {
     if (e.name === "AbortError") loadHistory(); // 사용자가 취소 — 조용히 초기 화면으로
     else showError(e.message);
   } finally {
-    endCancellable(ac);
-    loadingEl.classList.add("hidden");
-    setActiveAnalysis(null);
-    setLoadingText("논문을 분석하고 있습니다…");
+    // 이 흐름이 다른 새 흐름으로 대체됐다면 UI 정리를 건너뛴다(새 흐름의 화면을 망치지 않게)
+    if (endCancellable(ac)) {
+      loadingEl.classList.add("hidden");
+      setActiveAnalysis(null);
+      setLoadingText("논문을 분석하고 있습니다…");
+    }
     fileInput.value = "";
   }
 }
@@ -113,6 +199,22 @@ function setLoadingProgress(msg, pct) {
   }
   const prog = document.getElementById("sb-active-prog");
   if (prog) prog.textContent = `${lastLoadingPct}% · ${msg || ""}`.trim();
+  // 재분석 배너(인라인 재분석) 미러링 — 배너가 떠 있을 때만 의미 있음
+  if (msg != null) document.getElementById("rebar-text").textContent = msg;
+  document.getElementById("rebar-pct").textContent = `${lastLoadingPct}%`;
+  document.getElementById("rebar-fill").style.width = `${lastLoadingPct}%`;
+}
+
+// 현재 보고 있는 논문을 재분석할 때: 로딩 화면으로 덮지 않고 기존 결과를 그대로 둔 채
+// 상단에 진행 배너만 띄운다(읽던 내용 유지). 완료되면 renderResult가 내용을 교체한다.
+function showReanalyzeBanner() {
+  document.getElementById("rebar-text").textContent = "재분석을 시작하는 중…";
+  document.getElementById("rebar-pct").textContent = "0%";
+  document.getElementById("rebar-fill").style.width = "0%";
+  document.getElementById("reanalyze-banner").classList.remove("hidden");
+}
+function hideReanalyzeBanner() {
+  document.getElementById("reanalyze-banner").classList.add("hidden");
 }
 
 // 메시지만 바꿀 때 (진행률 유지)
@@ -266,6 +368,7 @@ function renderResult(data) {
 
   document.getElementById("paper-title").textContent = data.title || "(제목 없음)";
   renderRich(document.getElementById("one-liner"), data.one_liner || "");
+  renderContributions(data.contributions);
   cacheBadge.classList.toggle("hidden", !data.cached);
 
   renderRich(document.getElementById("panel-background"), data.background || "(내용 없음)");
@@ -276,6 +379,7 @@ function renderResult(data) {
   }
   renderRich(document.getElementById("panel-problem"), data.problem || "(내용 없음)");
   renderMethod(data);
+  renderResults(data.experiments);
   renderEquations(data.equations || [], data.equation_flow, data.method_steps || []);
   renderRelated(data.related_papers);
   loadPdf(currentHash);
@@ -309,6 +413,185 @@ function buildTimeline(items) {
     wrap.appendChild(node);
   });
   return wrap;
+}
+
+// ---------- 핵심 기여 (제목 아래) ----------
+function renderContributions(items) {
+  const el = document.getElementById("contributions");
+  el.innerHTML = "";
+  if (!Array.isArray(items) || !items.length) {
+    el.classList.add("hidden");
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "contrib-head";
+  head.textContent = "핵심 기여";
+  el.appendChild(head);
+  const ul = document.createElement("ul");
+  ul.className = "contrib-list";
+  items.forEach((c) => {
+    const li = document.createElement("li");
+    renderRich(li, typeof c === "string" ? c : (c && c.text) || "");
+    ul.appendChild(li);
+  });
+  el.appendChild(ul);
+  el.classList.remove("hidden");
+}
+
+// ---------- 실험·결과 탭 ----------
+function renderResults(exp) {
+  const panel = document.getElementById("panel-results");
+  panel.innerHTML = "";
+  const has =
+    exp && typeof exp === "object" &&
+    (exp.takeaway || exp.limitations ||
+      (Array.isArray(exp.datasets) && exp.datasets.length) ||
+      (Array.isArray(exp.baselines) && exp.baselines.length) ||
+      (Array.isArray(exp.metrics) && exp.metrics.length) ||
+      (Array.isArray(exp.ablations) && exp.ablations.length));
+  if (!has) {
+    panel.innerHTML =
+      `<p class="muted res-empty">이 분석에는 실험·결과 정보가 없습니다.<br />` +
+      `예전에 분석한 논문이면 히스토리에서 🔄로 재분석하면 채워집니다. (이론·서베이 논문은 결과가 적을 수 있어요.)</p>`;
+    return;
+  }
+  if (exp.takeaway) {
+    const t = document.createElement("div");
+    t.className = "res-takeaway";
+    renderRich(t, "📌 " + exp.takeaway);
+    panel.appendChild(t);
+  }
+  if (Array.isArray(exp.metrics) && exp.metrics.length) {
+    panel.appendChild(buildResultMetrics(exp.metrics));
+  }
+  if ((Array.isArray(exp.datasets) && exp.datasets.length) ||
+      (Array.isArray(exp.baselines) && exp.baselines.length)) {
+    panel.appendChild(buildResultMeta(exp.datasets, exp.baselines));
+  }
+  if (Array.isArray(exp.ablations) && exp.ablations.length) {
+    panel.appendChild(buildResultList("주요 분석 (Ablation)", exp.ablations, "res-ablations"));
+  }
+  if (exp.limitations) {
+    const sec = document.createElement("div");
+    sec.className = "res-section";
+    const h = document.createElement("h4");
+    h.className = "res-h";
+    h.textContent = "한계 · 향후 연구";
+    const body = document.createElement("div");
+    renderRich(body, exp.limitations);
+    sec.append(h, body);
+    panel.appendChild(sec);
+  }
+}
+
+// 핵심 지표 — 단위가 제각각이라 막대 대신 카드로 (논문 결과는 강조)
+function buildResultMetrics(metrics) {
+  const sec = document.createElement("div");
+  sec.className = "res-section";
+  const h = document.createElement("h4");
+  h.className = "res-h";
+  h.textContent = "핵심 지표";
+  sec.appendChild(h);
+  const grid = document.createElement("div");
+  grid.className = "res-metric-grid";
+  metrics.forEach((m) => {
+    if (!m || typeof m !== "object") return; // null·문자열 등 비정상 항목은 건너뜀
+    const card = document.createElement("div");
+    card.className = "metric-card" + (m.highlight ? " metric-hl" : "");
+    const lab = document.createElement("div");
+    lab.className = "metric-label";
+    renderRich(lab, m.label || "");
+    const val = document.createElement("div");
+    val.className = "metric-value";
+    val.textContent =
+      typeof m.value === "number" ? fmtNum(m.value)
+      : typeof m.value === "string" ? m.value
+      : ""; // 객체·배열 등은 '[object Object]' 대신 공백
+    if (m.unit) {
+      const u = document.createElement("span");
+      u.className = "metric-unit";
+      u.textContent = " " + m.unit;
+      val.appendChild(u);
+    }
+    card.append(lab, val);
+    if (m.note) {
+      const note = document.createElement("div");
+      note.className = "metric-note";
+      renderRich(note, m.note);
+      card.appendChild(note);
+    }
+    grid.appendChild(card);
+  });
+  sec.appendChild(grid);
+  return sec;
+}
+
+// 데이터셋 + 비교 대상(baselines)
+function buildResultMeta(datasets, baselines) {
+  const wrap = document.createElement("div");
+  wrap.className = "res-meta";
+  if (Array.isArray(datasets) && datasets.length) {
+    const col = document.createElement("div");
+    col.className = "res-section res-meta-col";
+    const h = document.createElement("h4");
+    h.className = "res-h";
+    h.textContent = "데이터셋";
+    col.appendChild(h);
+    const ul = document.createElement("ul");
+    ul.className = "res-datasets";
+    datasets.forEach((d) => {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "ds-name";
+      name.textContent = (d && d.name) || (typeof d === "string" ? d : "");
+      li.appendChild(name);
+      if (d && d.detail) {
+        const det = document.createElement("span");
+        det.className = "ds-detail";
+        det.textContent = " — " + d.detail;
+        li.appendChild(det);
+      }
+      ul.appendChild(li);
+    });
+    col.appendChild(ul);
+    wrap.appendChild(col);
+  }
+  if (Array.isArray(baselines) && baselines.length) {
+    const col = document.createElement("div");
+    col.className = "res-section res-meta-col";
+    const h = document.createElement("h4");
+    h.className = "res-h";
+    h.textContent = "비교 대상 (Baselines)";
+    col.appendChild(h);
+    const chips = document.createElement("div");
+    chips.className = "res-chips";
+    baselines.forEach((b) => {
+      const c = document.createElement("span");
+      c.className = "res-chip";
+      c.textContent = typeof b === "string" ? b : (b && b.name) || "";
+      chips.appendChild(c);
+    });
+    col.appendChild(chips);
+    wrap.appendChild(col);
+  }
+  return wrap;
+}
+
+function buildResultList(title, items, cls) {
+  const sec = document.createElement("div");
+  sec.className = "res-section";
+  const h = document.createElement("h4");
+  h.className = "res-h";
+  h.textContent = title;
+  const ul = document.createElement("ul");
+  ul.className = cls;
+  items.forEach((a) => {
+    const li = document.createElement("li");
+    renderRich(li, typeof a === "string" ? a : (a && a.text) || "");
+    ul.appendChild(li);
+  });
+  sec.append(h, ul);
+  return sec;
 }
 
 // ---------- 원문 PDF 패널 ----------
@@ -519,6 +802,7 @@ document.getElementById("sb-new").addEventListener("click", () => {
   workspaceEl.classList.add("hidden");
   hideError();
   currentHash = null;
+  clearHash(); // 새 분석 화면에선 #p= 해시를 비워 새로고침 시 옛 논문이 다시 열리지 않게
   highlightActiveHistory();
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -1714,12 +1998,14 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 });
 
 function switchTab(name) {
+  activeTab = name;
   document.querySelectorAll(".tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.tab === name)
   );
   document.querySelectorAll(".panel").forEach((p) =>
     p.classList.toggle("active", p.id === `panel-${name}`)
   );
+  updateHash();
 }
 
 // ---------- 히스토리 ----------
@@ -1766,10 +2052,16 @@ async function loadHistory() {
         e.stopPropagation();
         if (!confirm(`'${it.title}'을(를) 최신 분석 방식으로 재분석할까요?\n(몇 분 걸리며, 기존 결과는 대체됩니다)`)) return;
         hideError();
-        workspaceEl.classList.add("hidden");
-        loadingEl.classList.remove("hidden");
+        // 지금 보고 있는 논문이면 화면을 비우지 않고 배너만 띄운다(읽던 내용 유지)
+        const inline = it.hash === currentHash && !workspaceEl.classList.contains("hidden");
+        if (inline) {
+          showReanalyzeBanner();
+        } else {
+          workspaceEl.classList.add("hidden");
+          loadingEl.classList.remove("hidden");
+          setLoadingProgress("재분석을 시작하는 중…", 0);
+        }
         setActiveAnalysis(it.title || "재분석");
-        setLoadingProgress("재분석을 시작하는 중…", 0);
         const ac = beginCancellable();
         try {
           const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, {
@@ -1782,14 +2074,17 @@ async function loadHistory() {
           const data = await consumeAnalysisStream(res);
           renderResult(data);
           loadHistory();
-          window.scrollTo({ top: 0, behavior: "smooth" });
+          if (!inline) window.scrollTo({ top: 0, behavior: "smooth" });
         } catch (err) {
           if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
         } finally {
-          endCancellable(ac);
-          loadingEl.classList.add("hidden");
-          setActiveAnalysis(null);
-          setLoadingText("논문을 분석하고 있습니다…");
+          // 새 흐름으로 대체됐으면(두 번째 재분석 등) UI 정리를 건너뛴다 — 새 흐름의 배너/표시 유지
+          if (endCancellable(ac)) {
+            hideReanalyzeBanner();
+            loadingEl.classList.add("hidden");
+            setActiveAnalysis(null);
+            setLoadingText("논문을 분석하고 있습니다…");
+          }
         }
       });
       li.appendChild(re);
@@ -1816,6 +2111,7 @@ async function loadHistory() {
       li.appendChild(del);
       historyList.appendChild(li);
     });
+    applyHistoryFilter(); // 재로드 후에도 검색어 유지
   } catch (e) {
     historyList.innerHTML = `<li class="muted">히스토리를 불러오지 못했습니다: ${e.message}</li>`;
   }
@@ -1827,20 +2123,25 @@ async function openHistory(hash) {
   // 취소 버튼은 숨긴다 — 이 fetch는 취소 버튼이 제어하지 않으므로 엉뚱한 중단을 막는다.
   if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
   cancelBtn.classList.add("hidden");
+  hideReanalyzeBanner();
   loadingEl.classList.remove("hidden");
   document.getElementById("loading-text").textContent = "저장된 분석 결과를 불러오는 중…";
+  let ok = false;
   try {
     const res = await fetch(`${API_BASE}/api/history/${hash}`);
     const data = await safeJson(res);
     if (!res.ok) throw new Error(formatApiError(data, res.status));
     renderResult(data);
     window.scrollTo({ top: 0, behavior: "smooth" });
+    ok = true;
   } catch (e) {
     showError(e.message);
   } finally {
     loadingEl.classList.add("hidden");
     document.getElementById("loading-text").textContent = "논문을 분석하고 있습니다…";
   }
+  return ok;
 }
 
 loadHistory();
+restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원

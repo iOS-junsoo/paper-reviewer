@@ -3,6 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- 저장된 읽기 테마를 첫 페인트 전에 <html>에 적용 (다크/세피아 깜빡임 방지) -->
+  <script>
+    try {
+      var t = localStorage.getItem("theme");
+      if (["light", "sepia", "dark"].indexOf(t) >= 0) document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
   <title>Paper Reviewer — 논문 구조화 이해 도구</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
@@ -18,7 +25,10 @@
     <aside class="sidebar" id="sidebar">
       <div class="sb-top">
         <div class="sb-brand">📄 Paper&nbsp;Reviewer</div>
-        <button id="sb-collapse" class="sb-collapse" type="button" title="사이드바 접기" aria-label="사이드바 접기">◀</button>
+        <div class="sb-top-btns">
+          <button id="theme-toggle" class="sb-iconbtn" type="button" title="읽기 테마 전환 (기본 → 세피아 → 다크)" aria-label="테마 전환">🌗</button>
+          <button id="sb-collapse" class="sb-collapse" type="button" title="사이드바 접기" aria-label="사이드바 접기">◀</button>
+        </div>
       </div>
       <button id="sb-new" class="sb-new" type="button">＋ 새 논문 분석</button>
 
@@ -33,6 +43,7 @@
       </div>
 
       <div class="sb-label">히스토리</div>
+      <input id="history-search" class="sb-search" type="search" placeholder="제목·요약 검색…" autocomplete="off" />
       <ul id="history-list" class="sb-history"><li class="muted">불러오는 중…</li></ul>
     </aside>
 
@@ -42,7 +53,7 @@
       <header>
         <p class="masthead">PAPER&nbsp;REVIEWER</p>
         <h1>논문을 읽기 전에,<br />구조부터 잡으세요</h1>
-        <p class="subtitle">PDF를 드롭하면 Claude가 논문 전체를 읽고 네 개의 섹션으로 정리합니다</p>
+        <p class="subtitle">PDF를 드롭하면 Claude가 논문 전체를 읽고 다섯 개의 섹션으로 정리합니다</p>
       </header>
 
       <!-- 드롭존 -->
@@ -86,23 +97,33 @@
         </aside>
 
         <section id="result" class="result">
+          <div id="reanalyze-banner" class="reanalyze-banner hidden">
+            <span class="rebar-spin" aria-hidden="true"></span>
+            <span id="rebar-text" class="rebar-text">최신 방식으로 재분석 중…</span>
+            <span id="rebar-pct" class="rebar-pct">0%</span>
+            <div class="rebar-track"><div id="rebar-fill" class="rebar-fill"></div></div>
+            <button id="rebar-cancel" class="rebar-cancel" type="button">취소</button>
+          </div>
           <div class="result-head">
             <span id="cache-badge" class="badge hidden">⚡ 캐시에서 불러옴</span>
             <h2 id="paper-title"></h2>
             <p id="one-liner"></p>
+            <div id="contributions" class="contributions hidden"></div>
           </div>
 
           <nav class="tabs" id="tabs">
             <button class="tab active" data-tab="background"><span class="tab-no">Ⅰ</span>연구 배경</button>
             <button class="tab" data-tab="problem"><span class="tab-no">Ⅱ</span>해결하려는 것</button>
             <button class="tab" data-tab="method"><span class="tab-no">Ⅲ</span>연구 방법론</button>
-            <button class="tab" data-tab="equations"><span class="tab-no">Ⅳ</span>수식 정리</button>
+            <button class="tab" data-tab="results"><span class="tab-no">Ⅳ</span>실험·결과</button>
+            <button class="tab" data-tab="equations"><span class="tab-no">Ⅴ</span>수식 정리</button>
           </nav>
 
           <div class="panels">
             <div class="panel active" id="panel-background"></div>
             <div class="panel" id="panel-problem"></div>
             <div class="panel" id="panel-method"></div>
+            <div class="panel" id="panel-results"></div>
             <div class="panel" id="panel-equations"></div>
           </div>
 
