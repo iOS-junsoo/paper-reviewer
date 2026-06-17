@@ -294,22 +294,28 @@ body.reading .new-analysis { display: inline-block; }
 /* ── loading ───────────────────────────────────────────────────────── */
 .loading { text-align: center; padding: 56px 0 40px; }
 
+/* 실측 진행률 숫자 */
+.loading-pct {
+  font-family: var(--serif);
+  font-weight: 900;
+  font-size: 2.6rem;
+  color: var(--accent);
+  line-height: 1;
+  margin-bottom: 16px;
+  font-variant-numeric: tabular-nums;
+}
 .loading-bar {
-  width: 220px; height: 3px;
-  margin: 0 auto 26px;
+  width: 300px; max-width: 80%; height: 8px;
+  margin: 0 auto 22px;
   background: var(--line);
-  border-radius: 2px;
+  border-radius: 999px;
   overflow: hidden;
 }
 .loading-fill {
-  width: 40%; height: 100%;
-  background: var(--accent);
-  border-radius: 2px;
-  animation: slide 1.4s ease-in-out infinite;
-}
-@keyframes slide {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(350%); }
+  width: 0%; height: 100%;
+  background: linear-gradient(90deg, #b8505a, var(--accent));
+  border-radius: 999px;
+  transition: width 0.5s ease;
 }
 
 #loading-text {

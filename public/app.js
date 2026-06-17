@@ -48,7 +48,7 @@ async function analyzeFile(file) {
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
   setActiveAnalysis(file.name.replace(/\.pdf$/i, ""));
-  setLoadingText("논문을 업로드하는 중…");
+  setLoadingProgress("논문을 업로드하는 중…", 0);
 
   const form = new FormData();
   form.append("pdf", file);
@@ -72,10 +72,30 @@ async function analyzeFile(file) {
   }
 }
 
-function setLoadingText(msg) {
-  document.getElementById("loading-text").textContent = msg;
+let lastLoadingPct = 0;
+
+// 실측 진행도 갱신 — msg(상태 문구)와 pct(0~100, 실제 이벤트에만 변함)
+function setLoadingProgress(msg, pct) {
+  if (msg != null) document.getElementById("loading-text").textContent = msg;
+  if (typeof pct === "number" && !Number.isNaN(pct)) {
+    lastLoadingPct = Math.max(0, Math.min(100, Math.round(pct)));
+    document.getElementById("loading-pct").textContent = `${lastLoadingPct}%`;
+    document.getElementById("loading-fill").style.width = `${lastLoadingPct}%`;
+  }
   const prog = document.getElementById("sb-active-prog");
-  if (prog) prog.textContent = msg;
+  if (prog) prog.textContent = `${lastLoadingPct}% · ${msg || ""}`.trim();
+}
+
+// 메시지만 바꿀 때 (진행률 유지)
+function setLoadingText(msg) {
+  setLoadingProgress(msg, undefined);
+}
+
+// 분석 시작 시 0%로 초기화
+function resetLoadingProgress() {
+  lastLoadingPct = 0;
+  document.getElementById("loading-pct").textContent = "0%";
+  document.getElementById("loading-fill").style.width = "0%";
 }
 
 // 사이드바 "분석 중" 표시 — title이 있으면 표시, null이면 숨김
@@ -127,9 +147,10 @@ async function consumeAnalysisStream(res) {
       if (ev.type === "progress") {
         if (lastProgress && lastProgress !== ev.msg) appendLoadingLog(lastProgress);
         lastProgress = ev.msg;
-        setLoadingText(ev.msg);
+        setLoadingProgress(ev.msg, ev.pct);
       } else if (ev.type === "result") {
         result = ev.data;
+        setLoadingProgress("완료!", 100);
       } else if (ev.type === "error") {
         let msg = ev.error || "분석 실패";
         if (ev.detail) msg += `\n\n모델 응답 일부:\n${ev.detail}`;
@@ -1731,7 +1752,7 @@ async function loadHistory() {
         workspaceEl.classList.add("hidden");
         loadingEl.classList.remove("hidden");
         setActiveAnalysis(it.title || "재분석");
-        setLoadingText("재분석을 시작하는 중…");
+        setLoadingProgress("재분석을 시작하는 중…", 0);
         try {
           const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, { method: "POST" });
           if (!res.ok) {

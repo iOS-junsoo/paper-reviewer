@@ -295,6 +295,14 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}) {
 
   let resultText = null;
 
+  // ── 실제 진행도 계산 ──
+  // 읽은 페이지/전체 페이지를 0~75%로(실측), 검색 완료 85%, 정리 시작 92%, 결과 100%.
+  // 가짜로 차오르지 않고 실제 이벤트(페이지 읽음·검색·생성)에만 % 가 움직인다.
+  const total = Math.max(1, pageCount);
+  let maxPageRead = 0;
+  let pct = 0;
+  const bump = (p) => { pct = Math.max(pct, Math.min(99, Math.round(p))); return pct; };
+
   for await (const msg of query({
     prompt,
     options: {
@@ -305,19 +313,26 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}) {
       cwd: PDF_DIR,
     },
   })) {
-    // 에이전트의 도구 사용을 사람이 읽을 수 있는 진행 메시지로 변환
+    // 에이전트의 도구 사용을 사람이 읽을 수 있는 진행 메시지 + 실측 % 로 변환
     if (msg.type === "assistant" && msg.message && Array.isArray(msg.message.content)) {
       for (const block of msg.message.content) {
         if (block.type === "tool_use") {
           if (block.name === "Read") {
-            const pages = block.input && block.input.pages;
-            onProgress(pages ? `논문 ${pages}페이지를 읽는 중…` : "논문을 읽는 중…");
+            const pages = (block.input && block.input.pages) || "";
+            // "21-40" / "1-15" 같은 표기의 끝 페이지 → 읽기 진행도
+            const end = Math.max(...String(pages).match(/\d+/g)?.map(Number) || [0]);
+            if (end > maxPageRead) maxPageRead = Math.min(total, end);
+            const p = bump((maxPageRead / total) * 75);
+            onProgress(
+              pages ? `논문 읽는 중 ${maxPageRead}/${total}페이지` : "논문을 읽는 중…",
+              p
+            );
           } else if (block.name === "WebSearch") {
-            const q = ((block.input && block.input.query) || "").slice(0, 50);
-            onProgress(`해설 자료 검색 중: "${q}"`);
+            const q = ((block.input && block.input.query) || "").slice(0, 40);
+            onProgress(`해설 자료 검색 중: "${q}"`, bump(Math.max(pct, 85)));
           }
         } else if (block.type === "text" && block.text && block.text.trim().length > 40) {
-          onProgress("읽기 완료 — 분석 결과를 정리하는 중…");
+          onProgress("분석 결과를 정리하는 중…", bump(92));
         }
       }
     }
@@ -364,8 +379,8 @@ async function runAnalysisJob(res, hash, pageCount, fallbackTitle) {
 async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle) {
   const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
   console.log(`[분석 시작] ${fallbackTitle} (${pageCount}p, ${hash.slice(0, 12)}…)`);
-  const onProgress = (msg) => sseSend(res, { type: "progress", msg });
-  onProgress(`분석 시작 — ${pageCount}페이지 논문`);
+  const onProgress = (msg, pct) => sseSend(res, { type: "progress", msg, pct });
+  onProgress(`분석 시작 — ${pageCount}페이지 논문`, 0);
 
   let analysis = null;
   let lastRaw = "";
