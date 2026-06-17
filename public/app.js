@@ -351,13 +351,21 @@ async function renderPdfPage(n, token) {
     const page = await pdfDoc.getPage(n);
     if (token !== pdfRenderToken) return;
     const vp = page.getViewport({ scale: pdfScale });
+    // 고DPI(레티나) 화면 선명도 — 백킹 스토어는 dpr배 해상도, 표시는 논리 px
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
     const canvas = document.createElement("canvas");
     canvas.className = "pdf-canvas";
-    canvas.width = vp.width;
-    canvas.height = vp.height;
+    canvas.width = Math.floor(vp.width * dpr);
+    canvas.height = Math.floor(vp.height * dpr);
+    canvas.style.width = `${Math.floor(vp.width)}px`;
+    canvas.style.height = `${Math.floor(vp.height)}px`;
     wrap.style.height = "";
     wrap.appendChild(canvas);
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+    await page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport: vp,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+    }).promise;
   } catch {
     wrap.dataset.rendered = ""; // 실패 시 재시도 허용
   }
@@ -402,6 +410,9 @@ function markEqNumber(wrap, pos) {
   wrap.appendChild(chk);
   void chk.offsetWidth;
   chk.classList.add("show");
+  // 3초 뒤 사라짐 (페이드아웃 후 제거)
+  setTimeout(() => chk.classList.add("fade"), 2600);
+  setTimeout(() => chk.remove(), 3000);
   return true;
 }
 
