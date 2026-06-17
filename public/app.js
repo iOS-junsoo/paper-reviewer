@@ -342,52 +342,50 @@ async function renderPdfPage(n, token) {
   }
 }
 
-// PDF 텍스트 레이어에서 phrase의 실제 위치(캔버스 px)를 찾는다 — 추정이 아닌 실제 좌표
-async function findTextRect(pageNum, phrase) {
-  if (!phrase || !pdfDoc || typeof pdfjsLib === "undefined") return null;
+// PDF 텍스트 레이어에서 수식 번호 "(N)"의 위치를 찾는다 — 우측 정렬된 것 우선(=수식 번호)
+async function findEqNumberPos(pageNum, eqNum) {
+  if (!eqNum || !pdfDoc || typeof pdfjsLib === "undefined") return null;
   try {
     const page = await pdfDoc.getPage(pageNum);
     const vp = page.getViewport({ scale: pdfScale });
     const tc = await page.getTextContent();
-    const items = tc.items
-      .filter((it) => it.str && it.str.trim())
-      .map((it) => {
+    const want = `(${eqNum})`;
+    let best = null;
+    for (const it of tc.items) {
+      if (!it.str) continue;
+      const s = it.str.replace(/\s+/g, "");
+      if (s === want || s.endsWith(want)) {
         const m = pdfjsLib.Util.transform(vp.transform, it.transform);
-        const h = Math.hypot(m[2], m[3]) || 10;
-        const w = (it.width || 0) * pdfScale;
-        return { str: it.str, left: m[4], top: m[5] - h, right: m[4] + w, bottom: m[5] };
-      });
-    let concat = "";
-    const map = []; // concat 인덱스 → items 인덱스
-    items.forEach((it, i) => {
-      const s = it.str + " ";
-      for (let k = 0; k < s.length; k++) map.push(i);
-      concat += s;
-    });
-    // 공백 유연·대소문자 무시로 매칭 (모델 인용과 PDF 띄어쓰기 차이 흡수)
-    const esc = phrase.trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
-    const m = new RegExp(esc, "i").exec(concat);
-    if (!m) return null;
-    const a = map[m.index];
-    const b = map[Math.min(concat.length - 1, m.index + m[0].length - 1)];
-    let top = Infinity, bottom = -Infinity, left = Infinity, right = -Infinity;
-    for (let i = a; i <= b; i++) {
-      const it = items[i];
-      if (!it) continue;
-      top = Math.min(top, it.top);
-      bottom = Math.max(bottom, it.bottom);
-      left = Math.min(left, it.left);
-      right = Math.max(right, it.right);
+        const h = Math.hypot(m[2], m[3]) || 11;
+        const cand = { x: m[4], y: m[5] - h, h };
+        if (!best || cand.x > best.x) best = cand; // 가장 오른쪽 = 수식 번호
+      }
     }
-    return top === Infinity ? null : { top, bottom, left, right };
+    return best;
   } catch {
     return null;
   }
 }
 
-// 수식/근거 배지 클릭 → 해당 페이지로 스크롤 + (loc 있으면) 수식 위에 하이라이트
-// loc: { anchor_above, anchor_below, bbox }  (없으면 페이지 이동만)
-async function jumpToPdfPage(page, loc) {
+// 수식 번호 옆에 ✓ 체크 마커를 찍는다 (한 번에 하나만)
+function markEqNumber(wrap, pos) {
+  wrap.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
+  if (!pos) return false;
+  const size = Math.max(15, pos.h * 1.5);
+  const chk = document.createElement("div");
+  chk.className = "pdf-eqcheck";
+  chk.textContent = "✓";
+  chk.style.width = chk.style.height = `${size}px`;
+  chk.style.left = `${Math.max(0, pos.x - size - 3)}px`; // 번호 왼쪽
+  chk.style.top = `${pos.y + pos.h / 2 - size / 2}px`;
+  wrap.appendChild(chk);
+  void chk.offsetWidth;
+  chk.classList.add("show");
+  return true;
+}
+
+// 수식 카드의 "원 논문 위치" 클릭 → 해당 페이지로 + 그 수식 번호에 ✓ 체크
+async function jumpToPdfPage(page, eqNum) {
   if (!currentHash) return;
   if (!pdfAvailable) {
     showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
@@ -396,57 +394,19 @@ async function jumpToPdfPage(page, loc) {
   workspaceEl.classList.remove("pdf-collapsed");
   document.getElementById("pdf-toggle").textContent = "접기 ◀";
 
+  // 이전 페이지의 체크 마커 모두 제거 (한 번에 하나만 표시)
+  document.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
+
   const wrap = pdfPageEls.get(page);
   if (!wrap) return;
   await renderPdfPage(page, pdfRenderToken);
-  const canvas = wrap.querySelector(".pdf-canvas");
-  const pageW = canvas ? canvas.width : wrap.getBoundingClientRect().width;
-  const pageH = canvas ? canvas.height : wrap.getBoundingClientRect().height;
 
-  let rect = null; // 캔버스 px 기준 {top,bottom,left,right}
-  if (loc && (loc.anchor_above || loc.anchor_below)) {
-    const above = await findTextRect(page, loc.anchor_above);
-    const below = await findTextRect(page, loc.anchor_below);
-    if (above || below) {
-      // 수식 영역 = 위 줄의 아래끝 ~ 아래 줄의 위끝
-      const top = above ? above.bottom : below.top - pageH * 0.06;
-      let bottom = below ? below.top : above.bottom + pageH * 0.06;
-      if (bottom <= top) bottom = top + pageH * 0.04;
-      const lefts = [above, below].filter(Boolean).map((r) => r.left);
-      const rights = [above, below].filter(Boolean).map((r) => r.right);
-      let left = Math.min(...lefts), right = Math.max(...rights);
-      if (right - left < pageW * 0.25) { left = pageW * 0.08; right = pageW * 0.92; } // 너무 좁으면 컬럼 폭
-      rect = { top, bottom, left, right };
-    }
-  }
-  if (!rect && loc && loc.bbox && ["x0", "y0", "x1", "y1"].every((k) => typeof loc.bbox[k] === "number")) {
-    const bx = loc.bbox;
-    rect = { top: bx.y0 * pageH, bottom: bx.y1 * pageH, left: bx.x0 * pageW, right: bx.x1 * pageW };
-  }
-
-  drawPdfHighlight(wrap, rect, pageW, pageH);
-  const hl = wrap.querySelector(".pdf-hl");
-  if (hl) hl.scrollIntoView({ block: "center", behavior: "smooth" });
-  else wrap.scrollIntoView({ block: "start", behavior: "smooth" });
+  const pos = await findEqNumberPos(page, eqNum);
+  const marked = markEqNumber(wrap, pos);
+  // 체크가 찍혔으면 그 위치를, 아니면 페이지 상단을 화면에 보이게
+  const target = marked ? wrap.querySelector(".pdf-eqcheck") : wrap;
+  target.scrollIntoView({ block: marked ? "center" : "start", behavior: "smooth" });
   flagPdfJump(page);
-}
-
-// 페이지 wrap 위에 캔버스px rect로 하이라이트 박스를 그린다 (wrap=canvas 크기이므로 %로 변환)
-function drawPdfHighlight(wrap, rect, pageW, pageH) {
-  wrap.querySelectorAll(".pdf-hl").forEach((e) => e.remove());
-  if (!rect || !(pageW > 0) || !(pageH > 0)) return;
-  const pad = pageH * 0.006;
-  const top = Math.max(0, rect.top - pad);
-  const height = Math.min(pageH - top, rect.bottom - rect.top + pad * 2);
-  const hl = document.createElement("div");
-  hl.className = "pdf-hl";
-  hl.style.left = `${(rect.left / pageW) * 100}%`;
-  hl.style.top = `${(top / pageH) * 100}%`;
-  hl.style.width = `${((rect.right - rect.left) / pageW) * 100}%`;
-  hl.style.height = `${(height / pageH) * 100}%`;
-  wrap.appendChild(hl);
-  void hl.offsetWidth;
-  hl.classList.add("show");
 }
 
 // PDF 패널에 "여기로 이동했다"는 시각 표시 (펄스 + 페이지 플래그)
@@ -1619,15 +1579,18 @@ function renderEquations(equations, equationFlow, methodSteps = []) {
 
     if (eq.paper_ref) {
       const page = Number(eq.paper_page);
+      // paper_ref에서 수식 번호 추출 (예: "Eq. 1", "Equation 3" → 1, 3)
+      const eqNumMatch = String(eq.paper_ref || "").match(/(?:eq(?:uation)?\.?|식)\s*\(?(\d+)/i);
+      const eqNum = eqNumMatch ? eqNumMatch[1] : null;
       const refBadge = document.createElement(page > 0 ? "button" : "span");
       refBadge.className = "eq-ref" + (page > 0 ? " eq-ref-link" : "");
       refBadge.textContent = `원 논문 ${eq.paper_ref}` + (page > 0 ? ` · p.${page} ↗` : "");
       if (page > 0) {
         refBadge.type = "button";
-        refBadge.title = `원문 PDF ${page}페이지로 이동`;
-        refBadge.addEventListener("click", () =>
-          jumpToPdfPage(page, { anchor_above: eq.anchor_above, anchor_below: eq.anchor_below, bbox: eq.bbox })
-        );
+        refBadge.title = eqNum
+          ? `원문 ${page}페이지로 이동 + 수식 (${eqNum})에 체크`
+          : `원문 PDF ${page}페이지로 이동`;
+        refBadge.addEventListener("click", () => jumpToPdfPage(page, eqNum));
       }
       item.appendChild(refBadge);
     }
