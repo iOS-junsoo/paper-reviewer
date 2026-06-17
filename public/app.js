@@ -355,8 +355,11 @@ async function jumpToPdfPage(page, bbox) {
   const wrap = pdfPageEls.get(page);
   if (!wrap) return;
   await renderPdfPage(page, pdfRenderToken); // 렌더 보장
-  wrap.scrollIntoView({ block: "start", behavior: "smooth" });
   drawPdfHighlight(wrap, bbox);
+  // 하이라이트가 있으면 그 박스를 화면 중앙에, 없으면 페이지 상단으로
+  const hl = wrap.querySelector(".pdf-hl");
+  if (hl) hl.scrollIntoView({ block: "center", behavior: "smooth" });
+  else wrap.scrollIntoView({ block: "start", behavior: "smooth" });
   flagPdfJump(page);
 }
 
