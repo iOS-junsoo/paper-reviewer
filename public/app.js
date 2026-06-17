@@ -342,8 +342,52 @@ async function renderPdfPage(n, token) {
   }
 }
 
-// 수식/근거 배지 클릭 → 해당 페이지로 스크롤 + (bbox 있으면) 수식 위에 하이라이트 박스
-async function jumpToPdfPage(page, bbox) {
+// PDF 텍스트 레이어에서 phrase의 실제 위치(캔버스 px)를 찾는다 — 추정이 아닌 실제 좌표
+async function findTextRect(pageNum, phrase) {
+  if (!phrase || !pdfDoc || typeof pdfjsLib === "undefined") return null;
+  try {
+    const page = await pdfDoc.getPage(pageNum);
+    const vp = page.getViewport({ scale: pdfScale });
+    const tc = await page.getTextContent();
+    const items = tc.items
+      .filter((it) => it.str && it.str.trim())
+      .map((it) => {
+        const m = pdfjsLib.Util.transform(vp.transform, it.transform);
+        const h = Math.hypot(m[2], m[3]) || 10;
+        const w = (it.width || 0) * pdfScale;
+        return { str: it.str, left: m[4], top: m[5] - h, right: m[4] + w, bottom: m[5] };
+      });
+    let concat = "";
+    const map = []; // concat 인덱스 → items 인덱스
+    items.forEach((it, i) => {
+      const s = it.str + " ";
+      for (let k = 0; k < s.length; k++) map.push(i);
+      concat += s;
+    });
+    // 공백 유연·대소문자 무시로 매칭 (모델 인용과 PDF 띄어쓰기 차이 흡수)
+    const esc = phrase.trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    const m = new RegExp(esc, "i").exec(concat);
+    if (!m) return null;
+    const a = map[m.index];
+    const b = map[Math.min(concat.length - 1, m.index + m[0].length - 1)];
+    let top = Infinity, bottom = -Infinity, left = Infinity, right = -Infinity;
+    for (let i = a; i <= b; i++) {
+      const it = items[i];
+      if (!it) continue;
+      top = Math.min(top, it.top);
+      bottom = Math.max(bottom, it.bottom);
+      left = Math.min(left, it.left);
+      right = Math.max(right, it.right);
+    }
+    return top === Infinity ? null : { top, bottom, left, right };
+  } catch {
+    return null;
+  }
+}
+
+// 수식/근거 배지 클릭 → 해당 페이지로 스크롤 + (loc 있으면) 수식 위에 하이라이트
+// loc: { anchor_above, anchor_below, bbox }  (없으면 페이지 이동만)
+async function jumpToPdfPage(page, loc) {
   if (!currentHash) return;
   if (!pdfAvailable) {
     showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
@@ -354,29 +398,52 @@ async function jumpToPdfPage(page, bbox) {
 
   const wrap = pdfPageEls.get(page);
   if (!wrap) return;
-  await renderPdfPage(page, pdfRenderToken); // 렌더 보장
-  drawPdfHighlight(wrap, bbox);
-  // 하이라이트가 있으면 그 박스를 화면 중앙에, 없으면 페이지 상단으로
+  await renderPdfPage(page, pdfRenderToken);
+  const canvas = wrap.querySelector(".pdf-canvas");
+  const pageW = canvas ? canvas.width : wrap.getBoundingClientRect().width;
+  const pageH = canvas ? canvas.height : wrap.getBoundingClientRect().height;
+
+  let rect = null; // 캔버스 px 기준 {top,bottom,left,right}
+  if (loc && (loc.anchor_above || loc.anchor_below)) {
+    const above = await findTextRect(page, loc.anchor_above);
+    const below = await findTextRect(page, loc.anchor_below);
+    if (above || below) {
+      // 수식 영역 = 위 줄의 아래끝 ~ 아래 줄의 위끝
+      const top = above ? above.bottom : below.top - pageH * 0.06;
+      let bottom = below ? below.top : above.bottom + pageH * 0.06;
+      if (bottom <= top) bottom = top + pageH * 0.04;
+      const lefts = [above, below].filter(Boolean).map((r) => r.left);
+      const rights = [above, below].filter(Boolean).map((r) => r.right);
+      let left = Math.min(...lefts), right = Math.max(...rights);
+      if (right - left < pageW * 0.25) { left = pageW * 0.08; right = pageW * 0.92; } // 너무 좁으면 컬럼 폭
+      rect = { top, bottom, left, right };
+    }
+  }
+  if (!rect && loc && loc.bbox && ["x0", "y0", "x1", "y1"].every((k) => typeof loc.bbox[k] === "number")) {
+    const bx = loc.bbox;
+    rect = { top: bx.y0 * pageH, bottom: bx.y1 * pageH, left: bx.x0 * pageW, right: bx.x1 * pageW };
+  }
+
+  drawPdfHighlight(wrap, rect, pageW, pageH);
   const hl = wrap.querySelector(".pdf-hl");
   if (hl) hl.scrollIntoView({ block: "center", behavior: "smooth" });
   else wrap.scrollIntoView({ block: "start", behavior: "smooth" });
   flagPdfJump(page);
 }
 
-// 페이지 wrap 위에 bbox(0~1 정규화, top-left 기준) 하이라이트 박스를 그린다
-function drawPdfHighlight(wrap, bbox) {
+// 페이지 wrap 위에 캔버스px rect로 하이라이트 박스를 그린다 (wrap=canvas 크기이므로 %로 변환)
+function drawPdfHighlight(wrap, rect, pageW, pageH) {
   wrap.querySelectorAll(".pdf-hl").forEach((e) => e.remove());
-  if (!bbox || ![bbox.x0, bbox.y0, bbox.x1, bbox.y1].every((v) => typeof v === "number")) return;
+  if (!rect || !(pageW > 0) || !(pageH > 0)) return;
+  const pad = pageH * 0.006;
+  const top = Math.max(0, rect.top - pad);
+  const height = Math.min(pageH - top, rect.bottom - rect.top + pad * 2);
   const hl = document.createElement("div");
   hl.className = "pdf-hl";
-  const x0 = Math.max(0, Math.min(1, bbox.x0));
-  const y0 = Math.max(0, Math.min(1, bbox.y0));
-  const x1 = Math.max(0, Math.min(1, bbox.x1));
-  const y1 = Math.max(0, Math.min(1, bbox.y1));
-  hl.style.left = `${x0 * 100}%`;
-  hl.style.top = `${y0 * 100}%`;
-  hl.style.width = `${Math.max(0.02, x1 - x0) * 100}%`;
-  hl.style.height = `${Math.max(0.01, y1 - y0) * 100}%`;
+  hl.style.left = `${(rect.left / pageW) * 100}%`;
+  hl.style.top = `${(top / pageH) * 100}%`;
+  hl.style.width = `${((rect.right - rect.left) / pageW) * 100}%`;
+  hl.style.height = `${(height / pageH) * 100}%`;
   wrap.appendChild(hl);
   void hl.offsetWidth;
   hl.classList.add("show");
@@ -1558,7 +1625,9 @@ function renderEquations(equations, equationFlow, methodSteps = []) {
       if (page > 0) {
         refBadge.type = "button";
         refBadge.title = `원문 PDF ${page}페이지로 이동`;
-        refBadge.addEventListener("click", () => jumpToPdfPage(page, eq.bbox));
+        refBadge.addEventListener("click", () =>
+          jumpToPdfPage(page, { anchor_above: eq.anchor_above, anchor_below: eq.anchor_below, bbox: eq.bbox })
+        );
       }
       item.appendChild(refBadge);
     }
