@@ -336,6 +336,23 @@ body.reading .new-analysis { display: inline-block; }
   line-height: 1.9;
 }
 
+.cancel-btn {
+  margin-top: 22px;
+  padding: 8px 18px;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.cancel-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ── error ─────────────────────────────────────────────────────────── */
 .error {
   margin-top: 24px;
@@ -753,23 +770,6 @@ body.reading .new-analysis { display: inline-block; }
 .lc-legend { display: flex; justify-content: center; flex-wrap: wrap; gap: 14px; margin-top: 8px; }
 .lc-legend-item { font-size: 0.8rem; color: var(--ink-soft); display: inline-flex; align-items: center; gap: 6px; }
 .lc-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-
-/* 표 */
-.pfig-table { width: 100%; border-collapse: collapse; background: #fff; }
-.pfig-table th {
-  font-family: var(--serif);
-  font-size: 0.82rem;
-  padding: 9px 12px;
-  border-bottom: 2px solid var(--ink);
-  text-align: left;
-  color: var(--ink);
-}
-.pfig-table td {
-  font-size: 0.86rem;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-  color: var(--ink-soft);
-}
 
 /* 수식 흐름도 */
 .eqflow-chain {

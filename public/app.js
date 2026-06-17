@@ -12,6 +12,30 @@ const pdfMissing = document.getElementById("pdf-missing");
 let currentHash = null;
 let chatHistory = [];
 let currentSuggested = [];
+let analysisAbort = null; // 진행 중인 분석/재분석 fetch를 취소하기 위한 AbortController
+
+const cancelBtn = document.getElementById("cancel-analysis");
+// "분석 취소" 버튼 — fetch를 끊으면 서버도 연결 종료를 감지해 에이전트 실행을 멈춘다(사용량 절약)
+cancelBtn.addEventListener("click", () => {
+  if (analysisAbort) analysisAbort.abort();
+});
+
+// 취소 가능한 분석/재분석 시작. 이미 진행 중이던 흐름이 있으면 먼저 취소해
+// (1) 컨트롤러가 항상 현재 흐름을 가리키게 하고 (2) 버려지는 분석의 사용량을 막는다.
+function beginCancellable() {
+  if (analysisAbort) analysisAbort.abort();
+  const ac = new AbortController();
+  analysisAbort = ac;
+  cancelBtn.classList.remove("hidden");
+  return ac;
+}
+// 이 흐름 종료 정리 — 그 사이 다른 흐름이 시작돼 컨트롤러가 바뀌었으면 건드리지 않는다.
+function endCancellable(ac) {
+  if (analysisAbort === ac) {
+    analysisAbort = null;
+    cancelBtn.classList.add("hidden");
+  }
+}
 
 // 백엔드를 다른 도메인에 둘 때(예: 프론트는 GitHub Pages, 백엔드는 Render)
 // index.html에서 <script>window.API_BASE = "https://...";</script> 로 지정
@@ -53,8 +77,11 @@ async function analyzeFile(file) {
   const form = new FormData();
   form.append("pdf", file);
 
+  const ac = beginCancellable();
   try {
-    const res = await fetch(`${API_BASE}/api/analyze`, { method: "POST", body: form });
+    const res = await fetch(`${API_BASE}/api/analyze`, {
+      method: "POST", body: form, signal: ac.signal,
+    });
     if (!res.ok) {
       const data = await safeJson(res);
       throw new Error(formatApiError(data, res.status));
@@ -63,8 +90,10 @@ async function analyzeFile(file) {
     renderResult(data);
     loadHistory();
   } catch (e) {
-    showError(e.message);
+    if (e.name === "AbortError") loadHistory(); // 사용자가 취소 — 조용히 초기 화면으로
+    else showError(e.message);
   } finally {
+    endCancellable(ac);
     loadingEl.classList.add("hidden");
     setActiveAnalysis(null);
     setLoadingText("논문을 분석하고 있습니다…");
@@ -668,12 +697,11 @@ function renderMethod(data) {
   panel.innerHTML = "";
 
   // figures (신규) 또는 architecture (구버전 호환)
-  const figures = (Array.isArray(data.figures)
+  const figures = Array.isArray(data.figures)
     ? data.figures
     : data.architecture && Array.isArray(data.architecture.flow)
       ? [{ type: "flow", ...data.architecture, title: "모델 아키텍처" }]
-      : []
-  ).filter((f) => f.type !== "table"); // 방법론 탭에 표 재구성은 표시하지 않음
+      : [];
   figures.forEach((f) => {
     const el = buildFigure(f);
     if (el) panel.appendChild(el);
@@ -710,13 +738,12 @@ function renderMethod(data) {
   }
 }
 
-// ---------- figure 렌더러 (flow / bar / line / table) ----------
+// ---------- figure 렌더러 (flow / bar / line) ----------
 function buildFigure(f) {
   let body;
   if (f.type === "flow" && Array.isArray(f.flow) && f.flow.length) body = buildFlow(f);
   else if (f.type === "bar" && Array.isArray(f.bars) && f.bars.length) body = buildBars(f);
   else if (f.type === "line" && Array.isArray(f.lines) && f.lines.length) body = buildLines(f);
-  else if (f.type === "table" && Array.isArray(f.rows) && f.rows.length) body = buildTable(f);
   if (!body) return null;
 
   const fig = document.createElement("figure");
@@ -1508,30 +1535,6 @@ function fmtNum(n) {
   return Math.abs(n) >= 1000 ? n.toLocaleString() : String(Math.round(n * 100) / 100);
 }
 
-function buildTable(f) {
-  const table = document.createElement("table");
-  table.className = "pfig-table";
-  if (Array.isArray(f.headers) && f.headers.length) {
-    const tr = document.createElement("tr");
-    f.headers.forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      tr.appendChild(th);
-    });
-    table.appendChild(tr);
-  }
-  f.rows.forEach((row) => {
-    const tr = document.createElement("tr");
-    (Array.isArray(row) ? row : [row]).forEach((cell) => {
-      const td = document.createElement("td");
-      td.textContent = cell;
-      tr.appendChild(td);
-    });
-    table.appendChild(tr);
-  });
-  return table;
-}
-
 function renderEquations(equations, equationFlow, methodSteps = []) {
   const panel = document.getElementById("panel-equations");
   panel.innerHTML = "";
@@ -1767,8 +1770,11 @@ async function loadHistory() {
         loadingEl.classList.remove("hidden");
         setActiveAnalysis(it.title || "재분석");
         setLoadingProgress("재분석을 시작하는 중…", 0);
+        const ac = beginCancellable();
         try {
-          const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, { method: "POST" });
+          const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, {
+            method: "POST", signal: ac.signal,
+          });
           if (!res.ok) {
             const d = await safeJson(res);
             throw new Error((d && d.error) || `HTTP ${res.status}`);
@@ -1778,8 +1784,9 @@ async function loadHistory() {
           loadHistory();
           window.scrollTo({ top: 0, behavior: "smooth" });
         } catch (err) {
-          showError(err.message);
+          if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
         } finally {
+          endCancellable(ac);
           loadingEl.classList.add("hidden");
           setActiveAnalysis(null);
           setLoadingText("논문을 분석하고 있습니다…");
@@ -1816,6 +1823,10 @@ async function loadHistory() {
 
 async function openHistory(hash) {
   hideError();
+  // 저장된 결과 열람은 취소 대상이 아니다. 진행 중이던 분석이 있으면 취소하고(사용자가 다른 글로 이동),
+  // 취소 버튼은 숨긴다 — 이 fetch는 취소 버튼이 제어하지 않으므로 엉뚱한 중단을 막는다.
+  if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
+  cancelBtn.classList.add("hidden");
   loadingEl.classList.remove("hidden");
   document.getElementById("loading-text").textContent = "저장된 분석 결과를 불러오는 중…";
   try {
