@@ -355,7 +355,7 @@ body.reading .new-analysis { display: inline-block; }
   align-items: start;
 }
 .workspace.pdf-collapsed { grid-template-columns: minmax(0, 1fr); }
-.workspace.pdf-collapsed .pdf-pane iframe,
+.workspace.pdf-collapsed .pdf-pane .pdf-scroll,
 .workspace.pdf-collapsed .pdf-pane .pdf-missing { display: none; }
 .workspace.pdf-collapsed .pdf-pane { position: fixed; left: 12px; top: 12px; height: auto; width: auto; z-index: 20; }
 
@@ -421,7 +421,40 @@ body.reading .new-analysis { display: inline-block; }
   cursor: pointer;
 }
 #pdf-toggle:hover { border-color: var(--accent); color: var(--accent); }
-#pdf-frame { flex: 1; width: 100%; border: none; }
+/* PDF.js 스크롤 뷰어 */
+.pdf-scroll {
+  flex: 1;
+  width: 100%;
+  overflow-y: auto;
+  background: #eceae4;
+  padding: 10px 0;
+  scrollbar-width: thin;
+}
+.pdf-page {
+  position: relative;
+  margin: 0 auto 10px;
+  width: fit-content;
+  background: #fff;
+  box-shadow: 0 2px 8px -3px rgba(33, 29, 25, 0.4);
+}
+.pdf-canvas { display: block; }
+/* 수식 하이라이트 박스 (페이지 wrap 기준 % 위치) */
+.pdf-hl {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: rgba(255, 211, 64, 0.28);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px rgba(140, 47, 57, 0.25);
+  pointer-events: none;
+  opacity: 0;
+}
+.pdf-hl.show { animation: hlpulse 2.2s ease; opacity: 1; }
+@keyframes hlpulse {
+  0%   { opacity: 0; transform: scale(1.08); }
+  12%  { opacity: 1; transform: scale(1); }
+  70%  { opacity: 1; background: rgba(255, 211, 64, 0.28); }
+  100% { opacity: 1; background: rgba(255, 211, 64, 0.16); }
+}
 .pdf-missing {
   flex: 1;
   display: flex;
@@ -1381,7 +1414,7 @@ body.reading .new-analysis { display: inline-block; }
 }
 .chat-resize:hover { border-left-color: var(--accent); }
 body.chat-resizing { user-select: none; cursor: ew-resize; }
-body.chat-resizing #pdf-frame { pointer-events: none; }
+body.chat-resizing .pdf-scroll { pointer-events: none; }
 .chat-drawer-head {
   display: flex;
   justify-content: space-between;

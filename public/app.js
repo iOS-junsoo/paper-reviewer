@@ -6,7 +6,7 @@ const errorEl = document.getElementById("error");
 const workspaceEl = document.getElementById("workspace");
 const cacheBadge = document.getElementById("cache-badge");
 const historyList = document.getElementById("history-list");
-const pdfFrame = document.getElementById("pdf-frame");
+const pdfScroll = document.getElementById("pdf-scroll");
 const pdfMissing = document.getElementById("pdf-missing");
 
 let currentHash = null;
@@ -264,24 +264,86 @@ function buildTimeline(items) {
 // ---------- 원문 PDF 패널 ----------
 let pdfAvailable = false;
 
+// ── PDF.js 뷰어 ───────────────────────────────────────────────────
+// iframe 대신 PDF.js로 직접 렌더링 → 페이지 위에 수식 하이라이트 박스를 얹을 수 있다
+if (typeof pdfjsLib !== "undefined") {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+let pdfDoc = null;
+let pdfScale = 1;
+let pdfRenderToken = 0; // 논문 전환 시 이전 렌더 무효화
+const pdfPageEls = new Map(); // pageNum -> wrap div
+
 async function loadPdf(hash) {
-  pdfFrame.classList.add("hidden");
   pdfMissing.classList.add("hidden");
+  pdfScroll.classList.add("hidden");
   pdfAvailable = false;
+  pdfDoc = null;
+  pdfPageEls.clear();
+  pdfScroll.innerHTML = "";
+  const token = ++pdfRenderToken;
   if (!hash) return pdfMissing.classList.remove("hidden");
+
   try {
     const head = await fetch(`${API_BASE}/api/pdf/${hash}`, { method: "HEAD" });
-    if (!head.ok) throw new Error();
-    pdfFrame.src = `${API_BASE}/api/pdf/${hash}`;
-    pdfFrame.classList.remove("hidden");
+    if (!head.ok) throw new Error("no pdf");
+    if (typeof pdfjsLib === "undefined") throw new Error("pdfjs 미로딩");
+
+    const doc = await pdfjsLib.getDocument(`${API_BASE}/api/pdf/${hash}`).promise;
+    if (token !== pdfRenderToken) return; // 그 사이 다른 논문으로 전환됨
+    pdfDoc = doc;
     pdfAvailable = true;
+    pdfScroll.classList.remove("hidden");
+
+    // 1페이지 크기로 폭에 맞춘 스케일 계산 + 모든 페이지 placeholder 생성(렌더는 지연)
+    const first = await doc.getPage(1);
+    const baseVp = first.getViewport({ scale: 1 });
+    pdfScale = Math.max(0.3, (pdfScroll.clientWidth - 18) / baseVp.width);
+    const phH = baseVp.height * pdfScale;
+
+    const lazy = new IntersectionObserver(
+      (entries) => entries.forEach((e) => {
+        if (e.isIntersecting) renderPdfPage(Number(e.target.dataset.page), token);
+      }),
+      { root: pdfScroll, rootMargin: "400px 0px" }
+    );
+    for (let n = 1; n <= doc.numPages; n++) {
+      const wrap = document.createElement("div");
+      wrap.className = "pdf-page";
+      wrap.dataset.page = n;
+      wrap.style.height = `${phH}px`;
+      pdfScroll.appendChild(wrap);
+      pdfPageEls.set(n, wrap);
+      lazy.observe(wrap);
+    }
   } catch {
     pdfMissing.classList.remove("hidden");
   }
 }
 
-// 수식 배지 클릭 → 좌측 PDF를 해당 페이지로 이동
-function jumpToPdfPage(page) {
+async function renderPdfPage(n, token) {
+  const wrap = pdfPageEls.get(n);
+  if (!wrap || wrap.dataset.rendered || !pdfDoc) return;
+  wrap.dataset.rendered = "1";
+  try {
+    const page = await pdfDoc.getPage(n);
+    if (token !== pdfRenderToken) return;
+    const vp = page.getViewport({ scale: pdfScale });
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-canvas";
+    canvas.width = vp.width;
+    canvas.height = vp.height;
+    wrap.style.height = "";
+    wrap.appendChild(canvas);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  } catch {
+    wrap.dataset.rendered = ""; // 실패 시 재시도 허용
+  }
+}
+
+// 수식/근거 배지 클릭 → 해당 페이지로 스크롤 + (bbox 있으면) 수식 위에 하이라이트 박스
+async function jumpToPdfPage(page, bbox) {
   if (!currentHash) return;
   if (!pdfAvailable) {
     showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
@@ -290,17 +352,31 @@ function jumpToPdfPage(page) {
   workspaceEl.classList.remove("pdf-collapsed");
   document.getElementById("pdf-toggle").textContent = "접기 ◀";
 
-  const url = `${API_BASE}/api/pdf/${currentHash}#page=${page}`;
-  const sameDoc = pdfFrame.src.split("#")[0] === url.split("#")[0];
-  if (sameDoc) {
-    // 같은 PDF가 이미 떠 있으면 프래그먼트(#page)만 바뀌어선 내장 뷰어가 이동하지 않는다 → 강제 리로드
-    pdfFrame.src = "about:blank";
-    setTimeout(() => { pdfFrame.src = url; }, 60);
-  } else {
-    pdfFrame.src = url;
-  }
-  pdfFrame.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  const wrap = pdfPageEls.get(page);
+  if (!wrap) return;
+  await renderPdfPage(page, pdfRenderToken); // 렌더 보장
+  wrap.scrollIntoView({ block: "start", behavior: "smooth" });
+  drawPdfHighlight(wrap, bbox);
   flagPdfJump(page);
+}
+
+// 페이지 wrap 위에 bbox(0~1 정규화, top-left 기준) 하이라이트 박스를 그린다
+function drawPdfHighlight(wrap, bbox) {
+  wrap.querySelectorAll(".pdf-hl").forEach((e) => e.remove());
+  if (!bbox || ![bbox.x0, bbox.y0, bbox.x1, bbox.y1].every((v) => typeof v === "number")) return;
+  const hl = document.createElement("div");
+  hl.className = "pdf-hl";
+  const x0 = Math.max(0, Math.min(1, bbox.x0));
+  const y0 = Math.max(0, Math.min(1, bbox.y0));
+  const x1 = Math.max(0, Math.min(1, bbox.x1));
+  const y1 = Math.max(0, Math.min(1, bbox.y1));
+  hl.style.left = `${x0 * 100}%`;
+  hl.style.top = `${y0 * 100}%`;
+  hl.style.width = `${Math.max(0.02, x1 - x0) * 100}%`;
+  hl.style.height = `${Math.max(0.01, y1 - y0) * 100}%`;
+  wrap.appendChild(hl);
+  void hl.offsetWidth;
+  hl.classList.add("show");
 }
 
 // PDF 패널에 "여기로 이동했다"는 시각 표시 (펄스 + 페이지 플래그)
@@ -1479,7 +1555,7 @@ function renderEquations(equations, equationFlow, methodSteps = []) {
       if (page > 0) {
         refBadge.type = "button";
         refBadge.title = `원문 PDF ${page}페이지로 이동`;
-        refBadge.addEventListener("click", () => jumpToPdfPage(page));
+        refBadge.addEventListener("click", () => jumpToPdfPage(page, eq.bbox));
       }
       item.appendChild(refBadge);
     }
