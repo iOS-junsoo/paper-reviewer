@@ -386,7 +386,8 @@ async function findEqNumberPos(pageNum, eqNum) {
       if (s === want || s.endsWith(want)) {
         const m = pdfjsLib.Util.transform(vp.transform, it.transform);
         const h = Math.hypot(m[2], m[3]) || 11;
-        const cand = { x: m[4], y: m[5] - h, h };
+        const w = (it.width || 0) * pdfScale;
+        const cand = { x: m[4], y: m[5] - h, h, right: m[4] + w };
         if (!best || cand.x > best.x) best = cand; // 가장 오른쪽 = 수식 번호
       }
     }
@@ -405,7 +406,9 @@ function markEqNumber(wrap, pos) {
   chk.className = "pdf-eqcheck";
   chk.textContent = "✓";
   chk.style.width = chk.style.height = `${size}px`;
-  chk.style.left = `${Math.max(0, pos.x - size - 3)}px`; // 번호 왼쪽
+  // 수식 번호 "(N)" 오른쪽 끝 뒤에 배치 (수식 본문과 겹치지 않게)
+  const rightEdge = pos.right || pos.x;
+  chk.style.left = `${rightEdge + 4}px`;
   chk.style.top = `${pos.y + pos.h / 2 - size / 2}px`;
   wrap.appendChild(chk);
   void chk.offsetWidth;
