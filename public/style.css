@@ -40,32 +40,38 @@
   --card: #1f1c23;
 }
 
-/* 다크 모드 대비 보정 — 본문 카드/패널이 #fff·크림색을 하드코딩해 둔 곳은
-   다크에서 흰 글씨가 흰 배경에 묻힌다. 다크일 때만 테마 변수 배경으로 덮어쓴다
-   (라이트·세피아는 어두운 글씨라 기존 밝은 카드로도 가독성 OK). */
+/* 다크 모드 대비 보정 — 본문/콘텐츠 카드가 #fff·크림색을 하드코딩해 둔 곳은
+   다크에서 흰 글씨가 흰 배경에 묻힌다. 다크일 때만 테마 변수 배경으로 덮어쓴다. */
 :root[data-theme="dark"] .eq-item,
 :root[data-theme="dark"] .eqflow-node,
-:root[data-theme="dark"] .arch-block,
-:root[data-theme="dark"] .flow-viz-panel,
-:root[data-theme="dark"] .tfm-card,
-:root[data-theme="dark"] .flow-btn,
-:root[data-theme="dark"] .flow-role,
 :root[data-theme="dark"] .chat-a,
 :root[data-theme="dark"] .chat-chip {
   background: var(--card);
   border-color: var(--line);
 }
-:root[data-theme="dark"] .arch-block { background-image: none; } /* 흰 그라데이션 제거 */
-:root[data-theme="dark"] .arch,
-:root[data-theme="dark"] .pfig,
-:root[data-theme="dark"] .iviz,
-:root[data-theme="dark"] .eq-vars {
-  background: var(--paper-deep);
-  border-color: var(--line);
-}
+:root[data-theme="dark"] .eq-vars { background: var(--paper-deep); border-color: var(--line); }
 /* 형광펜(==mark==)은 노란 배경이 고정이라 글씨도 고정 어두운 색으로 (다크에서 흰 글씨 방지) */
 :root[data-theme="dark"] .panel mark,
 :root[data-theme="dark"] .eq-explanation mark { color: #2a2113; }
+
+/* 시각화(그림·다이어그램·차트)는 다크 모드에서도 '밝은 도판'으로 렌더한다.
+   모델이 그린 SVG는 흰 블록·어두운 글씨(라이트 팔레트 고정)로 짜여 있고, 히트맵·벡터
+   셀도 밝은 면 기준 색이라, 다크 페이지 위에선 깨진다. .pfig 하위에 라이트 팔레트를
+   국소 재정의하면 모델 SVG·히트맵·벡터·차트가 설계대로(밝은 종이 위) 그대로 읽힌다. */
+:root[data-theme="dark"] .pfig {
+  --paper: #faf6ef;
+  --paper-deep: #f3ede1;
+  --ink: #211d19;
+  --ink-soft: #5c554b;
+  --ink-faint: #9b9285;
+  --line: #e3dccd;
+  --accent: #8c2f39;
+  --accent-soft: #f6e9e9;
+  --card: #fffdf9;
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
