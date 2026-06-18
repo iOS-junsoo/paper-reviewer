@@ -54,6 +54,7 @@ if (fs.existsSync(serviceAccountPath)) {
   const db = admin.firestore();
   const analyses = db.collection("analyses");
   const chats = db.collection("chats");
+  const notes = db.collection("notes");
   store = {
     kind: "firestore",
     async getChat(hash) {
@@ -63,6 +64,16 @@ if (fs.existsSync(serviceAccountPath)) {
     async setChat(hash, messages) {
       await chats.doc(hash).set({
         messagesJson: JSON.stringify(messages),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    },
+    async getNotes(hash) {
+      const doc = await notes.doc(hash).get();
+      return doc.exists ? JSON.parse(doc.data().notesJson || "{}") : { notes: "", bookmarks: [] };
+    },
+    async setNotes(hash, data) {
+      await notes.doc(hash).set({
+        notesJson: JSON.stringify(data),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     },
@@ -88,6 +99,7 @@ if (fs.existsSync(serviceAccountPath)) {
     async delete(hash) {
       await analyses.doc(hash).delete();
       await chats.doc(hash).delete().catch(() => {});
+      await notes.doc(hash).delete().catch(() => {});
     },
     async list() {
       const snap = await analyses.orderBy("createdAt", "desc").limit(100).get();
@@ -115,6 +127,7 @@ if (fs.existsSync(serviceAccountPath)) {
 if (!firestoreReady) {
   const mem = new Map();
   const chatMem = new Map();
+  const notesMem = new Map();
   store = {
     kind: "memory",
     async getChat(hash) {
@@ -122,6 +135,12 @@ if (!firestoreReady) {
     },
     async setChat(hash, messages) {
       chatMem.set(hash, messages);
+    },
+    async getNotes(hash) {
+      return notesMem.get(hash) || { notes: "", bookmarks: [] };
+    },
+    async setNotes(hash, data) {
+      notesMem.set(hash, data);
     },
     async get(hash) {
       return mem.get(hash) || null;
@@ -132,6 +151,7 @@ if (!firestoreReady) {
     async delete(hash) {
       mem.delete(hash);
       chatMem.delete(hash);
+      notesMem.delete(hash);
     },
     async list() {
       return [...mem.values()]
@@ -224,7 +244,12 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
     "limitations": "저자가 인정한 한계와 향후 연구 (## 소제목으로 단락 구분 가능, 마크업·[[p..]] 근거 사용 가능)",
     "takeaway": "실험 결과를 한 문장으로 요약 (이 논문이 '무엇을 얼마나' 개선했는지)"
   },
-  "suggested_questions": ["이 논문에 대해 독자(세미나 청중)가 던질 법한 좋은 질문 3개 — 짧은 한 문장씩"],
+  "suggested_questions": [
+    { "q": "세미나 청중이 실제로 던질 법한 날카로운 질문", "category": "핵심 공백 | 방법 | 실험 설계 | 선행 연구 대비 중 하나", "why": "이 질문이 왜 나올지 + 어떻게 답하면 좋을지 한 줄 (가능하면 한계·ablation에 근거)" }
+  ],
+  "glossary": [
+    { "term": "핵심 기호/용어 (영어 원어 또는 기호 이름)", "latex": "수학 기호면 KaTeX LaTeX 문자열(예: W_q), 일반 용어면 null", "meaning": "비전공자도 알 만큼 쉬운 한 줄 뜻" }
+  ],
   "related_papers": [
     { "title": "선행 논문 제목 (영어 원제)", "year": 2015, "reason": "이 논문을 이해하는 데 왜 먼저 읽으면 좋은지 한 줄", "link": "arXiv 등 실제 URL — WebSearch로 확인, 확실하지 않으면 null" }
   ],
@@ -283,7 +308,8 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
   어떤 블록이든 위 6개로 표현이 애매하면 transform을 쓰세요. ==전체 flow에서 같은 type만 반복하지 말고, 데이터가 토큰→벡터→가중치행렬→확률처럼 변해가는 흐름이 type 선택에서 드러나게== 하세요.
 - equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
 - experiments: 실험·결과 섹션 (전용 탭). ==방법론 figures와 달리 여기서는 성능 수치·벤치마크를 적극적으로 담으세요==. datasets(사용한 데이터셋과 규모), baselines(비교한 기존 방법들), metrics(핵심 지표 — 논문이 보고한 ==실제 수치만==, highlight=true는 이 논문의 결과, note에 비교 맥락), ablations(구성요소를 빼보는 실험에서 얻은 통찰), limitations(저자가 스스로 인정한 한계 + 향후 연구), takeaway(결과 한 줄 결론). ==수치는 논문에서 실제로 읽은 값만 쓰고, 확인 못 한 항목은 비우세요(지어내기 절대 금지)==. 실험이 거의 없는 이론/서베이 논문이면 metrics·datasets는 비우고 limitations·takeaway만 채우거나 experiments 자체를 생략하세요.
-- suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 3개 (예: 방법의 한계, 실험 설계의 빈틈, 다른 접근과의 비교). 질문하기 기능의 추천 칩으로 표시됩니다.
+- suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 4~6개. 각 질문은 category(핵심 공백/방법/실험 설계/선행 연구 대비)로 분류하고, why에 "이 질문이 왜 나올지 + 어떻게 답하면 좋을지"를 한 줄로 쓰세요(가능하면 limitations·ablations 내용에 근거). 발표자의 'Q&A 준비'에 쓰이며, 클릭하면 질문하기로 연결됩니다. 가장 날카로운(답하기 까다로운) 순서로.
+- glossary: 이 논문을 따라가는 데 꼭 필요한 핵심 기호·전문 용어 6~15개. term은 영어 원어나 기호 이름, latex는 수학 기호일 때만 KaTeX 문자열(아니면 null), meaning은 한 줄 쉬운 뜻. 발표 중 표기를 잊지 않도록 돕는 용어집입니다. 수식 변수표와 중복돼도 좋으니 한 곳에 모으세요.
 - related_papers: 이 논문을 이해하기 위해 ==먼저 읽으면 좋은 선행 논문 3~5편==. 본문에서 중요하게 인용된 것 위주로, reason에 "왜 먼저"를 한 줄로. link는 WebSearch로 실제 arXiv URL(https://arxiv.org/abs/...)을 확인해 넣고, 확인 못 하면 null (가짜 URL 금지).
 - equation_flow: 수식 탭 맨 위에 표시되는 "수식 로드맵". equations의 순서를 따라 각 수식을 하나의 노드로 잇고, goal에는 그 수식이 구하는 것을 짧게, why에는 왜 그걸 구해야 전체 그림이 완성되는지를 쓰세요. 사용자가 개별 수식을 읽기 전에 "왜 이 수식들이 이 순서로 필요한가"를 먼저 이해하는 용도입니다. 수식이 없으면 null.
 
@@ -422,6 +448,14 @@ function abortOnDisconnect(res, ac, label = "") {
 
 // 같은 논문이 동시에 두 번 분석되는 것을 방지 (구독 사용량 이중 소모 방지)
 const inFlight = new Set();
+// 한 논문(hash)에 대한 모든 변형 작업(전체 분석·재분석·섹션 재생성)을 직렬화한다.
+// 키가 hash 또는 `${hash}:${section}` 두 종류라, 어느 하나라도 진행 중이면 새 변형을 거부해야
+// 동시 read-modify-write로 인한 덮어쓰기(lost update)를 막는다.
+function hashBusy(hash) {
+  if (inFlight.has(hash)) return true;
+  for (const k of inFlight) if (k.startsWith(hash + ":")) return true;
+  return false;
+}
 
 async function runAnalysisJob(res, hash, pageCount, fallbackTitle, ac) {
   inFlight.add(hash);
@@ -507,7 +541,7 @@ const app = express();
 if (process.env.ALLOWED_ORIGIN) {
   app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", process.env.ALLOWED_ORIGIN);
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.sendStatus(204);
     next();
@@ -515,7 +549,7 @@ if (process.env.ALLOWED_ORIGIN) {
 }
 
 app.use(express.static(path.join(__dirname, "public")));
-app.use(express.json()); // /api/ask 본문 파싱
+app.use(express.json({ limit: "1mb" })); // /api/ask·/api/notes 본문 (메모 최대치가 100kb 기본 한도 초과 가능)
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -566,7 +600,7 @@ app.post("/api/analyze", (req, res) => {
       const hash = crypto.createHash("sha256").update(buffer).digest("hex");
       await fs.promises.writeFile(path.join(PDF_DIR, `${hash}.pdf`), buffer); // 뷰어·재분석·질문용
 
-      if (inFlight.has(hash)) {
+      if (hashBusy(hash)) {
         return res.status(409).json({
           error: "이 논문은 이미 분석이 진행 중입니다. 잠시 후 히스토리에서 확인하세요.",
         });
@@ -604,7 +638,7 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
         error: "저장된 원문 PDF가 없습니다. 같은 PDF를 다시 업로드하면 그때부터 재분석할 수 있습니다.",
       });
     }
-    if (inFlight.has(hash)) {
+    if (hashBusy(hash)) {
       return res.status(409).json({ error: "이 논문은 이미 분석이 진행 중입니다." });
     }
     const buffer = await fs.promises.readFile(pdfPath);
@@ -729,6 +763,131 @@ app.get("/api/chat/:hash", async (req, res) => {
     res.json({ messages: await store.getChat(hash) });
   } catch (e) {
     res.status(500).json({ error: `채팅 기록 조회 실패: ${e.message}` });
+  }
+});
+
+// --- 메모 & 북마크 (논문별 개인 메모, 기기 간 공유) ----------------------------
+// sha256 해시(64 hex)만 허용 — 빈/잘못된 hash가 공유 버킷("")에 쓰이는 것 방지
+const isValidHash = (h) => /^[a-f0-9]{16,64}$/.test(h);
+app.get("/api/notes/:hash", async (req, res) => {
+  try {
+    const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+    if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
+    res.json(await store.getNotes(hash));
+  } catch (e) {
+    res.status(500).json({ error: `메모 조회 실패: ${e.message}` });
+  }
+});
+app.put("/api/notes/:hash", async (req, res) => {
+  try {
+    const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+    if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
+    const body = req.body || {};
+    const data = {
+      notes: typeof body.notes === "string" ? body.notes.slice(0, 20000) : "",
+      bookmarks: Array.isArray(body.bookmarks) ? body.bookmarks.slice(0, 200) : [],
+    };
+    await store.setNotes(hash, data);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: `메모 저장 실패: ${e.message}` });
+  }
+});
+
+// --- POST /api/reanalyze-section/:hash — 한 섹션만 다시 생성 (전체 재분석 없이) ---
+// 캐시된 원문 PDF에서 해당 부분만 다시 읽어 그 섹션의 JSON만 받아 기존 분석에 병합한다.
+// 전체 재분석(30페이지 재독)의 일부 비용으로 약한 섹션만 보강 — Max 사용량 절약.
+const SECTION_FIELDS = {
+  background: { keys: ["background", "timeline"], label: "연구 배경(과 분야 타임라인)" },
+  problem: { keys: ["problem"], label: "해결하려는 것" },
+  method: { keys: ["method_steps", "figures"], label: "연구 방법론(단계·시각화)" },
+  results: { keys: ["experiments"], label: "실험·결과" },
+  equations: { keys: ["equations", "equation_flow"], label: "수식 정리(와 수식 흐름도)" },
+  contributions: { keys: ["contributions"], label: "핵심 기여" },
+  qa: { keys: ["suggested_questions"], label: "예상 Q&A" },
+  glossary: { keys: ["glossary"], label: "용어집" },
+};
+app.post("/api/reanalyze-section/:hash", async (req, res) => {
+  const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+  const section = String((req.body && req.body.section) || "");
+  const spec = SECTION_FIELDS[section];
+  if (!spec) return res.status(400).json({ error: "알 수 없는 섹션입니다." });
+  const inflightKey = `${hash}:${section}`;
+  if (hashBusy(hash)) {
+    return res.status(409).json({ error: "이 논문은 이미 분석/재생성이 진행 중입니다." });
+  }
+  const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
+  if (!fs.existsSync(pdfPath)) {
+    return res.status(404).json({ error: "저장된 원문 PDF가 없어 섹션을 다시 생성할 수 없습니다." });
+  }
+  const record = await store.get(hash);
+  if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
+
+  const ac = new AbortController();
+  abortOnDisconnect(res, ac, `섹션 재생성: ${spec.label}`);
+  inFlight.add(inflightKey);
+  try {
+    const a = record.analysis || {};
+    const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
+    const pageCount = doc.getPageCount();
+    const prompt =
+      `${pdfPath} 경로에 "${a.title || ""}" 논문 PDF(${pageCount}페이지)가 있습니다. 이미 분석된 논문인데 ` +
+      `'${spec.label}' 섹션만 더 정확하고 풍부하게 다시 만들려 합니다.\n` +
+      `Read 도구로 이 섹션과 관련된 부분을 다시 읽으세요(필요한 범위만, 20페이지씩).\n` +
+      `시스템 프롬프트의 스키마·마크업 규칙을 그대로 따르되, ==최종 출력은 다음 키만 담은 JSON 객체 하나==로 하세요: ${spec.keys.map((k) => `"${k}"`).join(", ")}.\n` +
+      `다른 섹션과 어조·용어가 일관되도록, 기존 한 줄 요약은 다음과 같습니다: ${(a.one_liner || "").slice(0, 200)}`;
+
+    let raw = null;
+    for await (const msg of query({
+      prompt,
+      options: { systemPrompt: SYSTEM_PROMPT, model: MODEL, allowedTools: ["Read", "WebSearch"], maxTurns: 60, cwd: PDF_DIR, abortController: ac },
+    })) {
+      if (msg.type === "result") {
+        if (msg.subtype !== "success") {
+          const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
+          const e = new Error(`섹션 재생성 실패 (${msg.subtype})`);
+          if (isAuthError(detail)) e.code = "AUTH";
+          throw e;
+        }
+        raw = msg.result;
+      }
+    }
+    if (raw == null) throw new Error("재생성 결과를 받지 못했습니다.");
+    const partial = parseModelJson(raw);
+    // 요청한 키만 추려 병합. 빈 값(빈 배열·빈 객체·빈 문자열)으로는 덮어쓰지 않는다
+    // — 모델이 일부만 돌려줘도 기존 좋은 데이터(지표·데이터셋 등)가 사라지지 않게.
+    const isEmptyVal = (v) =>
+      v == null ||
+      (Array.isArray(v) && v.length === 0) ||
+      (typeof v === "string" && v.trim() === "") ||
+      (typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
+    const merged = { ...a };
+    let applied = 0;
+    for (const k of spec.keys) {
+      if (k in partial && !isEmptyVal(partial[k])) { merged[k] = partial[k]; applied++; }
+    }
+    if (applied === 0) {
+      // 모델이 요청한 키를 비우거나 빠뜨림 → 저장하지 않고 알림 (사용량만 쓰고 변화 없음 방지)
+      return res.status(422).json({ error: "재생성 결과에서 바뀐 내용을 찾지 못했습니다. 다시 시도해 보세요." });
+    }
+
+    await store.set(hash, {
+      hash,
+      title: merged.title || record.title,
+      one_liner: merged.one_liner || record.one_liner,
+      analysis: merged,
+    });
+    res.json({ ok: true, section, analysis: { cached: false, hash, ...merged } });
+  } catch (e) {
+    if (ac.signal.aborted) return;
+    console.error("[/api/reanalyze-section 오류]", e);
+    if (res.headersSent || res.writableEnded || res.destroyed) return;
+    if (e && (e.code === "AUTH" || isAuthError(e.message))) {
+      return res.status(401).json({ error: AUTH_ERROR_MSG });
+    }
+    res.status(500).json({ error: `섹션 재생성 실패: ${e.message}` });
+  } finally {
+    inFlight.delete(inflightKey);
   }
 });
 

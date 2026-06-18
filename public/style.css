@@ -1822,6 +1822,220 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 .res-ablations { padding-left: 1.1em; }
 .res-ablations li { font-size: 0.92rem; color: var(--ink); margin: 7px 0; line-height: 1.6; }
 
+/* ── 결과 도구 모음 (복사·내보내기·재생성·메모·용어집) ───────────────── */
+.result-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 4px 0 18px;
+}
+.rtool {
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 13px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.rtool:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.rtool:disabled { opacity: 0.55; cursor: default; }
+.rtool-sm { font-size: 0.74rem; padding: 4px 10px; }
+
+/* ── 예상 Q&A 준비 (#1) ─────────────────────────────────────────────── */
+.qa-prep { margin-top: 40px; }
+.qa-prep > h3 {
+  font-family: var(--serif);
+  font-size: 1.1rem;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.qa-sub { color: var(--ink-faint); font-size: 0.84rem; margin-bottom: 14px; }
+.qa-list { list-style: none; display: flex; flex-direction: column; gap: 12px; }
+.qa-item {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  background: var(--card);
+  border-radius: 0 10px 10px 0;
+  padding: 12px 16px;
+}
+.qa-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.qa-cat {
+  flex: none;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+.qa-q { font-size: 0.96rem; color: var(--ink); font-weight: 500; line-height: 1.55; }
+.qa-why { font-size: 0.84rem; color: var(--ink-soft); margin-top: 6px; line-height: 1.55; }
+.qa-ask {
+  margin-top: 9px;
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.qa-ask:hover { text-decoration: underline; }
+
+/* ── 사이드 카드 (용어집 · 메모) ──────────────────────────────────────── */
+.side-card {
+  margin-top: 26px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.side-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--serif);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--ink);
+  margin-bottom: 12px;
+}
+.side-card-head > span:first-child { flex: 1; }
+.side-card-x {
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.side-card-x:hover { color: var(--accent); }
+.side-card-search {
+  width: 100%;
+  margin-bottom: 12px;
+  padding: 7px 11px;
+  font-family: var(--sans);
+  font-size: 0.84rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: none;
+}
+.side-card-search:focus { border-color: var(--accent); }
+
+.glossary-list { list-style: none; display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow-y: auto; }
+.glossary-item {
+  display: grid;
+  grid-template-columns: minmax(90px, 150px) 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.glossary-term { font-weight: 700; color: var(--accent); font-size: 0.9rem; }
+.glossary-mean { font-size: 0.88rem; color: var(--ink-soft); line-height: 1.5; }
+
+.notes-status { font-size: 0.74rem; color: var(--ink-faint); flex: none; }
+.notes-text {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 13px;
+  outline: none;
+}
+.notes-text:focus { border-color: var(--accent); }
+.notes-bm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 16px 0 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--ink-soft);
+}
+.notes-bm-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.bm-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--accent-soft);
+  border-radius: 7px;
+  padding: 7px 11px;
+}
+.bm-text { flex: 1; font-size: 0.84rem; color: var(--ink); line-height: 1.5; }
+.bm-del {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.bm-del:hover { color: var(--accent); }
+.bm-empty { font-size: 0.82rem; padding: 6px 0; }
+
+/* 섹션 재생성 중 표시 */
+.panel.regenerating { position: relative; min-height: 160px; opacity: 0.5; pointer-events: none; }
+.panel.regenerating::after {
+  content: "이 섹션 다시 생성 중…";
+  position: absolute;
+  top: 40px;
+  left: 0; right: 0;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--accent);
+}
+
+/* ── 키보드 단축키 도움말 ─────────────────────────────────────────────── */
+.kbd-help {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.kbd-help-box {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px 28px;
+  width: min(380px, 90vw);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+.kbd-help-box h3 { font-family: var(--serif); font-size: 1.1rem; color: var(--ink); margin-bottom: 16px; }
+.kbd-list { list-style: none; display: flex; flex-direction: column; gap: 9px; margin-bottom: 18px; }
+.kbd-list li { display: flex; align-items: center; gap: 10px; font-size: 0.88rem; color: var(--ink-soft); }
+.kbd-list kbd {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.78rem;
+  background: var(--paper-deep);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 1px 7px;
+  color: var(--ink);
+  min-width: 22px;
+  text-align: center;
+}
+.kbd-list li > span { color: var(--ink-soft); }
+
 /* ── footer ────────────────────────────────────────────────────────── */
 footer {
   text-align: center;

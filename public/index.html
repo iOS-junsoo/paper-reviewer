@@ -111,6 +111,15 @@
             <div id="contributions" class="contributions hidden"></div>
           </div>
 
+          <div id="result-tools" class="result-tools">
+            <button id="tool-regen" class="rtool" type="button" title="지금 보는 섹션만 다시 생성 (전체 재분석 아님)">🔄 이 섹션 다시 생성</button>
+            <button id="tool-copy" class="rtool" type="button" title="현재 섹션을 마크다운으로 복사">📋 섹션 복사</button>
+            <button id="tool-cheatsheet" class="rtool" type="button" title="핵심 요약을 마크다운으로 복사">📄 치트시트</button>
+            <button id="tool-download" class="rtool" type="button" title="치트시트를 .md 파일로 저장">⬇︎ .md</button>
+            <button id="tool-notes" class="rtool" type="button" title="이 논문 개인 메모">📝 메모</button>
+            <button id="tool-glossary" class="rtool" type="button" title="용어집">📖 용어집</button>
+          </div>
+
           <nav class="tabs" id="tabs">
             <button class="tab active" data-tab="background"><span class="tab-no">Ⅰ</span>연구 배경</button>
             <button class="tab" data-tab="problem"><span class="tab-no">Ⅱ</span>해결하려는 것</button>
@@ -127,9 +136,38 @@
             <div class="panel" id="panel-equations"></div>
           </div>
 
+          <div id="qa-prep" class="qa-prep hidden">
+            <h3>💬 예상 Q&amp;A 준비</h3>
+            <p class="qa-sub">세미나에서 나올 법한 질문 — 칩을 누르면 그 질문으로 바로 물어봅니다.</p>
+            <ul id="qa-list" class="qa-list"></ul>
+          </div>
+
           <div id="related" class="related hidden">
             <h3>📚 먼저 보면 좋은 논문</h3>
             <ul id="related-list"></ul>
+          </div>
+
+          <div id="glossary-card" class="side-card hidden">
+            <div class="side-card-head">
+              <span>📖 용어집</span>
+              <button id="glossary-close" class="side-card-x" type="button" title="닫기">×</button>
+            </div>
+            <input id="glossary-search" class="side-card-search" type="search" placeholder="기호·용어 검색…" autocomplete="off" />
+            <ul id="glossary-list" class="glossary-list"></ul>
+          </div>
+
+          <div id="notes-card" class="side-card hidden">
+            <div class="side-card-head">
+              <span>📝 메모</span>
+              <span id="notes-status" class="notes-status"></span>
+              <button id="notes-close" class="side-card-x" type="button" title="닫기">×</button>
+            </div>
+            <textarea id="notes-text" class="notes-text" placeholder="이 논문에 대한 메모… (자동 저장)"></textarea>
+            <div class="notes-bm-head">
+              <span>📌 핵심 구절</span>
+              <button id="bm-add" class="rtool rtool-sm" type="button" title="분석/원문에서 드래그한 텍스트를 북마크">➕ 선택 구절 추가</button>
+            </div>
+            <ul id="notes-bookmarks" class="notes-bm-list"></ul>
           </div>
         </section>
       </section>
@@ -156,6 +194,25 @@
       <button type="submit" id="chat-send">질문</button>
     </form>
   </aside>
+
+  <!-- 키보드 단축키 도움말 (?) -->
+  <div id="kbd-help" class="kbd-help hidden">
+    <div class="kbd-help-box">
+      <h3>⌨ 키보드 단축키</h3>
+      <ul class="kbd-list">
+        <li><kbd>J</kbd> / <kbd>K</kbd> <span>다음 / 이전 탭</span></li>
+        <li><kbd>1</kbd>–<kbd>5</kbd> <span>탭 바로 이동</span></li>
+        <li><kbd>F</kbd> <span>원문 PDF 패널 접기/펼치기</span></li>
+        <li><kbd>Q</kbd> <span>질문하기 열기</span></li>
+        <li><kbd>/</kbd> <span>히스토리 검색</span></li>
+        <li><kbd>N</kbd> <span>새 논문 분석</span></li>
+        <li><kbd>T</kbd> <span>읽기 테마 전환</span></li>
+        <li><kbd>?</kbd> <span>이 도움말</span></li>
+        <li><kbd>Esc</kbd> <span>패널·도움말 닫기</span></li>
+      </ul>
+      <button id="kbd-help-close" class="rtool" type="button">닫기</button>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

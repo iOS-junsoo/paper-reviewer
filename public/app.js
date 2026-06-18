@@ -10,6 +10,7 @@ const pdfScroll = document.getElementById("pdf-scroll");
 const pdfMissing = document.getElementById("pdf-missing");
 
 let currentHash = null;
+let currentAnalysis = null; // 현재 표시 중인 분석 데이터(내보내기·섹션 재생성용)
 let chatHistory = [];
 let currentSuggested = [];
 let analysisAbort = null; // 진행 중인 분석/재분석 fetch를 취소하기 위한 AbortController
@@ -362,9 +363,17 @@ function renderRich(el, text) {
 }
 
 function renderResult(data) {
+  const prevHash = currentHash;
   currentHash = data.hash || null;
-  currentSuggested = Array.isArray(data.suggested_questions) ? data.suggested_questions : [];
-  loadChat(currentHash); // 저장된 채팅 기록 비동기 로드
+  // 같은 논문을 다시 렌더(섹션 재생성·전체 재분석)하는 경우 PDF·채팅·메모는 그대로라
+  // 다시 로드하지 않는다 — 무거운 PDF 재다운로드/스크롤 리셋·미저장 메모 유실 방지.
+  const sameHash = !!prevHash && prevHash === currentHash;
+  currentAnalysis = data; // 마크다운 내보내기·섹션 재생성에서 사용
+  // 추천 질문은 객체({q,category,why}) 또는 옛 문자열 — 채팅 칩용으로 문자열만 추림
+  currentSuggested = (Array.isArray(data.suggested_questions) ? data.suggested_questions : [])
+    .map((x) => (typeof x === "string" ? x : (x && x.q) || ""))
+    .filter(Boolean);
+  if (!sameHash) loadChat(currentHash); // 저장된 채팅 기록 비동기 로드
 
   document.getElementById("paper-title").textContent = data.title || "(제목 없음)";
   renderRich(document.getElementById("one-liner"), data.one_liner || "");
@@ -382,7 +391,10 @@ function renderResult(data) {
   renderResults(data.experiments);
   renderEquations(data.equations || [], data.equation_flow, data.method_steps || []);
   renderRelated(data.related_papers);
-  loadPdf(currentHash);
+  renderQaPrep(data.suggested_questions); // 예상 Q&A 준비 패널
+  renderGlossary(data.glossary); // 용어집
+  if (!sameHash) loadNotes(currentHash); // 개인 메모·북마크
+  if (!sameHash) loadPdf(currentHash);
 
   workspaceEl.classList.remove("hidden");
   chatFab.classList.remove("hidden"); // 분석 결과가 있어야 질문 가능
@@ -396,6 +408,7 @@ function buildTimeline(items) {
   const wrap = document.createElement("div");
   wrap.className = "timeline";
   items.forEach((it, i) => {
+    if (!it || typeof it !== "object") return;
     const node = document.createElement("div");
     node.className = "tl-item" + (i === items.length - 1 ? " tl-last" : "");
     const year = document.createElement("div");
@@ -798,6 +811,13 @@ document.addEventListener("click", (e) => {
 
 // 사이드바 "새 논문 분석" → 워크스페이스 닫고 드롭존으로
 document.getElementById("sb-new").addEventListener("click", () => {
+  // 진행 중이던 분석/재생성을 중단(N 단축키로도 호출되므로 사용량 누수 방지)
+  if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
+  if (sectionRegenAbort) { sectionRegenAbort.abort(); sectionRegenAbort = null; }
+  cancelBtn.classList.add("hidden");
+  hideReanalyzeBanner();
+  loadingEl.classList.add("hidden");
+  setActiveAnalysis(null);
   document.body.classList.remove("reading");
   workspaceEl.classList.add("hidden");
   hideError();
@@ -822,6 +842,7 @@ function renderRelated(papers) {
     return;
   }
   papers.forEach((p) => {
+    if (!p || typeof p !== "object") return;
     const li = document.createElement("li");
     const title = document.createElement(p.link ? "a" : "span");
     title.className = "rel-title";
@@ -1890,6 +1911,7 @@ function renderEquations(equations, equationFlow, methodSteps = []) {
   }
 
   equations.forEach((eq, eqIdx) => {
+    if (!eq || typeof eq !== "object") return;
     const item = document.createElement("div");
     item.className = "eq-item";
     item.id = `eq-${eqIdx}`;
@@ -2122,6 +2144,7 @@ async function openHistory(hash) {
   // 저장된 결과 열람은 취소 대상이 아니다. 진행 중이던 분석이 있으면 취소하고(사용자가 다른 글로 이동),
   // 취소 버튼은 숨긴다 — 이 fetch는 취소 버튼이 제어하지 않으므로 엉뚱한 중단을 막는다.
   if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
+  if (sectionRegenAbort) { sectionRegenAbort.abort(); sectionRegenAbort = null; } // 진행 중 섹션 재생성 중단
   cancelBtn.classList.add("hidden");
   hideReanalyzeBanner();
   loadingEl.classList.remove("hidden");
@@ -2142,6 +2165,413 @@ async function openHistory(hash) {
   }
   return ok;
 }
+
+// ========== 도구: 예상 Q&A · 용어집 · 마크다운 내보내기 · 메모 · 섹션 재생성 · 단축키 ==========
+let glossaryItems = [];
+let notesState = { notes: "", bookmarks: [] };
+let notesSaveTimer = null;
+let notesHashLoaded = null;
+let sectionRegenInFlight = false;
+let sectionRegenAbort = null; // 진행 중인 섹션 재생성 fetch (이탈 시 중단·사용량 절약)
+
+// ---------- 예상 Q&A 준비 (#1) ----------
+function renderQaPrep(items) {
+  const list = document.getElementById("qa-list");
+  list.innerHTML = "";
+  let n = 0;
+  (Array.isArray(items) ? items : []).forEach((it) => {
+    const q = typeof it === "string" ? it : (it && it.q) || "";
+    if (!q) return;
+    n++;
+    const li = document.createElement("li");
+    li.className = "qa-item";
+    const head = document.createElement("div");
+    head.className = "qa-head";
+    if (it && it.category) {
+      const c = document.createElement("span");
+      c.className = "qa-cat";
+      c.textContent = it.category;
+      head.appendChild(c);
+    }
+    const qd = document.createElement("span");
+    qd.className = "qa-q";
+    renderRich(qd, q);
+    head.appendChild(qd);
+    li.appendChild(head);
+    if (it && it.why) {
+      const w = document.createElement("div");
+      w.className = "qa-why";
+      renderRich(w, it.why);
+      li.appendChild(w);
+    }
+    const ask = document.createElement("button");
+    ask.type = "button";
+    ask.className = "qa-ask";
+    ask.textContent = "이 질문 물어보기 →";
+    ask.addEventListener("click", () => askSuggested(q));
+    li.appendChild(ask);
+    list.appendChild(li);
+  });
+  document.getElementById("qa-prep").classList.toggle("hidden", n === 0);
+}
+function openChat() {
+  chatDrawer.classList.add("open");
+  chatDrawer.setAttribute("aria-hidden", "false");
+  chatInput.focus();
+}
+function askSuggested(q) {
+  if (!currentHash) return;
+  openChat();
+  if (chatSend.disabled) return; // 이미 답변 생성 중 — 입력을 덮어쓰지 않고 드로어만 연다
+  chatInput.value = q;
+  if (chatForm.requestSubmit) chatForm.requestSubmit();
+  else chatForm.dispatchEvent(new Event("submit", { cancelable: true }));
+}
+
+// ---------- 용어집 (#6) ----------
+function renderGlossary(items) {
+  glossaryItems = Array.isArray(items) ? items.filter((g) => g && (g.term || g.latex)) : [];
+  document.getElementById("tool-glossary").style.display = glossaryItems.length ? "" : "none";
+  if (!glossaryItems.length) document.getElementById("glossary-card").classList.add("hidden");
+  document.getElementById("glossary-search").value = "";
+  paintGlossary("");
+}
+function paintGlossary(filter) {
+  const list = document.getElementById("glossary-list");
+  list.innerHTML = "";
+  const q = (filter || "").toLowerCase();
+  glossaryItems
+    .filter((g) => !q || `${g.term || ""} ${g.meaning || ""}`.toLowerCase().includes(q))
+    .forEach((g) => {
+      const li = document.createElement("li");
+      li.className = "glossary-item";
+      const term = document.createElement("span");
+      term.className = "glossary-term";
+      // 모델이 latex를 이미 $...$로 감싸 줄 수 있어 앞뒤 $를 벗긴 뒤 한 번만 감싼다
+      const tex = g.latex ? String(g.latex).trim().replace(/^\$+|\$+$/g, "") : "";
+      if (tex) renderRich(term, `$${tex}$`);
+      else term.textContent = g.term || "";
+      const mean = document.createElement("span");
+      mean.className = "glossary-mean";
+      renderRich(mean, g.meaning || "");
+      li.append(term, mean);
+      list.appendChild(li);
+    });
+}
+
+// ---------- 마크다운 직렬화 + 복사/저장 (#2) ----------
+function mdInline(text) {
+  return String(text || "")
+    .replace(/\[\[\s*p\.?\s*(\d+)\s*(?:\|\s*([^\]]+?))?\s*\]\]/gi, (m, p, qt) => (qt ? `(p.${p}: ${qt.trim()})` : `(p.${p})`))
+    .replace(/==([^=\n][^=]*?)==/g, "**$1**");
+}
+// 표 셀용: 인라인 처리 + 파이프 이스케이프 + 줄바꿈 제거 (한 칸이 표 전체를 밀지 않게)
+function mdCell(text) {
+  return mdInline(text).replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ").trim();
+}
+function sectionMd(name, data) {
+  data = data || currentAnalysis || {};
+  const L = [];
+  if (name === "background") {
+    L.push("## 연구 배경", mdInline(data.background));
+    if (Array.isArray(data.timeline) && data.timeline.length) {
+      L.push("\n### 분야 타임라인");
+      data.timeline.forEach((t) => { if (t) L.push(`- **${t.year ?? ""} ${mdInline(t.label)}** — ${mdInline(t.note)}`); });
+    }
+  } else if (name === "problem") {
+    L.push("## 해결하려는 것", mdInline(data.problem));
+  } else if (name === "method") {
+    L.push("## 연구 방법론");
+    (data.method_steps || []).forEach((s, i) => {
+      if (!s || typeof s !== "object") return;
+      L.push(`\n### ${i + 1}. ${mdInline(s.title)}`);
+      if (s.description) L.push(mdInline(s.description));
+      if (s.analogy) L.push(`> 💡 ${mdInline(s.analogy)}`);
+    });
+  } else if (name === "results") {
+    L.push("## 실험·결과");
+    const e = data.experiments || {};
+    if (e.takeaway) L.push(`**${mdInline(e.takeaway)}**`);
+    if (Array.isArray(e.metrics) && e.metrics.length) {
+      L.push("\n| 지표 | 값 | 비고 |", "|---|---|---|");
+      e.metrics.forEach((m) => {
+        if (m && typeof m === "object") L.push(`| ${mdCell(m.label)} | ${mdCell(String(m.value ?? "") + (m.unit ? " " + m.unit : ""))} | ${mdCell(m.note || "")} |`);
+      });
+    }
+    if (Array.isArray(e.datasets) && e.datasets.length) L.push(`\n**데이터셋:** ${e.datasets.map((d) => (d && d.name) || (typeof d === "string" ? d : "")).filter(Boolean).join(", ")}`);
+    if (Array.isArray(e.baselines) && e.baselines.length) L.push(`**비교 대상:** ${e.baselines.map((b) => (typeof b === "string" ? b : (b && b.name) || "")).filter(Boolean).join(", ")}`);
+    if (Array.isArray(e.ablations) && e.ablations.length) {
+      L.push("\n**주요 분석:**");
+      e.ablations.forEach((a) => L.push(`- ${mdInline(typeof a === "string" ? a : a && a.text)}`));
+    }
+    if (e.limitations) L.push("\n### 한계·향후 연구", mdInline(e.limitations));
+  } else if (name === "equations") {
+    L.push("## 수식 정리");
+    (data.equations || []).forEach((eq, i) => {
+      if (!eq || typeof eq !== "object") return;
+      L.push(`\n**(${i + 1})** ${eq.paper_ref ? "`" + eq.paper_ref + "`" : ""}`.trim(), `$$${eq.latex || ""}$$`);
+      if (eq.explanation) L.push(mdInline(eq.explanation));
+      if (eq.analogy) L.push(`> 💡 ${mdInline(eq.analogy)}`);
+    });
+  }
+  return L.join("\n").trim();
+}
+function cheatSheetMd(data) {
+  data = data || currentAnalysis || {};
+  const L = [`# ${data.title || "논문"}`];
+  if (data.one_liner) L.push(`> ${mdInline(data.one_liner)}`);
+  if (Array.isArray(data.contributions) && data.contributions.length) {
+    L.push("\n## 핵심 기여");
+    data.contributions.forEach((c) => { if (c) L.push(`- ${mdInline(typeof c === "string" ? c : c.text)}`); });
+  }
+  if (Array.isArray(data.equations) && data.equations.length) {
+    L.push("\n## 핵심 수식");
+    data.equations.slice(0, 6).forEach((eq, i) => { if (eq && typeof eq === "object") L.push(`- **(${i + 1})** $${eq.latex || ""}$ — ${mdInline((eq.explanation || "").split("\n")[0])}`); });
+  }
+  const e = data.experiments || {};
+  if (e.takeaway) L.push(`\n## 결과 한 줄\n${mdInline(e.takeaway)}`);
+  if (Array.isArray(data.timeline) && data.timeline.length) {
+    L.push("\n## 분야 타임라인");
+    data.timeline.forEach((t) => { if (t) L.push(`- ${t.year ?? ""} ${mdInline(t.label)} — ${mdInline(t.note)}`); });
+  }
+  if (Array.isArray(data.suggested_questions) && data.suggested_questions.length) {
+    L.push("\n## 예상 Q&A");
+    data.suggested_questions.forEach((it) => {
+      const q = typeof it === "string" ? it : it && it.q;
+      if (q) L.push(`- ${mdInline(q)}${it && it.why ? ` — ${mdInline(it.why)}` : ""}`);
+    });
+  }
+  if (Array.isArray(data.related_papers) && data.related_papers.length) {
+    L.push("\n## 먼저 보면 좋은 논문");
+    data.related_papers.forEach((p) => {
+      if (!p) return;
+      const t = typeof p === "string" ? p : p.title;
+      if (!t) return;
+      L.push(`- ${t}${p.year ? ` (${p.year})` : ""}${p.link ? ` — ${p.link}` : ""}`);
+    });
+  }
+  if (notesState.notes) L.push(`\n## 내 메모\n${notesState.notes}`);
+  if (Array.isArray(notesState.bookmarks) && notesState.bookmarks.length) {
+    L.push("\n## 핵심 구절");
+    notesState.bookmarks.forEach((b) => L.push(`- "${b.text}"${b.page ? ` (p.${b.page})` : ""}`));
+  }
+  return L.join("\n").trim();
+}
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    flashTool(btn, "복사됨 ✓");
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); flashTool(btn, "복사됨 ✓"); } catch { flashTool(btn, "복사 실패"); }
+    ta.remove();
+  }
+}
+function flashTool(btn, msg) {
+  if (!btn) return;
+  const orig = btn.dataset.orig || btn.textContent;
+  btn.dataset.orig = orig;
+  btn.textContent = msg;
+  btn.disabled = true;
+  setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1400);
+}
+function downloadMd(text, filename) {
+  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+document.getElementById("tool-copy").addEventListener("click", (e) => {
+  if (!currentAnalysis) return;
+  copyText(sectionMd(activeTab, currentAnalysis) || "(이 섹션은 비어 있습니다)", e.currentTarget);
+});
+document.getElementById("tool-cheatsheet").addEventListener("click", (e) => {
+  if (currentAnalysis) copyText(cheatSheetMd(currentAnalysis), e.currentTarget);
+});
+document.getElementById("tool-download").addEventListener("click", () => {
+  if (!currentAnalysis) return;
+  const name = (currentAnalysis.title || "paper").replace(/[^\w가-힣 -]/g, "").slice(0, 60).trim() || "paper";
+  downloadMd(cheatSheetMd(currentAnalysis), `${name}.md`);
+});
+document.getElementById("tool-notes").addEventListener("click", () => toggleSideCard("notes-card"));
+document.getElementById("tool-glossary").addEventListener("click", () => toggleSideCard("glossary-card"));
+document.getElementById("glossary-close").addEventListener("click", () => document.getElementById("glossary-card").classList.add("hidden"));
+document.getElementById("notes-close").addEventListener("click", () => document.getElementById("notes-card").classList.add("hidden"));
+document.getElementById("glossary-search").addEventListener("input", (e) => paintGlossary(e.target.value.trim()));
+function toggleSideCard(id) {
+  const el = document.getElementById(id);
+  const willShow = el.classList.contains("hidden");
+  document.getElementById("notes-card").classList.add("hidden");
+  document.getElementById("glossary-card").classList.add("hidden");
+  if (willShow) {
+    el.classList.remove("hidden");
+    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
+// ---------- 메모 & 북마크 (#3) ----------
+async function loadNotes(hash) {
+  notesState = { notes: "", bookmarks: [] };
+  notesHashLoaded = hash;
+  document.getElementById("notes-text").value = "";
+  document.getElementById("notes-status").textContent = "";
+  renderBookmarks();
+  if (!hash) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/notes/${hash}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    if (notesHashLoaded !== hash) return; // 그 사이 다른 논문으로 이동
+    notesState = { notes: d.notes || "", bookmarks: Array.isArray(d.bookmarks) ? d.bookmarks : [] };
+    document.getElementById("notes-text").value = notesState.notes;
+    renderBookmarks();
+  } catch {}
+}
+function scheduleNotesSave() {
+  document.getElementById("notes-status").textContent = "저장 중…";
+  clearTimeout(notesSaveTimer);
+  // 예약 시점의 hash·내용을 고정 — 700ms 안에 다른 논문으로 넘어가도
+  // 그 사이 친 메모가 '원래 논문'에 저장되고, 다른 논문을 덮어쓰지 않는다.
+  const hash = currentHash;
+  const snapshot = { notes: notesState.notes, bookmarks: notesState.bookmarks.slice() };
+  notesSaveTimer = setTimeout(() => saveNotes(hash, snapshot), 700);
+}
+async function saveNotes(hash, data) {
+  if (!hash) return;
+  const s = document.getElementById("notes-status");
+  try {
+    const r = await fetch(`${API_BASE}/api/notes/${hash}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (hash !== currentHash) return; // 다른 논문으로 넘어갔으면 상태표시 안 함(저장은 위에서 끝남)
+    if (!r.ok) { s.textContent = "저장 실패"; return; }
+    s.textContent = "저장됨 ✓";
+    setTimeout(() => { if (s.textContent === "저장됨 ✓") s.textContent = ""; }, 1500);
+  } catch {
+    if (hash === currentHash) s.textContent = "저장 실패";
+  }
+}
+document.getElementById("notes-text").addEventListener("input", (e) => {
+  notesState.notes = e.target.value;
+  scheduleNotesSave();
+});
+document.getElementById("bm-add").addEventListener("click", (e) => {
+  const sel = String(window.getSelection ? window.getSelection().toString() : "").trim();
+  if (!sel) { flashTool(e.currentTarget, "먼저 텍스트 선택"); return; }
+  notesState.bookmarks.push({ text: sel.slice(0, 400), t: Date.now() });
+  renderBookmarks();
+  scheduleNotesSave();
+});
+function renderBookmarks() {
+  const ul = document.getElementById("notes-bookmarks");
+  ul.innerHTML = "";
+  const arr = notesState.bookmarks || [];
+  if (!arr.length) {
+    ul.innerHTML = '<li class="muted bm-empty">분석이나 원문에서 구절을 드래그한 뒤 "선택 구절 추가"를 누르세요.</li>';
+    return;
+  }
+  arr.forEach((b, i) => {
+    const li = document.createElement("li");
+    li.className = "bm-item";
+    const q = document.createElement("span");
+    q.className = "bm-text";
+    q.textContent = `"${b.text}"`;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "bm-del";
+    del.textContent = "×";
+    del.title = "삭제";
+    del.addEventListener("click", () => { notesState.bookmarks.splice(i, 1); renderBookmarks(); scheduleNotesSave(); });
+    li.append(q, del);
+    ul.appendChild(li);
+  });
+}
+
+// ---------- 섹션별 재생성 (#5) ----------
+document.getElementById("tool-regen").addEventListener("click", () => regenSection(activeTab));
+async function regenSection(section) {
+  if (!currentHash || sectionRegenInFlight) return;
+  const map = { background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리" };
+  if (!map[section]) return;
+  if (!confirm(`'${map[section]}' 섹션만 다시 생성할까요?\n(원문에서 해당 부분만 다시 읽습니다 — 1~2분, 다른 섹션은 그대로 유지)`)) return;
+  const startedHash = currentHash;
+  sectionRegenInFlight = true;
+  sectionRegenAbort = new AbortController();
+  const btn = document.getElementById("tool-regen");
+  const orig = btn.textContent;
+  btn.textContent = "재생성 중…";
+  btn.disabled = true;
+  const panel = document.getElementById(`panel-${section}`);
+  if (panel) panel.classList.add("regenerating");
+  try {
+    const r = await fetch(`${API_BASE}/api/reanalyze-section/${startedHash}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section }),
+      signal: sectionRegenAbort.signal,
+    });
+    const d = await safeJson(r);
+    if (!r.ok) throw new Error((d && d.error) || `HTTP ${r.status}`);
+    if (currentHash !== startedHash) return; // 그 사이 다른 논문으로 이동 → 옛 결과로 화면 덮지 않음
+    const keepTab = activeTab;
+    renderResult(d.analysis); // 갱신된 전체 분석으로 재렌더 (같은 hash라 PDF·메모는 유지)
+    switchTab(keepTab); // 보던 탭 유지
+    loadHistory();
+  } catch (e) {
+    if (e.name !== "AbortError" && currentHash === startedHash) showError(e.message);
+  } finally {
+    sectionRegenInFlight = false;
+    sectionRegenAbort = null;
+    btn.textContent = orig;
+    btn.disabled = false;
+    if (panel) panel.classList.remove("regenerating");
+  }
+}
+
+// ---------- 키보드 단축키 (#8) ----------
+const TAB_ORDER = ["background", "problem", "method", "results", "equations"];
+document.addEventListener("keydown", (e) => {
+  const help = document.getElementById("kbd-help");
+  if (e.key === "Escape") {
+    if (!help.classList.contains("hidden")) { help.classList.add("hidden"); return; }
+    let closed = false;
+    ["glossary-card", "notes-card"].forEach((id) => {
+      const el = document.getElementById(id);
+      // 그 카드 안에서 입력 중이면(메모·검색) Esc로 닫지 않는다 (실수 닫힘 방지)
+      if (!el.classList.contains("hidden") && !el.contains(e.target)) { el.classList.add("hidden"); closed = true; }
+    });
+    if (chatDrawer.classList.contains("open")) {
+      chatDrawer.classList.remove("open");
+      chatDrawer.setAttribute("aria-hidden", "true");
+      closed = true;
+    }
+    if (closed) return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const tag = (e.target.tagName || "").toLowerCase();
+  const typing = tag === "input" || tag === "textarea" || e.target.isContentEditable;
+  if (e.key === "/" && !typing) { e.preventDefault(); historySearch.focus(); return; }
+  if (typing) return;
+  if (e.key === "?") { e.preventDefault(); help.classList.toggle("hidden"); return; }
+  const reading = document.body.classList.contains("reading");
+  if ((e.key === "j" || e.key === "J") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.min(TAB_ORDER.length - 1, i + 1)]); }
+  else if ((e.key === "k" || e.key === "K") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.max(0, i - 1)]); }
+  else if (e.key >= "1" && e.key <= "5" && reading) { e.preventDefault(); switchTab(TAB_ORDER[+e.key - 1]); }
+  else if ((e.key === "f" || e.key === "F") && reading) { e.preventDefault(); document.getElementById("pdf-toggle").click(); }
+  else if ((e.key === "q" || e.key === "Q") && reading) { e.preventDefault(); openChat(); }
+  else if (e.key === "n" || e.key === "N") { e.preventDefault(); document.getElementById("sb-new").click(); }
+  else if (e.key === "t" || e.key === "T") { e.preventDefault(); document.getElementById("theme-toggle").click(); }
+});
+document.getElementById("kbd-help-close").addEventListener("click", () => document.getElementById("kbd-help").classList.add("hidden"));
+document.getElementById("kbd-help").addEventListener("click", (e) => { if (e.target.id === "kbd-help") e.target.classList.add("hidden"); });
 
 loadHistory();
 restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
