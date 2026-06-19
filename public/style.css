@@ -1702,6 +1702,7 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
   background: var(--accent-soft);
   border-left: 3px solid var(--accent);
   border-radius: 0 8px 8px 0;
+  text-align: left; /* result-head의 가운데 정렬 상속 해제 */
 }
 .contrib-head {
   font-family: var(--serif);
