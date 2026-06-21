@@ -763,7 +763,8 @@ function buildFigureCard(f) {
     img.className = "fig-img-el";
     img.alt = `${f.label || "그림"} 원문 이미지`;
     // 그림 탭을 처음 열 때 로드한다(loadFigureImages) — 안 보는 논문은 크롭을 만들지 않음
-    img.dataset.src = `${API_BASE}/api/figure/${currentHash}?page=${page}&box=${bbox.join(",")}`;
+    // label을 함께 보내 서버가 PDF 텍스트의 캡션 위치로 크롭을 보정한다
+    img.dataset.src = `${API_BASE}/api/figure/${currentHash}?page=${page}&box=${bbox.join(",")}&label=${encodeURIComponent(f.label || "")}`;
     img.addEventListener("click", () => jumpToPdfPageText(page, f.label || ""));
     img.addEventListener("error", () => {
       imgWrap.innerHTML = '<span class="fig-img-ph">원문 그림을 불러오지 못했습니다 — "원문에서 보기"로 확인하세요.</span>';

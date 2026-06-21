@@ -700,8 +700,84 @@ app.get("/api/pdf/:hash", (req, res) => {
   res.sendFile(p);
 });
 
-// --- GET /api/figure/:hash?page=N&box=x0,y0,x1,y1 — 그림 해설용 그림 크롭(PNG) -----
-// poppler(pdftoppm)로 해당 페이지의 bbox 영역만 잘라 PNG로 반환. 결과는 디스크 캐시.
+// label("Table 2", "Figure 1" …) → {type, num}
+function parseFigLabel(label) {
+  const typeM = label.match(/[A-Za-z]+/);
+  const numM = label.match(/\d+/);
+  if (!typeM || !numM) return null;
+  let type = typeM[0].toLowerCase();
+  if (type === "fig") type = "figure";
+  if (type === "tbl") type = "table";
+  return { type, num: numM[0] };
+}
+
+// 모델이 찍은 bbox는 세로 위치가 부정확할 때가 많다(특히 표). PDF 텍스트 레이어에서
+// 'Table N:'/'Figure N:' 캡션 위치(정확)를 찾아 크롭의 세로 위치를 캡션에 맞춰 보정한다.
+// 가로 폭·대략 크기는 모델 bbox를 따른다. 캡션을 못 찾으면 null(→ 원본 bbox 사용).
+const clamp01 = (n) => Math.min(Math.max(0, n), 1);
+async function captionAnchoredBox(pdfPath, page, label, modelBox, wpt, hpt) {
+  const parsed = parseFigLabel(label);
+  if (!parsed) return null;
+  const xml = await new Promise((resolve, reject) => {
+    execFile(
+      "pdftotext",
+      ["-bbox", "-f", String(page), "-l", String(page), pdfPath, "-"],
+      { timeout: 15000, maxBuffer: 24 * 1024 * 1024 },
+      (err, stdout) => (err ? reject(err) : resolve(stdout))
+    );
+  });
+  const words = [];
+  const re = /<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<\/word>/g;
+  let m;
+  while ((m = re.exec(xml))) words.push({ x0: +m[1], y0: +m[2], x1: +m[3], y1: +m[4], t: m[5] });
+  if (!words.length) return null;
+
+  // 캡션 후보: 'Table'/'Figure' 단어 뒤에 해당 번호가 오는 곳
+  const cands = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    if (words[i].t.toLowerCase() !== parsed.type) continue;
+    const nm = words[i + 1].t.match(/^(\d+)([.:]?)/);
+    if (!nm || nm[1] !== parsed.num) continue;
+    const w = words[i];
+    // 줄 맨 앞인가(왼쪽에 같은 줄 단어가 없음) — 본문 속 'Table 2 provides…' 인용과 구분
+    const lineStart = !words.some((o) => o !== w && Math.abs(o.y0 - w.y0) < 3 && o.x0 < w.x0 - 0.5);
+    let score = 0;
+    if (nm[2]) score += 3; // "2:" / "2." = 캡션 표기
+    if (lineStart) score += 2; // 줄 시작 = 캡션(인용은 줄 중간)
+    cands.push({ w, score });
+  }
+  if (!cands.length) return null;
+  const modelCY = ((modelBox[1] + modelBox[3]) / 2) * hpt;
+  cands.sort((a, b) => b.score - a.score || Math.abs(a.w.y0 - modelCY) - Math.abs(b.w.y0 - modelCY));
+  const best = cands[0];
+  if (best.score < 2) return null; // 캡션이라 확신 못 하면 보정하지 않음
+
+  const capY0n = best.w.y0 / hpt;
+  const capY1n = best.w.y1 / hpt;
+  const capHn = Math.max(capY1n - capY0n, 0.012);
+  const [mx0, my0, mx1, my1] = modelBox;
+  const modelCenterYn = (my0 + my1) / 2;
+  const modelHn = Math.max(my1 - my0, 0.05);
+  const extent = Math.min(Math.max(modelHn * 1.3 + capHn, 0.14), 0.55);
+  const padCap = 0.012;
+  let ny0, ny1;
+  if (modelCenterYn <= capY0n) {
+    // 캡션이 아래(그림/표가 위) — 캡션 바닥에 맞추고 위로 extent만큼
+    ny1 = clamp01(capY1n + padCap);
+    ny0 = clamp01(ny1 - extent);
+  } else {
+    // 캡션이 위(그림/표가 아래) — 캡션 위에 맞추고 아래로 extent만큼
+    ny0 = clamp01(capY0n - padCap);
+    ny1 = clamp01(ny0 + extent);
+  }
+  let nx0 = Math.min(mx0, best.w.x0 / wpt); // 캡션 시작점까지는 포함
+  let nx1 = mx1;
+  if (nx1 - nx0 < 0.1) nx1 = clamp01(nx0 + 0.42); // 폭이 비정상이면 한 컬럼 정도 확보
+  return [nx0, ny0, nx1, ny1];
+}
+
+// --- GET /api/figure/:hash?page=N&box=x0,y0,x1,y1&label=Table 2 — 그림 해설 크롭(PNG) -
+// poppler(pdftoppm)로 해당 페이지의 영역만 잘라 PNG 반환. 모델 bbox를 캡션 위치로 보정. 디스크 캐시.
 app.get("/api/figure/:hash", async (req, res) => {
   try {
     const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
@@ -714,22 +790,34 @@ app.get("/api/figure/:hash", async (req, res) => {
     let [x0, y0, x1, y1] = box;
     if (x1 < x0) [x0, x1] = [x1, x0];
     if (y1 < y0) [y0, y1] = [y1, y0];
-    const pad = 0.015; // 약간의 여유로 잘림 방지
-    x0 = Math.min(Math.max(0, x0 - pad), 1); y0 = Math.min(Math.max(0, y0 - pad), 1);
-    x1 = Math.min(Math.max(0, x1 + pad), 1); y1 = Math.min(Math.max(0, y1 + pad), 1);
-    if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return res.status(422).json({ error: "영역이 너무 작습니다." });
+    const label = String(req.query.label || "").slice(0, 60);
 
     const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
     if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: "저장된 원문 PDF가 없습니다." });
 
-    const boxKey = [x0, y0, x1, y1].map((n) => Math.round(n * 1000)).join("-");
-    const outBase = path.join(CROP_DIR, `${hash}_p${page}_${boxKey}`);
+    // 캐시 키는 입력(page+box+label) 기준 → 캐시 히트 시 PDF 로드·캡션 탐색을 건너뛴다
+    const keyHash = crypto.createHash("sha1").update(`${page}|${box.join(",")}|${label}`).digest("hex").slice(0, 16);
+    const outBase = path.join(CROP_DIR, `${hash}_${keyHash}`);
     const outPng = `${outBase}.png`;
 
     if (!fs.existsSync(outPng)) {
       const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
       if (page > doc.getPageCount()) return res.status(404).json({ error: "페이지 범위를 벗어났습니다." });
       const { width: wpt, height: hpt } = doc.getPage(page - 1).getSize();
+
+      // 캡션 위치로 세로 보정 (실패하면 모델 bbox 그대로)
+      if (label) {
+        try {
+          const fixed = await captionAnchoredBox(pdfPath, page, label, [x0, y0, x1, y1], wpt, hpt);
+          if (fixed) [x0, y0, x1, y1] = fixed;
+        } catch (e) { console.error("[캡션 보정 실패]", label, e.message); }
+      }
+
+      const pad = 0.015; // 약간의 여유로 잘림 방지
+      x0 = clamp01(x0 - pad); y0 = clamp01(y0 - pad);
+      x1 = clamp01(x1 + pad); y1 = clamp01(y1 + pad);
+      if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return res.status(422).json({ error: "영역이 너무 작습니다." });
+
       const DPI = 150;
       const wpx = (wpt / 72) * DPI, hpx = (hpt / 72) * DPI;
       const X = Math.max(0, Math.round(x0 * wpx));
