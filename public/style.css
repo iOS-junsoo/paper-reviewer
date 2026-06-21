@@ -1879,6 +1879,19 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 /* 페이지를 아는 실험 — 번호 클릭 시 원문으로 점프 */
 .study-num-link { cursor: pointer; transition: transform 0.12s, box-shadow 0.12s; }
 .study-num-link:hover { transform: scale(1.12); box-shadow: 0 2px 8px rgba(140, 47, 57, 0.4); }
+/* 클릭 시 번호 왼쪽에 잠깐 뜨는 ✓ */
+.study-check {
+  flex: none;
+  color: var(--accent);
+  font-weight: 900;
+  font-size: 1.1rem;
+  line-height: 1;
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.study-check.show { opacity: 1; transform: scale(1); }
+.study-check.fade { opacity: 0; transform: scale(0.6); }
 .study-title { font-family: var(--serif); font-weight: 700; font-size: 1rem; color: var(--ink); line-height: 1.4; }
 .study-row { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 5px 0; }
 .study-row + .study-row { border-top: 1px solid var(--line); }

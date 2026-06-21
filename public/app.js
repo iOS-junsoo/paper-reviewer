@@ -555,7 +555,7 @@ function buildStudies(studies) {
     if (page) {
       num.type = "button";
       num.title = `원문 ${page}페이지로 이동`;
-      num.addEventListener("click", () => jumpToPdfMarkTop(page));
+      num.addEventListener("click", () => { showStudyCheck(num); jumpToPdfPage(page); });
     }
     const title = document.createElement("span");
     title.className = "study-title";
@@ -895,40 +895,26 @@ async function jumpToPdfPage(page, eqNum) {
 
   const pos = await findEqNumberPos(page, eqNum);
   const marked = markEqNumber(wrap, pos);
-  // 체크가 찍혔으면 그 위치를, 아니면 페이지 상단을 화면에 보이게
+  // pdf-scroll 컨테이너를 직접 스크롤한다 (중첩 컨테이너에서 scrollIntoView는 신뢰성이 낮음).
+  // 체크가 찍혔으면 그 위치를 화면 중앙에, 아니면 페이지를 상단에 맞춘다.
   const target = marked ? wrap.querySelector(".pdf-eqcheck") : wrap;
-  target.scrollIntoView({ block: marked ? "center" : "start", behavior: "smooth" });
+  const sr = pdfScroll.getBoundingClientRect();
+  const tr = target.getBoundingClientRect();
+  const offset = marked ? pdfScroll.clientHeight / 2 - tr.height / 2 : 8;
+  // 즉시 스크롤(behavior:smooth는 일부 환경에서 무시됨 → 직접 대입으로 확실히 이동)
+  pdfScroll.scrollTop = pdfScroll.scrollTop + (tr.top - sr.top) - offset;
   flagPdfJump(page);
 }
 
-// 실험 번호 클릭 → 해당 페이지로 이동 + ✓ 체크 3초 (수식과 동일한 동작, 단 번호 앵커가 없어
-// 페이지 상단에 ✓를 표시)
-async function jumpToPdfMarkTop(page) {
-  if (!currentHash) return;
-  if (!pdfAvailable) {
-    showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
-    return;
-  }
-  workspaceEl.classList.remove("pdf-collapsed");
-  document.getElementById("pdf-toggle").textContent = "접기 ◀";
-  document.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
-  const wrap = pdfPageEls.get(page);
-  if (!wrap) return;
-  await renderPdfPage(page, pdfRenderToken);
-  markPageTop(wrap);
-  wrap.scrollIntoView({ block: "start", behavior: "smooth" });
-  flagPdfJump(page);
-}
-// 페이지 좌상단에 ✓ 체크를 3초간 표시 (수식 번호가 없는 점프용)
-function markPageTop(wrap) {
-  wrap.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
-  const chk = document.createElement("div");
-  chk.className = "pdf-eqcheck pdf-eqcheck-top";
+// 실험 번호 배지 왼쪽에 ✓ 체크를 3초간 표시 (클릭 피드백). PDF 페이지 이동은 jumpToPdfPage가 담당.
+function showStudyCheck(numEl) {
+  const head = numEl.parentNode;
+  if (!head) return;
+  head.querySelectorAll(".study-check").forEach((e) => e.remove());
+  const chk = document.createElement("span");
+  chk.className = "study-check";
   chk.textContent = "✓";
-  chk.style.left = "12px";
-  chk.style.top = "12px";
-  chk.style.width = chk.style.height = "26px";
-  wrap.appendChild(chk);
+  head.insertBefore(chk, numEl); // 번호 왼쪽
   void chk.offsetWidth;
   chk.classList.add("show");
   setTimeout(() => chk.classList.add("fade"), 2600);
