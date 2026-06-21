@@ -503,6 +503,31 @@ body.reading .new-analysis { display: inline-block; }
   cursor: pointer;
 }
 #pdf-toggle:hover { border-color: var(--accent); color: var(--accent); }
+/* PDF 확대/축소 컨트롤 */
+.pdf-zoom { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; margin-right: 10px; }
+.pdf-zbtn {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 1rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+  line-height: 1;
+}
+.pdf-zbtn:hover { border-color: var(--accent); color: var(--accent); }
+.pdf-zlabel {
+  min-width: 46px;
+  text-align: center;
+  background: none;
+  border: none;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.pdf-zlabel:hover { color: var(--accent); }
 /* PDF.js 스크롤 뷰어 */
 .pdf-scroll {
   flex: 1;
@@ -1822,6 +1847,43 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 }
 .res-ablations { padding-left: 1.1em; }
 .res-ablations li { font-size: 0.92rem; color: var(--ink); margin: 7px 0; line-height: 1.6; }
+
+/* 측정 지표·용어 정의 목록 */
+.res-defs { display: grid; grid-template-columns: minmax(110px, 200px) 1fr; gap: 6px 16px; align-items: baseline; }
+.res-def-t { font-weight: 700; color: var(--accent); font-size: 0.9rem; }
+.res-def-d { font-size: 0.9rem; color: var(--ink-soft); line-height: 1.55; }
+
+/* 번호별 실험 카드 (목적·세팅·결과) */
+.res-studies { display: flex; flex-direction: column; gap: 14px; }
+.study-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 14px 16px;
+}
+.study-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.study-num {
+  flex: none;
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.study-title { font-family: var(--serif); font-weight: 700; font-size: 1rem; color: var(--ink); line-height: 1.4; }
+.study-row { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 5px 0; }
+.study-row + .study-row { border-top: 1px solid var(--line); }
+.study-label {
+  flex: none;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--accent);
+  padding-top: 2px;
+}
+.study-body { font-size: 0.9rem; color: var(--ink); line-height: 1.6; }
 
 /* ── 결과 도구 모음 (복사·내보내기·재생성·메모·용어집) ───────────────── */
 .result-tools {

@@ -323,9 +323,11 @@ function hideError() {
 // 지원 마크업: **볼드**, ==형광펜==, $인라인 수식$, 줄 맨 앞 "## 소제목"
 // (HTML은 먼저 이스케이프, 수식은 KaTeX로 렌더링)
 function richHtml(text) {
+  // 모델이 문자열 자리에 객체·숫자 등을 보내도 .replace 크래시로 화면 전체가 깨지지 않게 강제 변환
+  if (typeof text !== "string") text = text == null ? "" : String(text);
   // 1) $...$ 인라인 수식을 플레이스홀더로 추출 (이스케이프/마크업 처리와 충돌 방지)
   const mathParts = [];
-  const src = (text || "").replace(/\$([^$\n]+?)\$/g, (match, tex) => {
+  const src = text.replace(/\$([^$\n]+?)\$/g, (match, tex) => {
     if (typeof katex === "undefined") return match;
     try {
       mathParts.push(katex.renderToString(tex, { displayMode: false, throwOnError: true }));
@@ -452,38 +454,41 @@ function renderContributions(items) {
 }
 
 // ---------- 실험·결과 탭 ----------
+// 신규 구조: takeaway → 측정 지표 설명 / 데이터셋 / 용어 설명 → 번호별 실험(목적·세팅·결과) → 한계.
+// 옛 분석(metrics·baselines·ablations)도 폴백으로 표시.
 function renderResults(exp) {
   const panel = document.getElementById("panel-results");
   panel.innerHTML = "";
+  const arr = (v) => (Array.isArray(v) ? v : []);
   const has =
     exp && typeof exp === "object" &&
     (exp.takeaway || exp.limitations ||
-      (Array.isArray(exp.datasets) && exp.datasets.length) ||
-      (Array.isArray(exp.baselines) && exp.baselines.length) ||
-      (Array.isArray(exp.metrics) && exp.metrics.length) ||
-      (Array.isArray(exp.ablations) && exp.ablations.length));
+      arr(exp.studies).length || arr(exp.metrics_explained).length || arr(exp.terms).length ||
+      arr(exp.datasets).length || arr(exp.baselines).length || arr(exp.metrics).length || arr(exp.ablations).length);
   if (!has) {
     panel.innerHTML =
       `<p class="muted res-empty">이 분석에는 실험·결과 정보가 없습니다.<br />` +
-      `예전에 분석한 논문이면 히스토리에서 🔄로 재분석하면 채워집니다. (이론·서베이 논문은 결과가 적을 수 있어요.)</p>`;
+      `예전에 분석한 논문이면 히스토리에서 🔄(또는 이 탭의 "이 섹션 다시 생성")로 채울 수 있어요. (이론·서베이 논문은 결과가 적을 수 있어요.)</p>`;
     return;
   }
+  // 1) 한 줄 결론
   if (exp.takeaway) {
     const t = document.createElement("div");
     t.className = "res-takeaway";
     renderRich(t, "📌 " + exp.takeaway);
     panel.appendChild(t);
   }
-  if (Array.isArray(exp.metrics) && exp.metrics.length) {
-    panel.appendChild(buildResultMetrics(exp.metrics));
-  }
-  if ((Array.isArray(exp.datasets) && exp.datasets.length) ||
-      (Array.isArray(exp.baselines) && exp.baselines.length)) {
-    panel.appendChild(buildResultMeta(exp.datasets, exp.baselines));
-  }
-  if (Array.isArray(exp.ablations) && exp.ablations.length) {
-    panel.appendChild(buildResultList("주요 분석 (Ablation)", exp.ablations, "res-ablations"));
-  }
+  // 2) 측정 지표 설명 (신규) — 없으면 옛 지표 카드로 폴백
+  if (arr(exp.metrics_explained).length) panel.appendChild(buildExpDefs("측정 지표", exp.metrics_explained));
+  else if (arr(exp.metrics).length) panel.appendChild(buildResultMetrics(exp.metrics));
+  // 3) 데이터셋 (+ 옛 baselines)
+  if (arr(exp.datasets).length || arr(exp.baselines).length) panel.appendChild(buildResultMeta(exp.datasets, exp.baselines));
+  // 4) 용어 설명 (신규)
+  if (arr(exp.terms).length) panel.appendChild(buildExpDefs("용어 설명", exp.terms));
+  // 5) 번호별 실험 (신규) — 없으면 옛 ablations로 폴백
+  if (arr(exp.studies).length) panel.appendChild(buildStudies(exp.studies));
+  else if (arr(exp.ablations).length) panel.appendChild(buildResultList("주요 분석 (Ablation)", exp.ablations, "res-ablations"));
+  // 6) 한계 · 향후 연구
   if (exp.limitations) {
     const sec = document.createElement("div");
     sec.className = "res-section";
@@ -495,6 +500,81 @@ function renderResults(exp) {
     sec.append(h, body);
     panel.appendChild(sec);
   }
+}
+
+// 정의 목록 (측정 지표 설명 / 용어 설명) — 항목은 {name|term, meaning} 또는 문자열
+function buildExpDefs(title, items) {
+  const sec = document.createElement("div");
+  sec.className = "res-section";
+  const h = document.createElement("h4");
+  h.className = "res-h";
+  h.textContent = title;
+  sec.appendChild(h);
+  const dl = document.createElement("dl");
+  dl.className = "res-defs";
+  items.forEach((it) => {
+    if (!it) return;
+    const name = typeof it === "string" ? it : (it.name || it.term || "");
+    const mean = typeof it === "string" ? "" : (it.meaning || it.detail || "");
+    if (!name && !mean) return;
+    const dt = document.createElement("dt");
+    dt.className = "res-def-t";
+    renderRich(dt, name); // 지표/기호가 $수식$일 수 있어 richHtml 사용
+    const dd = document.createElement("dd");
+    dd.className = "res-def-d";
+    renderRich(dd, mean);
+    dl.append(dt, dd);
+  });
+  sec.appendChild(dl);
+  return sec;
+}
+
+// 번호별 실험 카드 (목적 · 세팅 · 결과)
+function buildStudies(studies) {
+  const sec = document.createElement("div");
+  sec.className = "res-section";
+  const h = document.createElement("h4");
+  h.className = "res-h";
+  h.textContent = "실험";
+  sec.appendChild(h);
+  const wrap = document.createElement("div");
+  wrap.className = "res-studies";
+  let n = 0;
+  studies.forEach((s) => {
+    if (!s || typeof s !== "object") return;
+    n++;
+    const card = document.createElement("div");
+    card.className = "study-card";
+    const head = document.createElement("div");
+    head.className = "study-head";
+    const num = document.createElement("span");
+    num.className = "study-num";
+    num.textContent = n;
+    const title = document.createElement("span");
+    title.className = "study-title";
+    renderRich(title, s.title || `실험 ${n}`);
+    head.append(num, title);
+    card.appendChild(head);
+    const row = (label, val) => {
+      if (!val) return;
+      const d = document.createElement("div");
+      d.className = "study-row";
+      const lab = document.createElement("span");
+      lab.className = "study-label";
+      lab.textContent = label;
+      const body = document.createElement("div");
+      body.className = "study-body";
+      renderRich(body, val);
+      d.append(lab, body);
+      card.appendChild(d);
+    };
+    row("목적", s.purpose);
+    row("세팅", s.setup);
+    row("결과", s.result);
+    wrap.appendChild(card);
+  });
+  sec.appendChild(wrap);
+  return sec;
 }
 
 // 핵심 지표 — 단위가 제각각이라 막대 대신 카드로 (논문 결과는 강조)
@@ -618,7 +698,11 @@ if (typeof pdfjsLib !== "undefined") {
 }
 let pdfDoc = null;
 let pdfScale = 1;
+let pdfZoom = 1; // 사용자 확대/축소 배율 (폭 맞춤 = 1.0)
+let pdfFitScale = 1; // 패널 폭에 맞춘 기준 스케일
+let pdfBaseW = 0, pdfBaseH = 0; // 1페이지 원본 크기(scale=1)
 let pdfRenderToken = 0; // 논문 전환 시 이전 렌더 무효화
+let pdfRenderSeq = 0; // 각 페이지 렌더 고유 마크 (줌 중 중복 캔버스 방지)
 const pdfPageEls = new Map(); // pageNum -> wrap div
 
 async function loadPdf(hash) {
@@ -645,7 +729,12 @@ async function loadPdf(hash) {
     // 1페이지 크기로 폭에 맞춘 스케일 계산 + 모든 페이지 placeholder 생성(렌더는 지연)
     const first = await doc.getPage(1);
     const baseVp = first.getViewport({ scale: 1 });
-    pdfScale = Math.max(0.3, (pdfScroll.clientWidth - 18) / baseVp.width);
+    pdfBaseW = baseVp.width;
+    pdfBaseH = baseVp.height;
+    pdfFitScale = Math.max(0.3, (pdfScroll.clientWidth - 18) / baseVp.width);
+    pdfZoom = 1; // 새 논문은 폭 맞춤으로 시작
+    pdfScale = pdfFitScale * pdfZoom;
+    updatePdfZoomLabel();
     const phH = baseVp.height * pdfScale;
 
     const lazy = new IntersectionObserver(
@@ -668,13 +757,48 @@ async function loadPdf(hash) {
   }
 }
 
+function updatePdfZoomLabel() {
+  const el = document.getElementById("pdf-zoom-reset");
+  if (el) el.textContent = `${Math.round(pdfZoom * 100)}%`;
+}
+// 확대/축소: 배율을 바꾸고 모든 페이지를 placeholder로 되돌린 뒤 보이는 페이지만 다시 렌더
+function setPdfZoom(z) {
+  if (!pdfDoc || !pdfBaseW) return;
+  const oldScale = pdfScale;
+  pdfZoom = Math.min(3, Math.max(0.5, Math.round(z * 100) / 100));
+  pdfScale = pdfFitScale * pdfZoom;
+  const factor = oldScale ? pdfScale / oldScale : 1;
+  const prevTop = pdfScroll.scrollTop; // 줌 전 위치
+  const phH = pdfBaseH * pdfScale;
+  pdfPageEls.forEach((wrap) => {
+    wrap.innerHTML = "";
+    delete wrap.dataset.rendered;
+    wrap.style.height = `${phH}px`;
+  });
+  pdfScroll.scrollTop = prevTop * factor; // 배율만큼 스크롤도 비례 이동 → 같은 위치 유지
+  updatePdfZoomLabel();
+  renderVisiblePdfPages();
+}
+function renderVisiblePdfPages() {
+  const sr = pdfScroll.getBoundingClientRect();
+  pdfPageEls.forEach((wrap, n) => {
+    const r = wrap.getBoundingClientRect();
+    if (r.bottom >= sr.top - 600 && r.top <= sr.bottom + 600) renderPdfPage(n, pdfRenderToken);
+  });
+}
+document.getElementById("pdf-zoom-in").addEventListener("click", () => setPdfZoom(pdfZoom + 0.2));
+document.getElementById("pdf-zoom-out").addEventListener("click", () => setPdfZoom(pdfZoom - 0.2));
+document.getElementById("pdf-zoom-reset").addEventListener("click", () => setPdfZoom(1));
+
 async function renderPdfPage(n, token) {
   const wrap = pdfPageEls.get(n);
   if (!wrap || wrap.dataset.rendered || !pdfDoc) return;
-  wrap.dataset.rendered = "1";
+  const mark = String(++pdfRenderSeq); // 이 렌더의 고유 표식
+  wrap.dataset.rendered = mark;
   try {
     const page = await pdfDoc.getPage(n);
-    if (token !== pdfRenderToken) return;
+    // 그 사이 논문이 바뀌었거나(token) 줌으로 이 wrap이 재설정됐으면(mark 불일치) 중단 — 캔버스 중복 방지
+    if (token !== pdfRenderToken || wrap.dataset.rendered !== mark) return;
     const vp = page.getViewport({ scale: pdfScale });
     // 고DPI(레티나) 화면 선명도 — 백킹 스토어는 dpr배 해상도, 표시는 논리 px
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -684,6 +808,7 @@ async function renderPdfPage(n, token) {
     canvas.height = Math.floor(vp.height * dpr);
     canvas.style.width = `${Math.floor(vp.width)}px`;
     canvas.style.height = `${Math.floor(vp.height)}px`;
+    if (wrap.dataset.rendered !== mark) return; // append 직전 재확인
     wrap.style.height = "";
     wrap.appendChild(canvas);
     await page.render({
@@ -2291,16 +2416,40 @@ function sectionMd(name, data) {
   } else if (name === "results") {
     L.push("## 실험·결과");
     const e = data.experiments || {};
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    const defLine = (it, kName, kAlt) => {
+      const nm = typeof it === "string" ? it : (it[kName] || it[kAlt] || "");
+      const mn = typeof it === "string" ? "" : (it.meaning || it.detail || "");
+      return `- **${mdInline(nm)}**${mn ? ` — ${mdInline(mn)}` : ""}`;
+    };
     if (e.takeaway) L.push(`**${mdInline(e.takeaway)}**`);
-    if (Array.isArray(e.metrics) && e.metrics.length) {
+    if (arr(e.metrics_explained).length) {
+      L.push("\n### 측정 지표");
+      e.metrics_explained.forEach((m) => { if (m) L.push(defLine(m, "name", "term")); });
+    } else if (arr(e.metrics).length) {
       L.push("\n| 지표 | 값 | 비고 |", "|---|---|---|");
       e.metrics.forEach((m) => {
         if (m && typeof m === "object") L.push(`| ${mdCell(m.label)} | ${mdCell(String(m.value ?? "") + (m.unit ? " " + m.unit : ""))} | ${mdCell(m.note || "")} |`);
       });
     }
-    if (Array.isArray(e.datasets) && e.datasets.length) L.push(`\n**데이터셋:** ${e.datasets.map((d) => (d && d.name) || (typeof d === "string" ? d : "")).filter(Boolean).join(", ")}`);
-    if (Array.isArray(e.baselines) && e.baselines.length) L.push(`**비교 대상:** ${e.baselines.map((b) => (typeof b === "string" ? b : (b && b.name) || "")).filter(Boolean).join(", ")}`);
-    if (Array.isArray(e.ablations) && e.ablations.length) {
+    if (arr(e.datasets).length) L.push(`\n**데이터셋:** ${e.datasets.map((d) => (d && d.name) || (typeof d === "string" ? d : "")).filter(Boolean).join(", ")}`);
+    if (arr(e.baselines).length) L.push(`**비교 대상:** ${e.baselines.map((b) => (typeof b === "string" ? b : (b && b.name) || "")).filter(Boolean).join(", ")}`);
+    if (arr(e.terms).length) {
+      L.push("\n### 용어 설명");
+      e.terms.forEach((t) => { if (t) L.push(defLine(t, "term", "name")); });
+    }
+    if (arr(e.studies).length) {
+      L.push("\n### 실험");
+      let i = 0;
+      e.studies.forEach((s) => {
+        if (!s || typeof s !== "object") return;
+        i++;
+        L.push(`\n**${i}. ${mdInline(s.title || "실험 " + i)}**`);
+        if (s.purpose) L.push(`- 목적: ${mdInline(s.purpose)}`);
+        if (s.setup) L.push(`- 세팅: ${mdInline(s.setup)}`);
+        if (s.result) L.push(`- 결과: ${mdInline(s.result)}`);
+      });
+    } else if (arr(e.ablations).length) {
       L.push("\n**주요 분석:**");
       e.ablations.forEach((a) => L.push(`- ${mdInline(typeof a === "string" ? a : a && a.text)}`));
     }
