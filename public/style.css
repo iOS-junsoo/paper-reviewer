@@ -1566,8 +1566,17 @@ body.chat-resizing .pdf-scroll { pointer-events: none; }
 }
 .chat-a strong { color: var(--ink); }
 .chat-a { overflow-x: auto; overflow-y: hidden; } /* 긴 수식은 가로 스크롤만, 세로 내부 스크롤 금지 */
-.chat-thinking { color: var(--ink-faint); font-style: italic; animation: pulseop 1.4s ease-in-out infinite; }
-@keyframes pulseop { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+.chat-thinking { color: var(--ink-faint); display: flex; align-items: center; }
+.chat-dots { display: inline-flex; gap: 4px; align-items: center; margin-right: 9px; flex: none; }
+.chat-dots i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent);
+  animation: chatdot 1.2s infinite ease-in-out both;
+}
+.chat-dots i:nth-child(2) { animation-delay: 0.16s; }
+.chat-dots i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes chatdot { 0%, 80%, 100% { transform: scale(0.5); opacity: 0.35; } 40% { transform: scale(1); opacity: 1; } }
+.chat-step { color: var(--ink-faint); font-size: 0.88rem; line-height: 1.5; }
 /* 추천 질문 칩 */
 .chat-chips { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .chat-chips::before {

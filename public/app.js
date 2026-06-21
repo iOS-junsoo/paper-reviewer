@@ -1214,8 +1214,9 @@ chatForm.addEventListener("submit", async (e) => {
   chatInput.value = "";
   chatMessages.querySelector(".chat-chips")?.remove(); // 첫 질문 후 추천 칩 제거
   appendChat("q", q);
-  const thinking = appendChat("a", "🤔 논문을 확인하며 생각 중… (보통 30초~2분)");
+  const thinking = appendChat("a", "");
   thinking.classList.add("chat-thinking");
+  setThinking(thinking, "논문을 살펴보는 중…");
   chatSend.disabled = true;
 
   try {
@@ -1224,11 +1225,14 @@ chatForm.addEventListener("submit", async (e) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: q, history: chatHistory }),
     });
-    const data = await safeJson(res);
-    if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+    if (!res.ok) {
+      const data = await safeJson(res);
+      throw new Error((data && data.error) || `HTTP ${res.status}`);
+    }
+    const answer = await consumeChatStream(res, thinking); // 진행 단계 표시 → 최종 답변
     thinking.remove();
-    appendChat("a", data.answer);
-    chatHistory.push({ q, a: data.answer });
+    appendChat("a", answer);
+    chatHistory.push({ q, a: answer });
   } catch (err) {
     thinking.remove();
     appendChat("a", "⚠️ " + err.message);
@@ -1237,6 +1241,42 @@ chatForm.addEventListener("submit", async (e) => {
     chatInput.focus();
   }
 });
+
+// 채팅 SSE 소비: step(진행 단계)으로 '생각 중' 표시를 갱신하고 최종 answer를 반환
+async function consumeChatStream(res, thinkingEl) {
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let answer = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      let ev;
+      try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+      if (ev.type === "step") setThinking(thinkingEl, ev.msg);
+      else if (ev.type === "result") answer = ev.answer;
+      else if (ev.type === "error") throw new Error(ev.error);
+    }
+  }
+  if (answer == null) throw new Error("답변을 받지 못했어요. 다시 시도해 주세요.");
+  return answer;
+}
+
+// '생각 중' 버블: 통통 튀는 점 애니메이션 + 현재 진행 단계 메시지
+function setThinking(el, msg) {
+  // 사용자가 위로 올려 예전 대화를 읽는 중이면 끌어내리지 않는다 (바닥 근처일 때만 자동 스크롤)
+  const atBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 60;
+  el.innerHTML = '<span class="chat-dots"><i></i><i></i><i></i></span><span class="chat-step"></span>';
+  el.querySelector(".chat-step").textContent = msg || "생각 중…";
+  if (atBottom) chatMessages.scrollTop = chatMessages.scrollHeight;
+}
 
 // ---------- 연구 방법론: 재구성 figure들 + 스테퍼 ----------
 function renderMethod(data) {

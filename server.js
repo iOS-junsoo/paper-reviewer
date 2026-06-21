@@ -723,6 +723,10 @@ app.post("/api/ask/:hash", async (req, res) => {
       .join("\n\n");
 
     console.log(`[질문] ${a.title}: ${question.slice(0, 60)}`);
+    sseInit(res); // 진행 단계(생각 과정)를 실시간으로 흘려보낸다
+    let lastStep = "";
+    const step = (msg) => { if (msg === lastStep) return; lastStep = msg; sseSend(res, { type: "step", msg }); }; // 직전과 같은 단계는 생략
+    step("논문을 살펴보는 중…");
     let answer = null;
     for await (const msg of query({
       prompt,
@@ -731,14 +735,29 @@ app.post("/api/ask/:hash", async (req, res) => {
         abortController: ac,
       },
     })) {
+      // 에이전트의 도구 사용·작성 단계를 사람이 읽을 메시지로 변환해 전송
+      if (msg.type === "assistant" && msg.message && Array.isArray(msg.message.content)) {
+        for (const b of msg.message.content) {
+          if (b.type === "tool_use") {
+            if (b.name === "Read") {
+              const pages = (b.input && b.input.pages) || "";
+              step(pages ? `📄 원문 ${pages}쪽을 읽는 중…` : "📄 원문을 읽는 중…");
+            } else if (b.name === "WebSearch") {
+              const q = ((b.input && b.input.query) || "").slice(0, 40);
+              step(`🔎 자료를 검색하는 중: "${q}"`);
+            }
+          } else if (b.type === "text" && b.text && b.text.trim().length > 30) {
+            step("✍️ 답변을 정리하는 중…");
+          }
+        }
+      }
       if (msg.type === "result") {
         if (msg.subtype !== "success") {
           const detail = String(
             msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || ""
           );
-          const e = new Error(`응답 생성 실패 (${msg.subtype})${detail ? ": " + detail.slice(0, 120) : ""}`);
-          if (isAuthError(detail)) e.code = "AUTH";
-          throw e;
+          if (isAuthError(detail)) { sseSend(res, { type: "error", error: AUTH_ERROR_MSG }); return res.end(); }
+          throw new Error(`응답 생성 실패 (${msg.subtype})${detail ? ": " + detail.slice(0, 120) : ""}`);
         }
         answer = msg.result;
       }
@@ -753,15 +772,19 @@ app.post("/api/ask/:hash", async (req, res) => {
         console.warn("[채팅 저장 실패]", e.message);
       }
     }
-    res.json({ answer: answer || "(답변을 생성하지 못했습니다)" });
+    sseSend(res, { type: "result", answer: answer || "(답변을 생성하지 못했습니다)" });
+    res.end();
   } catch (e) {
     if (ac.signal.aborted) return; // 사용자가 취소(연결 종료) — 조용히 무시
     console.error("[/api/ask 오류]", e);
-    if (res.headersSent || res.writableEnded || res.destroyed) return;
-    if (e && (e.code === "AUTH" || isAuthError(e.message))) {
-      return res.status(401).json({ error: AUTH_ERROR_MSG });
+    const friendly =
+      e && (e.code === "AUTH" || isAuthError(e.message)) ? AUTH_ERROR_MSG : `질문 처리 실패: ${e.message}`;
+    if (res.headersSent) {
+      // SSE가 이미 시작됨 → error 이벤트로 전달
+      if (!res.writableEnded && !res.destroyed) { sseSend(res, { type: "error", error: friendly }); res.end(); }
+      return;
     }
-    res.status(500).json({ error: `질문 처리 실패: ${e.message}` });
+    res.status(e && (e.code === "AUTH" || isAuthError(e.message)) ? 401 : 500).json({ error: friendly });
   }
 });
 
