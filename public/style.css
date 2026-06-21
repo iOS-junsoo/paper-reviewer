@@ -1868,11 +1868,17 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--accent);
   color: #fff;
+  border: none;
+  padding: 0;
   border-radius: 50%;
+  font-family: var(--sans);
   font-size: 0.82rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
+/* 페이지를 아는 실험 — 번호 클릭 시 원문으로 점프 */
+.study-num-link { cursor: pointer; transition: transform 0.12s, box-shadow 0.12s; }
+.study-num-link:hover { transform: scale(1.12); box-shadow: 0 2px 8px rgba(140, 47, 57, 0.4); }
 .study-title { font-family: var(--serif); font-weight: 700; font-size: 1rem; color: var(--ink); line-height: 1.4; }
 .study-row { display: grid; grid-template-columns: 52px 1fr; gap: 10px; padding: 5px 0; }
 .study-row + .study-row { border-top: 1px solid var(--line); }

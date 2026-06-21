@@ -547,9 +547,16 @@ function buildStudies(studies) {
     card.className = "study-card";
     const head = document.createElement("div");
     head.className = "study-head";
-    const num = document.createElement("span");
-    num.className = "study-num";
+    const page = Number(s.paper_page) || 0;
+    // 페이지를 알면 번호를 버튼으로 — 클릭 시 원문 PDF 그 페이지로 이동 + ✓ 체크 3초
+    const num = document.createElement(page ? "button" : "span");
+    num.className = "study-num" + (page ? " study-num-link" : "");
     num.textContent = n;
+    if (page) {
+      num.type = "button";
+      num.title = `원문 ${page}페이지로 이동`;
+      num.addEventListener("click", () => jumpToPdfMarkTop(page));
+    }
     const title = document.createElement("span");
     title.className = "study-title";
     renderRich(title, s.title || `실험 ${n}`);
@@ -892,6 +899,40 @@ async function jumpToPdfPage(page, eqNum) {
   const target = marked ? wrap.querySelector(".pdf-eqcheck") : wrap;
   target.scrollIntoView({ block: marked ? "center" : "start", behavior: "smooth" });
   flagPdfJump(page);
+}
+
+// 실험 번호 클릭 → 해당 페이지로 이동 + ✓ 체크 3초 (수식과 동일한 동작, 단 번호 앵커가 없어
+// 페이지 상단에 ✓를 표시)
+async function jumpToPdfMarkTop(page) {
+  if (!currentHash) return;
+  if (!pdfAvailable) {
+    showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
+    return;
+  }
+  workspaceEl.classList.remove("pdf-collapsed");
+  document.getElementById("pdf-toggle").textContent = "접기 ◀";
+  document.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
+  const wrap = pdfPageEls.get(page);
+  if (!wrap) return;
+  await renderPdfPage(page, pdfRenderToken);
+  markPageTop(wrap);
+  wrap.scrollIntoView({ block: "start", behavior: "smooth" });
+  flagPdfJump(page);
+}
+// 페이지 좌상단에 ✓ 체크를 3초간 표시 (수식 번호가 없는 점프용)
+function markPageTop(wrap) {
+  wrap.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
+  const chk = document.createElement("div");
+  chk.className = "pdf-eqcheck pdf-eqcheck-top";
+  chk.textContent = "✓";
+  chk.style.left = "12px";
+  chk.style.top = "12px";
+  chk.style.width = chk.style.height = "26px";
+  wrap.appendChild(chk);
+  void chk.offsetWidth;
+  chk.classList.add("show");
+  setTimeout(() => chk.classList.add("fade"), 2600);
+  setTimeout(() => chk.remove(), 3000);
 }
 
 // PDF 패널에 "여기로 이동했다"는 시각 표시 (펄스 + 페이지 플래그)
