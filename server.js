@@ -732,48 +732,163 @@ async function captionAnchoredBox(pdfPath, page, label, modelBox, wpt, hpt) {
   while ((m = re.exec(xml))) words.push({ x0: +m[1], y0: +m[2], x1: +m[3], y1: +m[4], t: m[5] });
   if (!words.length) return null;
 
-  // 캡션 후보: 'Table'/'Figure' 단어 뒤에 해당 번호가 오는 곳
+  // 대표 줄 높이(중앙값) — 간격(gap) 판정 기준
+  const heights = words.map((w) => w.y1 - w.y0).filter((h) => h > 0).sort((a, b) => a - b);
+  const lineH = heights.length ? heights[Math.floor(heights.length / 2)] : 10;
+  const otherCapRe = /^(table|figure|fig\.?)\s*\d+\s*[:.]/i; // 다른 그림/표 캡션
+
+  // --- 1) 캡션 라벨 단어 찾기 (줄 시작 + 콜론을 강하게 우선) ---
   const cands = [];
   for (let i = 0; i < words.length - 1; i++) {
     if (words[i].t.toLowerCase() !== parsed.type) continue;
     const nm = words[i + 1].t.match(/^(\d+)([.:]?)/);
     if (!nm || nm[1] !== parsed.num) continue;
     const w = words[i];
-    // 줄 맨 앞인가(왼쪽에 같은 줄 단어가 없음) — 본문 속 'Table 2 provides…' 인용과 구분
-    const lineStart = !words.some((o) => o !== w && Math.abs(o.y0 - w.y0) < 3 && o.x0 < w.x0 - 0.5);
+    const lineStart = !words.some((o) => o !== w && Math.abs(o.y0 - w.y0) < lineH * 0.6 && o.x0 < w.x0 - 0.5);
     let score = 0;
-    if (nm[2]) score += 3; // "2:" / "2." = 캡션 표기
-    if (lineStart) score += 2; // 줄 시작 = 캡션(인용은 줄 중간)
+    if (nm[2] === ":") score += 3;
+    else if (nm[2] === ".") score += 2;
+    if (lineStart) score += 3; // 줄 시작 = 캡션(본문 속 'Table 2 provides…' 인용 배제)
     cands.push({ w, score });
   }
   if (!cands.length) return null;
   const modelCY = ((modelBox[1] + modelBox[3]) / 2) * hpt;
   cands.sort((a, b) => b.score - a.score || Math.abs(a.w.y0 - modelCY) - Math.abs(b.w.y0 - modelCY));
-  const best = cands[0];
-  if (best.score < 2) return null; // 캡션이라 확신 못 하면 보정하지 않음
+  const cap = cands[0];
+  if (cap.score < 3) return null; // 캡션이라 확신 못 하면 보정 안 함(원본 bbox 폴백)
 
-  const capY0n = best.w.y0 / hpt;
-  const capY1n = best.w.y1 / hpt;
-  const capHn = Math.max(capY1n - capY0n, 0.012);
-  const [mx0, my0, mx1, my1] = modelBox;
-  const modelCenterYn = (my0 + my1) / 2;
-  const modelHn = Math.max(my1 - my0, 0.05);
-  const extent = Math.min(Math.max(modelHn * 1.3 + capHn, 0.14), 0.55);
-  const padCap = 0.012;
-  let ny0, ny1;
-  if (modelCenterYn <= capY0n) {
-    // 캡션이 아래(그림/표가 위) — 캡션 바닥에 맞추고 위로 extent만큼
-    ny1 = clamp01(capY1n + padCap);
-    ny0 = clamp01(ny1 - extent);
-  } else {
-    // 캡션이 위(그림/표가 아래) — 캡션 위에 맞추고 아래로 extent만큼
-    ny0 = clamp01(capY0n - padCap);
-    ny1 = clamp01(ny0 + extent);
+  // --- 2) 캡션이 속한 컬럼의 단어만 모아 '줄(row)' 단위로 묶기 (2단 레이아웃 오염 방지) ---
+  const mid = wpt / 2;
+  let colMin = Math.min(modelBox[0] * wpt, cap.w.x0) - 0.02 * wpt;
+  let colMax = Math.max(modelBox[2] * wpt, cap.w.x1) + 0.03 * wpt;
+  // 단일 컬럼 그림이면 페이지 중앙(거터)에서 다른 컬럼을 차단 (좌/우 글자 새어듦 방지)
+  if (modelBox[2] - modelBox[0] < 0.55) {
+    if (modelBox[0] >= 0.45) colMin = Math.max(colMin, mid + 2);
+    else if (modelBox[2] <= 0.55) colMax = Math.min(colMax, mid - 2);
   }
-  let nx0 = Math.min(mx0, best.w.x0 / wpt); // 캡션 시작점까지는 포함
-  let nx1 = mx1;
-  if (nx1 - nx0 < 0.1) nx1 = clamp01(nx0 + 0.42); // 폭이 비정상이면 한 컬럼 정도 확보
-  return [nx0, ny0, nx1, ny1];
+  const colWords = words.filter((w) => { const c = (w.x0 + w.x1) / 2; return c > colMin && c < colMax; });
+  const rows = [];
+  for (const w of [...colWords].sort((a, b) => a.y0 - b.y0)) {
+    const c = (w.y0 + w.y1) / 2;
+    const r = rows[rows.length - 1];
+    if (r && c <= r.cMax + lineH * 0.6 && c >= r.cMin - lineH * 0.6) {
+      r.top = Math.min(r.top, w.y0); r.bottom = Math.max(r.bottom, w.y1);
+      r.xL = Math.min(r.xL, w.x0); r.xR = Math.max(r.xR, w.x1);
+      r.cMin = Math.min(r.cMin, c); r.cMax = Math.max(r.cMax, c); r.words.push(w);
+    } else {
+      rows.push({ top: w.y0, bottom: w.y1, xL: w.x0, xR: w.x1, cMin: c, cMax: c, words: [w] });
+    }
+  }
+  rows.forEach((r) => { r.text = r.words.slice().sort((a, b) => a.x0 - b.x0).map((w) => w.t).join(" "); });
+  const ci = rows.findIndex((r) => r.words.includes(cap.w));
+  if (ci < 0) return null;
+
+  // 캡션 라벨 줄부터 아래로 이어지는 캡션 블록(여러 줄)을 실측
+  const capBlockFrom = (idx) => {
+    let top = rows[idx].top, bottom = rows[idx].bottom, end = idx, xL = rows[idx].xL, xR = rows[idx].xR;
+    for (let j = idx + 1; j < rows.length; j++) {
+      const r = rows[j];
+      if (r.top - bottom > lineH * 1.0) break; // 캡션 줄 간격보다 크면 끝(다음 블록)
+      if (otherCapRe.test(r.text)) break; // 다음 그림/표 캡션
+      if (r.bottom - top > 0.17 * hpt) break; // 너무 길면 본문 흡수 방지
+      bottom = r.bottom; end = j; xL = Math.min(xL, r.xL); xR = Math.max(xR, r.xR);
+    }
+    return { top, bottom, end, xL, xR };
+  };
+
+  // --- 3) 우리 캡션 블록 + 페이지 내 다른 그림/표 캡션 블록(이웃 침범 차단용) ---
+  const myCap = capBlockFrom(ci);
+  const capTop = myCap.top, capBottom = myCap.bottom, capXL = myCap.xL, capXR = myCap.xR, capEndIdx = myCap.end;
+  const foreignBlocks = [];
+  for (let idx = 0; idx < rows.length; idx++) {
+    if (idx >= ci && idx <= capEndIdx) continue; // 우리 캡션 줄들은 제외
+    if (!otherCapRe.test(rows[idx].text)) continue;
+    foreignBlocks.push(capBlockFrom(idx));
+  }
+  const inForeign = (r) => foreignBlocks.some((b) => r.top < b.bottom + 1 && r.bottom > b.top - 1);
+
+  // --- 4) 방향 판정: 모델 박스가 한쪽으로 분명히 치우치면 그걸, 모호하면 가까운 콘텐츠 쪽 ---
+  const rowAbove = ci > 0 ? rows[ci - 1] : null;
+  const rowBelow = capEndIdx + 1 < rows.length ? rows[capEndIdx + 1] : null;
+  const gapAbove = rowAbove ? capTop - rowAbove.bottom : Infinity;
+  const gapBelow = rowBelow ? rowBelow.top - capBottom : Infinity;
+  const extendsAbove = modelBox[1] < capTop / hpt - 0.05;
+  const extendsBelow = modelBox[3] > capBottom / hpt + 0.05;
+  const aboveAmt = capTop / hpt - modelBox[1]; // 모델 박스가 캡션 위로 뻗은 정도
+  const belowAmt = modelBox[3] - capBottom / hpt; // 아래로 뻗은 정도
+  let figureAbove;
+  if (extendsAbove && !extendsBelow) figureAbove = true;
+  else if (extendsBelow && !extendsAbove) figureAbove = false;
+  // 둘 다(혹은 둘 다 아님) 모호 → 위에 붙은 콘텐츠가 더 가깝거나(표),
+  // 위에 텍스트가 없어도 모델 박스가 캡션 위로 훨씬 더 뻗어 있으면(순수 이미지 그림) 위로 판단
+  else figureAbove = gapAbove <= gapBelow || aboveAmt > belowAmt + 0.1;
+
+  // --- 5) 본체 경계 스캔 ---
+  // 표↔본문 경계 간격은 표마다 다르다(빽빽한 표 ~13pt, 느슨한 표는 더 큼). 고정 임계는 한쪽을 깨므로,
+  // 스캔하며 '내부 줄 간격'을 누적해 그 대비 큰 간격에서만 멈춘다(적응형). 처음 두 간격은 표본으로만 쓴다.
+  // 캡션 바로 위/아래의 아주 큰 빈칸은 그림 이미지로 본다.
+  const imageGap = Math.max(lineH * 3.0, 0.045 * hpt); // 이만큼 크면 이미지 빈칸
+  const minBoundary = lineH * 0.9, maxBoundary = lineH * 2.6;
+  const median = (xs) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  const stopBoundary = (gap, gs) => {
+    if (gs.length < 2) { gs.push(Math.max(gap, 0)); return false; } // 처음 2개는 표본 확보(멈춤 판정 보류)
+    const th = Math.min(Math.max(median(gs) * 2.2, minBoundary), maxBoundary);
+    if (gap > th) return true;
+    gs.push(Math.max(gap, 0));
+    return false;
+  };
+
+  let bodyTop, bodyBottom;
+  if (figureAbove) {
+    bodyBottom = capBottom;
+    let top = capTop, acc = false; const gs = [];
+    for (let j = ci - 1; j >= 0; j--) {
+      const r = rows[j];
+      if (inForeign(r)) break; // 위쪽 다른 그림/표 캡션 블록 → 멈춤(제외)
+      const gap = top - r.bottom;
+      if (!acc) { if (gap > imageGap) { top = r.bottom; break; } } // 캡션 바로 위 큰 빈칸 = 이미지
+      else if (stopBoundary(gap, gs)) break; // 내부 줄 간격 대비 큰 간격 = 표/그림 끝
+      top = r.top; acc = true;
+    }
+    let limitTop = 0; // 위쪽으로 가장 가까운 이웃 캡션 블록의 아래 경계
+    for (const b of foreignBlocks) if (b.bottom <= capTop + 1 && b.bottom > limitTop) limitTop = b.bottom;
+    // 모델 박스가 캡션에 닿을 때만(=위치가 신뢰되는 박스) 하한으로 써서 잘림을 막는다.
+    // 닿지 않으면(예: 본문 위에 잘못 찍힌 박스) 스캔 결과만 사용해 과확장을 막는다.
+    if (modelBox[3] * hpt >= capTop - 0.08 * hpt) top = Math.min(top, modelBox[1] * hpt);
+    bodyTop = Math.max(top, limitTop);
+  } else {
+    bodyTop = capTop;
+    let bottom = capBottom, acc = false; const gs = [];
+    for (let j = capEndIdx + 1; j < rows.length; j++) {
+      const r = rows[j];
+      if (inForeign(r)) break;
+      const gap = r.top - bottom;
+      if (!acc) { if (gap > imageGap) { bottom = r.top; break; } }
+      else if (stopBoundary(gap, gs)) break;
+      bottom = r.bottom; acc = true;
+    }
+    let limitBot = hpt; // 아래쪽으로 가장 가까운 이웃 캡션 블록의 위 경계
+    for (const b of foreignBlocks) if (b.top >= capBottom - 1 && b.top < limitBot) limitBot = b.top;
+    // 모델 박스가 캡션에 닿을 때만 하한으로 사용 (위 figureAbove와 동일 취지)
+    if (modelBox[1] * hpt <= capBottom + 0.08 * hpt) bottom = Math.max(bottom, modelBox[3] * hpt);
+    bodyBottom = Math.min(bottom, limitBot);
+  }
+
+  // --- 6) 가로 폭: 본체 영역 단어들의 실제 좌우 + 캡션 폭 (우측 범례 잘림 방지) ---
+  let nx0pt = Infinity, nx1pt = -Infinity;
+  for (const w of colWords) {
+    if (w.y1 < bodyTop - 1 || w.y0 > bodyBottom + 1) continue;
+    if (w.x0 < nx0pt) nx0pt = w.x0;
+    if (w.x1 > nx1pt) nx1pt = w.x1;
+  }
+  if (!isFinite(nx0pt)) { nx0pt = modelBox[0] * wpt; nx1pt = modelBox[2] * wpt; }
+  nx0pt = Math.min(nx0pt, capXL);
+  nx1pt = Math.max(nx1pt, capXR);
+
+  const X0 = clamp01(nx0pt / wpt), Y0 = clamp01(bodyTop / hpt);
+  const X1 = clamp01(nx1pt / wpt), Y1 = clamp01(bodyBottom / hpt);
+  if (Y1 - Y0 < 0.03 || X1 - X0 < 0.05) return null; // 비정상이면 폴백
+  return [X0, Y0, X1, Y1];
 }
 
 // --- GET /api/figure/:hash?page=N&box=x0,y0,x1,y1&label=Table 2 — 그림 해설 크롭(PNG) -
@@ -796,7 +911,7 @@ app.get("/api/figure/:hash", async (req, res) => {
     if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: "저장된 원문 PDF가 없습니다." });
 
     // 캐시 키는 입력(page+box+label) 기준 → 캐시 히트 시 PDF 로드·캡션 탐색을 건너뛴다
-    const keyHash = crypto.createHash("sha1").update(`${page}|${box.join(",")}|${label}`).digest("hex").slice(0, 16);
+    const keyHash = crypto.createHash("sha1").update(`v9|${page}|${box.join(",")}|${label}`).digest("hex").slice(0, 16);
     const outBase = path.join(CROP_DIR, `${hash}_${keyHash}`);
     const outPng = `${outBase}.png`;
 
