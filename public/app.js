@@ -555,7 +555,10 @@ function buildStudies(studies) {
     if (page) {
       num.type = "button";
       num.title = `원문 ${page}페이지로 이동`;
-      num.addEventListener("click", () => { showStudyCheck(num); jumpToPdfPage(page); });
+      num.addEventListener("click", () => {
+        showStudyCheck(num); // 분석 패널 번호 옆 ✓ (즉시 피드백)
+        jumpToPdfPageText(page, s.anchor || studyAnchorFromTitle(s.title)); // 원문 PDF 그 실험 글 옆 ✓
+      });
     }
     const title = document.createElement("span");
     title.className = "study-title";
@@ -904,6 +907,93 @@ async function jumpToPdfPage(page, eqNum) {
   // 즉시 스크롤(behavior:smooth는 일부 환경에서 무시됨 → 직접 대입으로 확실히 이동)
   pdfScroll.scrollTop = pdfScroll.scrollTop + (tr.top - sr.top) - offset;
   flagPdfJump(page);
+}
+
+// PDF 텍스트 레이어에서 임의 문구(query) 위치 찾기 — 아이템이 쪼개져 있어도 글자를 이어붙여 검색
+async function findTextPos(pageNum, query) {
+  if (!query || !pdfDoc || typeof pdfjsLib === "undefined") return null;
+  const q = String(query).replace(/\s+/g, "").toLowerCase().slice(0, 40);
+  if (q.length < 3) return null;
+  try {
+    const page = await pdfDoc.getPage(pageNum);
+    const vp = page.getViewport({ scale: pdfScale });
+    const tc = await page.getTextContent();
+    const posOf = (it) => {
+      const m = pdfjsLib.Util.transform(vp.transform, it.transform);
+      const h = Math.hypot(m[2], m[3]) || 11;
+      return { y: m[5] - h, h, left: m[4] };
+    };
+    // 1순위: 그 문구로 '시작하는' 아이템(=제목/소제목) — 본문 인라인 언급보다 헤딩을 우선
+    const qHead = q.slice(0, 12);
+    for (const it of tc.items) {
+      const s = (it.str || "").replace(/\s+/g, "").toLowerCase();
+      if (s.startsWith(qHead)) return posOf(it);
+    }
+    // 2순위: 아이템이 쪼개진 경우 — 글자를 이어붙여 검색하고 매치 시작 아이템 위치
+    let concat = "";
+    const owner = [];
+    for (const it of tc.items) {
+      for (const ch of it.str || "") {
+        if (/\s/.test(ch)) continue;
+        concat += ch.toLowerCase();
+        owner.push(it);
+      }
+    }
+    let idx = concat.indexOf(q);
+    if (idx < 0 && q.length > 12) idx = concat.indexOf(q.slice(0, 12));
+    if (idx < 0) return null;
+    return posOf(owner[idx]);
+  } catch {
+    return null;
+  }
+}
+// 찾은 글 '왼쪽'에 ✓ 체크 3초 (실험 점프용 — 수식은 번호 오른쪽, 실험은 제목 왼쪽)
+function markTextCheck(wrap, pos) {
+  wrap.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
+  if (!pos) return false;
+  const size = Math.max(15, pos.h * 1.4);
+  const chk = document.createElement("div");
+  chk.className = "pdf-eqcheck";
+  chk.textContent = "✓";
+  chk.style.width = chk.style.height = `${size}px`;
+  chk.style.left = `${Math.max(2, pos.left - size - 4)}px`;
+  chk.style.top = `${pos.y + pos.h / 2 - size / 2}px`;
+  wrap.appendChild(chk);
+  void chk.offsetWidth;
+  chk.classList.add("show");
+  setTimeout(() => chk.classList.add("fade"), 2600);
+  setTimeout(() => chk.remove(), 3000);
+  return true;
+}
+// 실험 클릭 → 해당 페이지로 + 원문 본문의 그 실험 제목 옆에 ✓ (수식 탭과 동일한 PDF 점프)
+async function jumpToPdfPageText(page, anchor) {
+  if (!currentHash) return;
+  if (!pdfAvailable) {
+    showError("이 논문의 원문 PDF가 저장돼 있지 않습니다. 같은 PDF를 다시 업로드하면 페이지 점프가 활성화됩니다.");
+    return;
+  }
+  workspaceEl.classList.remove("pdf-collapsed");
+  document.getElementById("pdf-toggle").textContent = "접기 ◀";
+  document.querySelectorAll(".pdf-eqcheck").forEach((e) => e.remove());
+  const wrap = pdfPageEls.get(page);
+  if (!wrap) return;
+  await renderPdfPage(page, pdfRenderToken);
+  const pos = await findTextPos(page, anchor);
+  const marked = markTextCheck(wrap, pos);
+  const target = marked ? wrap.querySelector(".pdf-eqcheck") : wrap;
+  const sr = pdfScroll.getBoundingClientRect();
+  const tr = target.getBoundingClientRect();
+  const offset = marked ? pdfScroll.clientHeight / 2 - tr.height / 2 : 8;
+  pdfScroll.scrollTop = pdfScroll.scrollTop + (tr.top - sr.top) - offset;
+  flagPdfJump(page);
+}
+// 실험 제목에서 원문 검색용 앵커 추출 (anchor 필드가 없을 때 폴백) — "Experiment 1: ..." → "Experiment 1"
+function studyAnchorFromTitle(title) {
+  if (!title) return "";
+  const t = String(title).replace(/\*\*|==|\$/g, "").trim();
+  const beforeColon = t.split(/[:：]/)[0].trim();
+  if (beforeColon.length >= 3 && beforeColon.length <= 28) return beforeColon;
+  return t.split(/\s+/).slice(0, 4).join(" ");
 }
 
 // 실험 번호 배지 왼쪽에 ✓ 체크를 3초간 표시 (클릭 피드백). PDF 페이지 이동은 jumpToPdfPage가 담당.
