@@ -51,8 +51,7 @@
 }
 :root[data-theme="dark"] .eq-vars { background: var(--paper-deep); border-color: var(--line); }
 /* 형광펜(==mark==)은 노란 배경이 고정이라 글씨도 고정 어두운 색으로 (다크에서 흰 글씨 방지) */
-:root[data-theme="dark"] .panel mark,
-:root[data-theme="dark"] .eq-explanation mark { color: #2a2113; }
+:root[data-theme="dark"] mark { color: #2a2113; }
 
 /* 시각화(그림·다이어그램·차트)는 다크 모드에서도 '밝은 도판'으로 렌더한다.
    모델이 그린 SVG는 흰 블록·어두운 글씨(라이트 팔레트 고정)로 짜여 있고, 히트맵·벡터
@@ -700,7 +699,8 @@ body.reading .new-analysis { display: inline-block; }
 }
 .ev-badge:hover { background: var(--accent); color: #fff; }
 
-.panel mark, .eq-explanation mark {
+/* 형광펜(==mark==) — 모든 곳(탭·채팅·핵심 기여·Q&A 등)에서 동일한 부드러운 노란 밑줄 */
+mark {
   background: linear-gradient(transparent 42%, #ffe26e 42%, #ffe26e 92%, transparent 92%);
   color: var(--ink);
   font-weight: 600;
