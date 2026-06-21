@@ -1915,6 +1915,59 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 }
 .study-body { font-size: 0.9rem; color: var(--ink); line-height: 1.6; }
 
+/* ── 그림 해설 탭 (실제 그림 크롭 + 캡션 번역 + 해설) ─────────────────── */
+.fig-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 16px;
+  margin-bottom: 20px;
+}
+.fig-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 12px; }
+.fig-label { font-family: var(--serif); font-weight: 800; font-size: 1.02rem; color: var(--ink); }
+.fig-kind {
+  font-size: 0.7rem; font-weight: 700; letter-spacing: 0.03em;
+  color: var(--accent); background: var(--accent-soft);
+  border-radius: 999px; padding: 2px 9px;
+}
+.fig-jump {
+  margin-left: auto;
+  font-family: var(--sans); font-size: 0.76rem;
+  color: var(--accent); background: transparent;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 3px 11px; cursor: pointer;
+}
+.fig-jump:hover { border-color: var(--accent); background: var(--accent-soft); }
+.fig-img {
+  /* 그림은 밝은 도판으로 (PDF 페이지는 흰 배경) — 다크모드에서도 흰 캔버스 */
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  text-align: center;
+  margin-bottom: 12px;
+  cursor: zoom-in;
+  overflow-x: auto;
+}
+.fig-img-el { max-width: 100%; height: auto; display: block; margin: 0 auto; border-radius: 3px; cursor: zoom-in; }
+.fig-img-ph { color: var(--ink-faint); font-size: 0.82rem; display: inline-block; padding: 24px 8px; }
+.fig-caption {
+  font-size: 0.86rem; color: var(--ink-soft); line-height: 1.6;
+  background: var(--paper-deep);
+  border-radius: 8px; padding: 9px 12px; margin-bottom: 10px;
+}
+.fig-caption-tag {
+  display: inline-block; margin-right: 7px;
+  font-size: 0.68rem; font-weight: 700; color: var(--ink-faint);
+  border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px;
+  vertical-align: middle;
+}
+.fig-explain { font-size: 0.92rem; color: var(--ink); line-height: 1.65; }
+.fig-takeaway {
+  margin-top: 10px; font-size: 0.9rem; color: var(--ink);
+  background: var(--accent-soft); border-radius: 8px; padding: 9px 13px; line-height: 1.55;
+}
+
 /* ── 결과 도구 모음 (복사·내보내기·재생성·메모·용어집) ───────────────── */
 .result-tools {
   display: flex;

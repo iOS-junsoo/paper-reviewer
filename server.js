@@ -3,6 +3,7 @@ require("dotenv").config();
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const { execFile } = require("child_process");
 const express = require("express");
 const multer = require("multer");
 const { query } = require("@anthropic-ai/claude-agent-sdk");
@@ -33,6 +34,9 @@ const AUTH_ERROR_MSG =
 // 업로드된 원문 PDF 보관 (뷰어·재분석·질문 답변에 사용)
 const PDF_DIR = path.join(__dirname, "pdfs");
 fs.mkdirSync(PDF_DIR, { recursive: true });
+// 그림 해설용으로 잘라낸 그림 이미지 캐시 (poppler pdftoppm으로 페이지 영역 크롭)
+const CROP_DIR = path.join(PDF_DIR, "crops");
+fs.mkdirSync(CROP_DIR, { recursive: true });
 
 // ---------------------------------------------------------------------------
 // 저장소: Firebase 서비스 계정 키가 있으면 Firestore, 없으면 메모리 캐시 폴백
@@ -246,6 +250,17 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
     ],
     "limitations": "저자가 인정한 한계와 향후 연구 (선택, ## 소제목·마크업·[[p..]] 근거 사용 가능)"
   },
+  "figure_guide": [
+    {
+      "label": "논문 표기 그대로 (예: 'Figure 1', 'Table 2')",
+      "page": "이 그림/표가 있는 원문 PDF 페이지 번호 (1부터)",
+      "kind": "architecture | results | ablation | qualitative | table | other 중 하나",
+      "caption_ko": "==원문에 영어로 적힌 그 그림/표의 캡션을 먼저 한국어로 번역==한 것 (캡션 원문의 뜻 그대로)",
+      "explanation": "그 그림/표가 무엇이고 어떻게 해석하면 되는지 — 축·범례·색·비교 대상이 무엇을 뜻하는지, 무엇을 보여주는지",
+      "takeaway": "이 그림/표에서 꼭 기억할 핵심 한 줄",
+      "bbox": [0.1, 0.18, 0.9, 0.55]
+    }
+  ],
   "suggested_questions": [
     { "q": "세미나 청중이 실제로 던질 법한 날카로운 질문", "category": "핵심 공백 | 방법 | 실험 설계 | 선행 연구 대비 중 하나", "why": "이 질문이 왜 나올지 + 어떻게 답하면 좋을지 한 줄 (가능하면 한계·ablation에 근거)" }
   ],
@@ -317,6 +332,13 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
   · studies: ==각 실험을 하나씩, {title(논문 표현), purpose(목적), setup(실험 세팅: 데이터·모델·비교군·조건), result(결과 — 논문이 보고한 실제 수치 포함 + 의미), paper_page(그 실험이 시작되는 원문 PDF 페이지), anchor(원문에서 그 실험 위치를 찾을 짧은 검색 문구)}로==. ablation·분석 실험도 하나의 study로. paper_page·anchor는 실험 번호 클릭 시 원문 PDF의 그 위치에 ✓ 체크를 찍는 데 쓰입니다 — ==paper_page는 직접 확인한 페이지만, anchor는 본문에 글자 그대로 있는 제목/번호만(모르면 null)==.
   · limitations(선택): 저자가 인정한 한계·향후 연구.
   ==수치는 논문에서 실제로 읽은 값만 쓰고, 확인 못 한 항목은 비우세요(지어내기 절대 금지)==. 실험이 거의 없는 이론/서베이 논문이면 studies를 비우고 takeaway·limitations만 채우거나 experiments 자체를 생략하세요.
+- figure_guide: 논문에 실제로 들어 있는 ==모든 핵심 그림과 표(Figure·Table)를 등장 순서대로== 정리(전용 '그림 해설' 탭에 표시). 각 항목:
+  · label(논문 표기 그대로 'Figure 1'/'Table 2'), page(해당 페이지), kind(유형).
+  · ==caption_ko: 원문에 영어로 적힌 그 그림/표의 캡션을 '먼저' 한국어로 번역==(원문 caption의 뜻).
+  · explanation: 그 위에 이어서, 이 그림/표가 무엇이고 어떻게 읽으면 되는지 해설(축·범례·색·비교 대상이 무엇을 뜻하는지).
+  · takeaway: 한 줄 핵심.
+  · ==bbox: [x0,y0,x1,y1] — 페이지 좌상단 기준 0~1 정규화 좌표==로 그 그림/표(캡션 포함)를 ==넉넉히 감싸는 영역==. 프론트가 이 좌표로 원문 이미지를 잘라 보여줍니다. 영역 추정이 어려우면 null.
+  성능 비교 표·결과 플롯·정성(qualitative) 예시도 모두 포함하세요. 그림·표가 거의 없으면 빈 배열.
 - suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 4~6개. 각 질문은 category(핵심 공백/방법/실험 설계/선행 연구 대비)로 분류하고, why에 "이 질문이 왜 나올지 + 어떻게 답하면 좋을지"를 한 줄로 쓰세요(가능하면 limitations·ablations 내용에 근거). 발표자의 'Q&A 준비'에 쓰이며, 클릭하면 질문하기로 연결됩니다. 가장 날카로운(답하기 까다로운) 순서로.
 - glossary: 이 논문을 따라가는 데 꼭 필요한 핵심 기호·전문 용어 6~15개. term은 영어 원어나 기호 이름, latex는 수학 기호일 때만 KaTeX 문자열(아니면 null), meaning은 한 줄 쉬운 뜻. 발표 중 표기를 잊지 않도록 돕는 용어집입니다. 수식 변수표와 중복돼도 좋으니 한 곳에 모으세요.
 - related_papers: 이 논문을 이해하기 위해 ==먼저 읽으면 좋은 선행 논문 3~5편==. 본문에서 중요하게 인용된 것 위주로, reason에 "왜 먼저"를 한 줄로. link는 WebSearch로 실제 arXiv URL(https://arxiv.org/abs/...)을 확인해 넣고, 확인 못 하면 null (가짜 URL 금지).
@@ -678,6 +700,61 @@ app.get("/api/pdf/:hash", (req, res) => {
   res.sendFile(p);
 });
 
+// --- GET /api/figure/:hash?page=N&box=x0,y0,x1,y1 — 그림 해설용 그림 크롭(PNG) -----
+// poppler(pdftoppm)로 해당 페이지의 bbox 영역만 잘라 PNG로 반환. 결과는 디스크 캐시.
+app.get("/api/figure/:hash", async (req, res) => {
+  try {
+    const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+    if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
+    const page = parseInt(req.query.page, 10);
+    const box = String(req.query.box || "").split(",").map(Number);
+    if (!Number.isInteger(page) || page < 1 || box.length !== 4 || box.some((n) => !Number.isFinite(n))) {
+      return res.status(400).json({ error: "잘못된 파라미터" });
+    }
+    let [x0, y0, x1, y1] = box;
+    if (x1 < x0) [x0, x1] = [x1, x0];
+    if (y1 < y0) [y0, y1] = [y1, y0];
+    const pad = 0.015; // 약간의 여유로 잘림 방지
+    x0 = Math.min(Math.max(0, x0 - pad), 1); y0 = Math.min(Math.max(0, y0 - pad), 1);
+    x1 = Math.min(Math.max(0, x1 + pad), 1); y1 = Math.min(Math.max(0, y1 + pad), 1);
+    if (x1 - x0 < 0.02 || y1 - y0 < 0.02) return res.status(422).json({ error: "영역이 너무 작습니다." });
+
+    const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
+    if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: "저장된 원문 PDF가 없습니다." });
+
+    const boxKey = [x0, y0, x1, y1].map((n) => Math.round(n * 1000)).join("-");
+    const outBase = path.join(CROP_DIR, `${hash}_p${page}_${boxKey}`);
+    const outPng = `${outBase}.png`;
+
+    if (!fs.existsSync(outPng)) {
+      const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
+      if (page > doc.getPageCount()) return res.status(404).json({ error: "페이지 범위를 벗어났습니다." });
+      const { width: wpt, height: hpt } = doc.getPage(page - 1).getSize();
+      const DPI = 150;
+      const wpx = (wpt / 72) * DPI, hpx = (hpt / 72) * DPI;
+      const X = Math.max(0, Math.round(x0 * wpx));
+      const Y = Math.max(0, Math.round(y0 * hpx));
+      const W = Math.max(1, Math.round((x1 - x0) * wpx));
+      const H = Math.max(1, Math.round((y1 - y0) * hpx));
+      await new Promise((resolve, reject) => {
+        execFile(
+          "pdftoppm",
+          ["-png", "-singlefile", "-f", String(page), "-l", String(page), "-r", String(DPI),
+           "-x", String(X), "-y", String(Y), "-W", String(W), "-H", String(H), pdfPath, outBase],
+          { timeout: 20000 },
+          (err) => (err ? reject(err) : resolve())
+        );
+      });
+    }
+    if (!fs.existsSync(outPng)) throw new Error("크롭 이미지를 만들지 못했습니다.");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.sendFile(outPng);
+  } catch (e) {
+    console.error("[/api/figure 오류]", e);
+    if (!res.headersSent) res.status(500).json({ error: `그림 크롭 실패: ${e.message}` });
+  }
+});
+
 // --- POST /api/ask/:hash — 분석된 논문에 대한 후속 질문 -------------------------
 app.post("/api/ask/:hash", async (req, res) => {
   const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
@@ -835,6 +912,7 @@ const SECTION_FIELDS = {
   method: { keys: ["method_steps", "figures"], label: "연구 방법론(단계·시각화)" },
   results: { keys: ["experiments"], label: "실험·결과" },
   equations: { keys: ["equations", "equation_flow"], label: "수식 정리(와 수식 흐름도)" },
+  figures: { keys: ["figure_guide"], label: "그림 해설" },
   contributions: { keys: ["contributions"], label: "핵심 기여" },
   qa: { keys: ["suggested_questions"], label: "예상 Q&A" },
   glossary: { keys: ["glossary"], label: "용어집" },
@@ -954,6 +1032,12 @@ app.delete("/api/history/:hash", async (req, res) => {
     await store.delete(hash);
     // 원문 PDF도 함께 제거 (재분석 경로는 store.delete만 호출하므로 여기서만 지운다)
     await fs.promises.rm(path.join(PDF_DIR, `${hash}.pdf`), { force: true }).catch(() => {});
+    // 그림 크롭 캐시도 정리 (이 논문의 hash로 시작하는 파일들)
+    if (hash) {
+      fs.promises.readdir(CROP_DIR).then((files) =>
+        Promise.all(files.filter((f) => f.startsWith(`${hash}_`)).map((f) => fs.promises.rm(path.join(CROP_DIR, f), { force: true }).catch(() => {})))
+      ).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (e) {
     console.error("[DELETE /api/history/:hash 오류]", e);

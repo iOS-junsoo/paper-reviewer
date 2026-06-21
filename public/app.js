@@ -392,6 +392,7 @@ function renderResult(data) {
   renderMethod(data);
   renderResults(data.experiments);
   renderEquations(data.equations || [], data.equation_flow, data.method_steps || []);
+  renderFigureGuide(data.figure_guide); // 그림 해설 탭 (실제 그림 크롭 + 해설)
   renderRelated(data.related_papers);
   renderQaPrep(data.suggested_questions); // 예상 Q&A 준비 패널
   renderGlossary(data.glossary); // 용어집
@@ -695,6 +696,109 @@ function buildResultList(title, items, cls) {
   });
   sec.append(h, ul);
   return sec;
+}
+
+// ---------- 그림 해설 탭 (실제 그림 크롭 + 원문 캡션 번역 + 해설) ----------
+const KIND_LABEL = {
+  architecture: "구조도", results: "결과", ablation: "분석", qualitative: "정성 예시", table: "표", other: "그림",
+};
+function renderFigureGuide(items) {
+  const panel = document.getElementById("panel-figures");
+  panel.innerHTML = "";
+  const arr = Array.isArray(items) ? items.filter((f) => f && typeof f === "object") : [];
+  if (!arr.length) {
+    panel.innerHTML =
+      `<p class="muted res-empty">이 분석에는 그림 해설이 없습니다.<br />` +
+      `예전에 분석한 논문이면 이 탭의 "이 섹션 다시 생성"(또는 히스토리 🔄)으로 채울 수 있어요.</p>`;
+    return;
+  }
+  arr.forEach((f) => panel.appendChild(buildFigureCard(f)));
+  if (activeTab === "figures") loadFigureImages(); // 이미 그림 탭을 보는 중이면 바로 로드
+}
+// 그림 탭을 열 때 data-src를 실제 src로 옮겨 크롭 이미지를 로드 (탭을 안 열면 생성 안 함)
+function loadFigureImages() {
+  document.querySelectorAll("#panel-figures .fig-img-el[data-src]").forEach((im) => {
+    im.src = im.dataset.src;
+    im.removeAttribute("data-src");
+  });
+}
+function buildFigureCard(f) {
+  const card = document.createElement("div");
+  card.className = "fig-card";
+  const page = Number(f.page) || 0;
+
+  // 헤더: label + 유형칩 + (페이지면) 원문 보기 버튼
+  const head = document.createElement("div");
+  head.className = "fig-head";
+  const label = document.createElement("span");
+  label.className = "fig-label";
+  label.textContent = f.label || "Figure";
+  head.appendChild(label);
+  if (f.kind && KIND_LABEL[f.kind]) {
+    const k = document.createElement("span");
+    k.className = "fig-kind";
+    k.textContent = KIND_LABEL[f.kind];
+    head.appendChild(k);
+  }
+  if (page) {
+    const jump = document.createElement("button");
+    jump.type = "button";
+    jump.className = "fig-jump";
+    jump.textContent = `원문 ${page}쪽에서 보기 →`;
+    jump.title = "원문 PDF의 이 그림으로 이동 + ✓";
+    jump.addEventListener("click", () => jumpToPdfPageText(page, f.label || ""));
+    head.appendChild(jump);
+  }
+  card.appendChild(head);
+
+  // 실제 그림 이미지 — 서버(poppler)가 bbox 영역을 잘라 PNG로 제공 (src에 hash가 박혀 논문 전환 안전)
+  const bbox =
+    Array.isArray(f.bbox) && f.bbox.length === 4 && f.bbox.every((n) => Number.isFinite(Number(n)))
+      ? f.bbox.map(Number)
+      : null;
+  if (page && bbox && currentHash) {
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "fig-img";
+    const img = document.createElement("img");
+    img.className = "fig-img-el";
+    img.alt = `${f.label || "그림"} 원문 이미지`;
+    // 그림 탭을 처음 열 때 로드한다(loadFigureImages) — 안 보는 논문은 크롭을 만들지 않음
+    img.dataset.src = `${API_BASE}/api/figure/${currentHash}?page=${page}&box=${bbox.join(",")}`;
+    img.addEventListener("click", () => jumpToPdfPageText(page, f.label || ""));
+    img.addEventListener("error", () => {
+      imgWrap.innerHTML = '<span class="fig-img-ph">원문 그림을 불러오지 못했습니다 — "원문에서 보기"로 확인하세요.</span>';
+    });
+    imgWrap.appendChild(img);
+    card.appendChild(imgWrap);
+  }
+
+  // 원문 캡션(번역)
+  if (f.caption_ko) {
+    const cap = document.createElement("div");
+    cap.className = "fig-caption";
+    const t = document.createElement("span");
+    t.className = "fig-caption-tag";
+    t.textContent = "원문 캡션";
+    const body = document.createElement("span");
+    renderRich(body, f.caption_ko);
+    cap.append(t, body);
+    card.appendChild(cap);
+  }
+  // 해설
+  if (f.explanation) {
+    const ex = document.createElement("div");
+    ex.className = "fig-explain";
+    renderRich(ex, f.explanation);
+    card.appendChild(ex);
+  }
+  // 핵심
+  if (f.takeaway) {
+    const tk = document.createElement("div");
+    tk.className = "fig-takeaway";
+    renderRich(tk, "📌 " + f.takeaway);
+    card.appendChild(tk);
+  }
+  return card;
 }
 
 // ---------- 원문 PDF 패널 ----------
@@ -2302,6 +2406,7 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 });
 
 function switchTab(name) {
+  if (!TAB_ORDER.includes(name)) name = "background"; // 잘못된 해시로 빈 화면 방지
   activeTab = name;
   document.querySelectorAll(".tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.tab === name)
@@ -2309,6 +2414,7 @@ function switchTab(name) {
   document.querySelectorAll(".panel").forEach((p) =>
     p.classList.toggle("active", p.id === `panel-${name}`)
   );
+  if (name === "figures") loadFigureImages(); // 그림 탭 열 때 크롭 이미지 로드
   updateHash();
 }
 
@@ -2619,6 +2725,15 @@ function sectionMd(name, data) {
       if (eq.explanation) L.push(mdInline(eq.explanation));
       if (eq.analogy) L.push(`> 💡 ${mdInline(eq.analogy)}`);
     });
+  } else if (name === "figures") {
+    L.push("## 그림 해설");
+    (data.figure_guide || []).forEach((f) => {
+      if (!f || typeof f !== "object") return;
+      L.push(`\n### ${mdInline(f.label || "Figure")}${f.page ? ` (p.${f.page})` : ""}`);
+      if (f.caption_ko) L.push(`- 원문 캡션: ${mdInline(f.caption_ko)}`);
+      if (f.explanation) L.push(mdInline(f.explanation));
+      if (f.takeaway) L.push(`> 📌 ${mdInline(f.takeaway)}`);
+    });
   }
   return L.join("\n").trim();
 }
@@ -2805,7 +2920,7 @@ function renderBookmarks() {
 document.getElementById("tool-regen").addEventListener("click", () => regenSection(activeTab));
 async function regenSection(section) {
   if (!currentHash || sectionRegenInFlight) return;
-  const map = { background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리" };
+  const map = { background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리", figures: "그림 해설" };
   if (!map[section]) return;
   if (!confirm(`'${map[section]}' 섹션만 다시 생성할까요?\n(원문에서 해당 부분만 다시 읽습니다 — 1~2분, 다른 섹션은 그대로 유지)`)) return;
   const startedHash = currentHash;
@@ -2843,7 +2958,7 @@ async function regenSection(section) {
 }
 
 // ---------- 키보드 단축키 (#8) ----------
-const TAB_ORDER = ["background", "problem", "method", "results", "equations"];
+const TAB_ORDER = ["background", "problem", "method", "results", "equations", "figures"];
 document.addEventListener("keydown", (e) => {
   const help = document.getElementById("kbd-help");
   if (e.key === "Escape") {
@@ -2870,7 +2985,7 @@ document.addEventListener("keydown", (e) => {
   const reading = document.body.classList.contains("reading");
   if ((e.key === "j" || e.key === "J") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.min(TAB_ORDER.length - 1, i + 1)]); }
   else if ((e.key === "k" || e.key === "K") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.max(0, i - 1)]); }
-  else if (e.key >= "1" && e.key <= "5" && reading) { e.preventDefault(); switchTab(TAB_ORDER[+e.key - 1]); }
+  else if (e.key >= "1" && e.key <= "6" && reading) { e.preventDefault(); switchTab(TAB_ORDER[+e.key - 1]); }
   else if ((e.key === "f" || e.key === "F") && reading) { e.preventDefault(); document.getElementById("pdf-toggle").click(); }
   else if ((e.key === "q" || e.key === "Q") && reading) { e.preventDefault(); openChat(); }
   else if (e.key === "n" || e.key === "N") { e.preventDefault(); document.getElementById("sb-new").click(); }
