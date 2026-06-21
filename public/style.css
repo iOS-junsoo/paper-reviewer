@@ -1537,6 +1537,7 @@ body.chat-resizing .pdf-scroll { pointer-events: none; }
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
+  overscroll-behavior: contain; /* 스크롤이 끝에 닿아도 뒤 분석 페이지로 번지지 않게 */
   padding: 16px 14px;
 }
 .chat-hint { color: var(--ink-faint); font-size: 0.88rem; line-height: 1.9; text-align: center; padding: 30px 10px; }
