@@ -393,6 +393,7 @@ function renderResult(data) {
   renderResults(data.experiments);
   renderEquations(data.equations || [], data.equation_flow, data.method_steps || []);
   renderFigureGuide(data.figure_guide); // 그림 해설 탭 (실제 그림 크롭 + 해설)
+  renderSeminar(data.seminar); // 세미나 정리 탭 (논문 섹션 구조 그대로)
   renderRelated(data.related_papers);
   renderQaPrep(data.suggested_questions); // 예상 Q&A 준비 패널
   renderGlossary(data.glossary); // 용어집
@@ -403,7 +404,108 @@ function renderResult(data) {
   chatFab.classList.remove("hidden"); // 분석 결과가 있어야 질문 가능
   document.body.classList.add("reading"); // 상단 헤더·드롭존 축소
   highlightActiveHistory(); // 사이드바에서 현재 논문 강조
-  switchTab("background");
+  // 발표 준비가 기본 목적이므로 세미나 정리가 있으면 그 탭으로, 없으면(옛 분석) 연구 배경으로.
+  // (딥링크/재생성은 이후 restoreFromHash·keepTab이 다시 덮어쓴다.)
+  switchTab(Array.isArray(data.seminar) && data.seminar.length ? "seminar" : "background");
+}
+
+// ---------- 세미나 정리 탭 (논문의 실제 섹션 구조 그대로 · 출처 정직성) ----------
+// 섹션 제목: 번호가 인덱스 형태('1','3.2','A','A.1')이고 제목과 다를 때만 'N. 제목'으로
+function seminarHeading(section, title) {
+  const sec = section != null ? String(section).trim() : "";
+  const t = (title || "").trim();
+  const isIndex = /^[0-9]+(\.[0-9]+)*$/.test(sec) || /^[A-Z](\.[0-9]+)*$/.test(sec);
+  // 제목이 이미 그 번호로 시작하면(예: title "1 Introduction", sec "1") 중복 표기 방지
+  const titleHasNum = sec && new RegExp(`^${sec.replace(/[.]/g, "\\.")}[.\\s]`).test(t);
+  if (sec && isIndex && sec.toLowerCase() !== t.toLowerCase() && !titleHasNum) return `${sec}. ${t}`.trim();
+  return t || sec;
+}
+function renderSeminar(sections) {
+  const panel = document.getElementById("panel-seminar");
+  panel.innerHTML = "";
+  const arr = Array.isArray(sections) ? sections.filter((s) => s && typeof s === "object") : [];
+  if (!arr.length) {
+    panel.innerHTML =
+      `<p class="muted res-empty">이 분석에는 세미나 정리가 없습니다.<br />` +
+      `예전에 분석한 논문이면 이 탭의 "이 섹션 다시 생성"(또는 히스토리 🔄)으로 채울 수 있어요.</p>`;
+    return;
+  }
+  const hasAdded = arr.some((s) => Array.isArray(s.points) && s.points.some((p) => p && p.kind === "added"));
+  const intro = document.createElement("p");
+  intro.className = "sem-intro muted";
+  intro.innerHTML =
+    "논문의 실제 섹션 구조를 그대로 따른 발표용 정리입니다. 페이지 칩(p.N)을 누르면 원문으로 이동합니다." +
+    (hasAdded ? ' <span class="sem-tag sem-tag-added">추가</span> 표시는 논문에 없어 논문 근거로 보완한 내용입니다.' : "");
+  panel.appendChild(intro);
+  arr.forEach((s) => panel.appendChild(buildSeminarSection(s)));
+}
+
+function buildSeminarSection(s) {
+  const sec = document.createElement("section");
+  sec.className = "sem-section";
+  const head = document.createElement("h3");
+  head.className = "sem-title";
+  head.textContent = seminarHeading(s.section, s.title) || "(제목 없음)";
+  sec.appendChild(head);
+
+  const points = Array.isArray(s.points) ? s.points.filter((p) => p && typeof p === "object") : [];
+  let lastSub = null;
+  points.forEach((p) => {
+    const sub = p.subhead && String(p.subhead).trim();
+    if (sub && sub !== lastSub) {
+      const sh = document.createElement("div");
+      sh.className = "sem-subhead";
+      sh.textContent = sub;
+      sec.appendChild(sh);
+      lastSub = sub;
+    }
+    sec.appendChild(buildSeminarPoint(p));
+  });
+  return sec;
+}
+
+function buildSeminarPoint(p) {
+  const row = document.createElement("div");
+  row.className = "sem-point" + (p.kind === "added" ? " sem-added" : "");
+  const id = document.createElement("span");
+  id.className = "sem-id";
+  id.textContent = p.id || "•";
+  row.appendChild(id);
+
+  const body = document.createElement("div");
+  body.className = "sem-body";
+  const txt = document.createElement("div");
+  txt.className = "sem-text";
+  renderRich(txt, p.text || "");
+  if (p.kind === "added") {
+    const tag = document.createElement("span");
+    tag.className = "sem-tag sem-tag-added";
+    tag.textContent = "추가";
+    tag.title = "논문에 명시되지 않은, 논문 근거로 보완한 내용";
+    txt.appendChild(document.createTextNode(" "));
+    txt.appendChild(tag);
+  }
+  body.appendChild(txt);
+
+  const pages = Array.isArray(p.pages)
+    ? [...new Set(p.pages.map(Number).filter((n) => Number.isFinite(n) && n >= 1))]
+    : [];
+  if (pages.length) {
+    const pg = document.createElement("span");
+    pg.className = "sem-pages";
+    pages.forEach((n) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "sem-page";
+      chip.textContent = `p.${n}`;
+      chip.title = `원문 ${n}쪽으로 이동`;
+      chip.addEventListener("click", () => jumpToPdfPage(n));
+      pg.appendChild(chip);
+    });
+    body.appendChild(pg);
+  }
+  row.appendChild(body);
+  return row;
 }
 
 // ---------- 분야 발전 타임라인 ----------
@@ -2735,6 +2837,22 @@ function sectionMd(name, data) {
       if (f.explanation) L.push(mdInline(f.explanation));
       if (f.takeaway) L.push(`> 📌 ${mdInline(f.takeaway)}`);
     });
+  } else if (name === "seminar") {
+    L.push("## 세미나 정리");
+    (data.seminar || []).forEach((s) => {
+      if (!s || typeof s !== "object") return;
+      L.push(`\n### ${mdInline(seminarHeading(s.section, s.title))}`.trimEnd());
+      let lastSub = null;
+      (Array.isArray(s.points) ? s.points : []).forEach((p) => {
+        if (!p || typeof p !== "object") return;
+        const sub = p.subhead && String(p.subhead).trim();
+        if (sub && sub !== lastSub) { L.push(`\n**${mdInline(sub)}**`); lastSub = sub; }
+        const pages = Array.isArray(p.pages) ? p.pages.map(Number).filter((n) => Number.isFinite(n) && n >= 1) : [];
+        const pg = pages.length ? ` (${[...new Set(pages)].map((n) => "p." + n).join(", ")})` : "";
+        const add = p.kind === "added" ? " _[추가]_" : "";
+        L.push(`- **${p.id || "•"}** ${mdInline(p.text)}${pg}${add}`);
+      });
+    });
   }
   return L.join("\n").trim();
 }
@@ -2819,7 +2937,11 @@ document.getElementById("tool-cheatsheet").addEventListener("click", (e) => {
 document.getElementById("tool-download").addEventListener("click", () => {
   if (!currentAnalysis) return;
   const name = (currentAnalysis.title || "paper").replace(/[^\w가-힣 -]/g, "").slice(0, 60).trim() || "paper";
-  downloadMd(cheatSheetMd(currentAnalysis), `${name}.md`);
+  // 다운로드 파일은 한 장 요약 + 발표용 '세미나 정리' 전문을 함께 담는다(전체 내보내기).
+  let md = cheatSheetMd(currentAnalysis);
+  const sem = sectionMd("seminar", currentAnalysis);
+  if (sem) md += "\n\n---\n\n" + sem;
+  downloadMd(md, `${name}.md`);
 });
 document.getElementById("tool-notes").addEventListener("click", () => toggleSideCard("notes-card"));
 document.getElementById("tool-glossary").addEventListener("click", () => toggleSideCard("glossary-card"));
@@ -2921,7 +3043,7 @@ function renderBookmarks() {
 document.getElementById("tool-regen").addEventListener("click", () => regenSection(activeTab));
 async function regenSection(section) {
   if (!currentHash || sectionRegenInFlight) return;
-  const map = { background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리", figures: "그림 해설" };
+  const map = { seminar: "세미나 정리", background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리", figures: "그림 해설" };
   if (!map[section]) return;
   if (!confirm(`'${map[section]}' 섹션만 다시 생성할까요?\n(원문에서 해당 부분만 다시 읽습니다 — 1~2분, 다른 섹션은 그대로 유지)`)) return;
   const startedHash = currentHash;
@@ -2959,7 +3081,7 @@ async function regenSection(section) {
 }
 
 // ---------- 키보드 단축키 (#8) ----------
-const TAB_ORDER = ["background", "problem", "method", "results", "equations", "figures"];
+const TAB_ORDER = ["seminar", "background", "problem", "method", "results", "equations", "figures"];
 document.addEventListener("keydown", (e) => {
   const help = document.getElementById("kbd-help");
   if (e.key === "Escape") {
@@ -2986,7 +3108,7 @@ document.addEventListener("keydown", (e) => {
   const reading = document.body.classList.contains("reading");
   if ((e.key === "j" || e.key === "J") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.min(TAB_ORDER.length - 1, i + 1)]); }
   else if ((e.key === "k" || e.key === "K") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.max(0, i - 1)]); }
-  else if (e.key >= "1" && e.key <= "6" && reading) { e.preventDefault(); switchTab(TAB_ORDER[+e.key - 1]); }
+  else if (e.key >= "1" && e.key <= "7" && reading) { e.preventDefault(); switchTab(TAB_ORDER[+e.key - 1]); }
   else if ((e.key === "f" || e.key === "F") && reading) { e.preventDefault(); document.getElementById("pdf-toggle").click(); }
   else if ((e.key === "q" || e.key === "Q") && reading) { e.preventDefault(); openChat(); }
   else if (e.key === "n" || e.key === "N") { e.preventDefault(); document.getElementById("sb-new").click(); }

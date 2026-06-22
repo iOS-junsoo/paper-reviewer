@@ -261,6 +261,21 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "bbox": [0.1, 0.18, 0.9, 0.55]
     }
   ],
+  "seminar": [
+    {
+      "section": "원문 섹션 번호 그대로 (예: '1', '2', '3.2'). 번호가 없으면 등장 순번",
+      "title": "원문 섹션 제목 그대로 (예: 'Introduction', 'Background & Related Work')",
+      "points": [
+        {
+          "id": "소번호 (예: '1.1', '1.2')",
+          "subhead": "섹션 안에서 묶음 소제목이 필요할 때만 (예: '결론' / '논문이 밝힌 한계' / 'Future Work'), 없으면 null",
+          "text": "발표 슬라이드용 한국어 완결 문장 — 핵심 용어 **굵게**, 결정적 문장 ==형광==, 수식은 $...$",
+          "pages": "이 내용이 실제로 나오는 원문 PDF 페이지 번호 배열 (1부터). 확실치 않으면 빈 배열 []",
+          "kind": "기본은 'paper'(논문에 실제로 적힌 내용). 'added'는 오직 — 논문에 Conclusion/Limitation/Future Work가 전혀 없을 때 — 그 부분을 보완한 point에만 쓴다. 그 외 어떤 섹션에도 'added' 금지."
+        }
+      ]
+    }
+  ],
   "suggested_questions": [
     { "q": "세미나 청중이 실제로 던질 법한 날카로운 질문", "category": "핵심 공백 | 방법 | 실험 설계 | 선행 연구 대비 중 하나", "why": "이 질문이 왜 나올지 + 어떻게 답하면 좋을지 한 줄 (가능하면 한계·ablation에 근거)" }
   ],
@@ -339,6 +354,14 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
   · takeaway: 한 줄 핵심.
   · ==bbox: [x0,y0,x1,y1] — 페이지 좌상단 기준 0~1 정규화 좌표==로 그 그림/표(캡션 포함)를 ==넉넉히 감싸는 영역==. 프론트가 이 좌표로 원문 이미지를 잘라 보여줍니다. 영역 추정이 어려우면 null.
   성능 비교 표·결과 플롯·정성(qualitative) 예시도 모두 포함하세요. 그림·표가 거의 없으면 빈 배열.
+- seminar: 발표(세미나) 준비용 '섹션별 정리'. ==논문에 실제로 적힌 섹션 구조(목차)를 그대로 따른다==(우리가 임의로 나눈 분석 탭과 다르다 — 논문의 1. Introduction, 2. ..., N. Conclusion 같은 실제 절 제목/번호를 읽어 그 순서대로).
+  각 섹션 = { section(원문 절 번호 그대로, 없으면 순번), title(원문 절 제목 그대로), points[] }.
+  각 point = { id(소번호 '1.1','1.2'…), subhead(섹션 내 묶음 소제목이 필요할 때만, 없으면 null), text(발표 슬라이드용 한국어 완결 문장 — **굵게**/==형광==/$수식$ 사용), pages(그 내용이 나오는 실제 원문 페이지 번호 배열, 추측 금지·모르면 []), kind }.
+  ★출처 정직성 규칙(엄수):
+  · 기본은 ==오직 논문에 실제로 적힌 내용만== 옮긴다. 논문에 없는 해석·비판·배경·추측을 ==절대 추가하지 않는다==. 이 경우 kind는 반드시 "paper".
+  · ==유일한 예외==: 논문에 'Conclusion/Limitation/Future Work'에 해당하는 내용이 ==아예 없을 때만==, 논문 전체를 근거로 발표자가 직접 생각해 그 부분을 보완할 수 있다. 이렇게 보완한 point는 ==반드시 kind를 "added"==로 표시한다(논문에 명시되지 않은 추가임을 분명히). 논문에 결론/한계/향후연구가 이미 있으면 그대로 옮기고 kind는 "paper".
+  · 한계 섹션은 논문이 직접 밝힌 한계(kind:"paper")와, (위 예외에 해당해) 발표자가 추가한 한계(kind:"added")를 subhead로 구분하라.
+  · 페이지 번호는 그 내용이 실제 있는 페이지만. 모르면 빈 배열. 가짜 페이지 금지.
 - suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 4~6개. 각 질문은 category(핵심 공백/방법/실험 설계/선행 연구 대비)로 분류하고, why에 "이 질문이 왜 나올지 + 어떻게 답하면 좋을지"를 한 줄로 쓰세요(가능하면 limitations·ablations 내용에 근거). 발표자의 'Q&A 준비'에 쓰이며, 클릭하면 질문하기로 연결됩니다. 가장 날카로운(답하기 까다로운) 순서로.
 - glossary: 이 논문을 따라가는 데 꼭 필요한 핵심 기호·전문 용어 6~15개. term은 영어 원어나 기호 이름, latex는 수학 기호일 때만 KaTeX 문자열(아니면 null), meaning은 한 줄 쉬운 뜻. 발표 중 표기를 잊지 않도록 돕는 용어집입니다. 수식 변수표와 중복돼도 좋으니 한 곳에 모으세요.
 - related_papers: 이 논문을 이해하기 위해 ==먼저 읽으면 좋은 선행 논문 3~5편==. 본문에서 중요하게 인용된 것 위주로, reason에 "왜 먼저"를 한 줄로. link는 WebSearch로 실제 arXiv URL(https://arxiv.org/abs/...)을 확인해 넣고, 확인 못 하면 null (가짜 URL 금지).
@@ -1116,6 +1139,7 @@ const SECTION_FIELDS = {
   results: { keys: ["experiments"], label: "실험·결과" },
   equations: { keys: ["equations", "equation_flow"], label: "수식 정리(와 수식 흐름도)" },
   figures: { keys: ["figure_guide"], label: "그림 해설" },
+  seminar: { keys: ["seminar"], label: "세미나 정리" },
   contributions: { keys: ["contributions"], label: "핵심 기여" },
   qa: { keys: ["suggested_questions"], label: "예상 Q&A" },
   glossary: { keys: ["glossary"], label: "용어집" },

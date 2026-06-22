@@ -2199,3 +2199,53 @@ footer {
   header { padding: 44px 0 28px; }
   .res-meta { grid-template-columns: 1fr; gap: 16px; }
 }
+
+/* ---------- 세미나 정리 탭 (논문 섹션 구조 그대로) ---------- */
+.sem-intro { font-size: 0.84rem; line-height: 1.7; margin: 0 0 18px; }
+.sem-section { margin: 0 0 24px; }
+.sem-title {
+  font-family: var(--serif);
+  font-size: 1.08rem; font-weight: 700; color: var(--ink);
+  margin: 0 0 10px; padding-bottom: 7px;
+  border-bottom: 2px solid var(--line);
+}
+.sem-subhead {
+  font-family: var(--sans);
+  font-size: 0.8rem; font-weight: 700; color: var(--accent);
+  margin: 15px 0 7px; letter-spacing: 0.01em;
+}
+.sem-point {
+  display: flex; gap: 11px; align-items: baseline;
+  padding: 8px 0; line-height: 1.78;
+}
+.sem-point + .sem-point { border-top: 1px dashed var(--line); }
+.sem-id {
+  flex: none; min-width: 2.6em;
+  font-family: var(--sans); font-size: 0.8rem; font-weight: 700;
+  color: var(--ink-faint);
+}
+.sem-body { flex: 1; min-width: 0; }
+.sem-text { color: var(--ink-soft); }
+.sem-text strong { color: var(--ink); }
+.sem-pages { display: inline-flex; flex-wrap: wrap; gap: 5px; margin-left: 7px; vertical-align: middle; }
+.sem-page {
+  font-family: var(--sans); font-size: 0.72rem;
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid transparent; border-radius: 999px;
+  padding: 1px 8px; cursor: pointer; line-height: 1.6;
+}
+.sem-page:hover { border-color: var(--accent); }
+/* 논문에 없어 논문 근거로 보완한 내용 — 뚜렷이 구분(파란 계열) */
+.sem-tag {
+  display: inline-block; font-family: var(--sans);
+  font-size: 0.66rem; font-weight: 700; border-radius: 4px;
+  padding: 0 5px; vertical-align: middle; white-space: nowrap;
+}
+.sem-tag-added { color: #2563eb; background: rgba(37, 99, 235, 0.12); }
+.sem-added {
+  border-left: 3px solid rgba(37, 99, 235, 0.45);
+  margin-left: -12px; padding-left: 9px;
+  background: rgba(37, 99, 235, 0.05); border-radius: 4px;
+}
+:root[data-theme="dark"] .sem-tag-added { color: #9bb8ff; background: rgba(120, 150, 255, 0.18); }
+:root[data-theme="dark"] .sem-added { border-left-color: rgba(120, 150, 255, 0.5); background: rgba(120, 150, 255, 0.07); }
