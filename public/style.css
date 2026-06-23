@@ -439,6 +439,13 @@ body.reading .new-analysis { display: inline-block; }
 .workspace.pdf-collapsed .pdf-pane .pdf-scroll,
 .workspace.pdf-collapsed .pdf-pane .pdf-missing { display: none; }
 .workspace.pdf-collapsed .pdf-pane { position: fixed; left: 12px; top: 12px; height: auto; width: auto; z-index: 20; }
+/* 접힌 PDF 박스(펴기 버튼)가 사이드바 토글과 겹치지 않도록 위치 보정 */
+/* 사이드바 접힘 → ☰(좌상단 14+40px) 오른쪽으로 */
+.app.sb-collapsed .workspace.pdf-collapsed .pdf-pane { left: 64px; }
+/* 데스크톱에서 사이드바 펼침 → 사이드바(264px)·그 ◀ 토글 오른쪽으로 */
+@media (min-width: 821px) {
+  .workspace.pdf-collapsed .pdf-pane { left: 276px; }
+}
 
 .pdf-pane {
   position: sticky;
