@@ -68,18 +68,8 @@ let historyFilter = "";
 const historySearch = document.getElementById("history-search");
 historySearch.addEventListener("input", () => {
   historyFilter = historySearch.value.trim().toLowerCase();
-  applyHistoryFilter();
+  renderHistory(); // 폴더 그룹 + 검색 필터를 함께 반영
 });
-function applyHistoryFilter() {
-  document.querySelectorAll("#history-list li[data-hash]").forEach((li) => {
-    // 제목·요약만 대상으로 (날짜·버튼 글리프는 제외 — placeholder 약속과 일치)
-    const text = (
-      (li.querySelector(".h-title")?.textContent || "") + " " +
-      (li.querySelector(".h-line")?.textContent || "")
-    ).toLowerCase();
-    li.style.display = !historyFilter || text.includes(historyFilter) ? "" : "none";
-  });
-}
 
 // ── URL 딥링크 (#p=<hash>&tab=<tab>) — 북마크·뒤로가기로 논문·탭 복원 ──
 let activeTab = "background";
@@ -2611,106 +2601,309 @@ function highlightActiveHistory() {
   );
 }
 
+// ── 라이브러리(폴더) 상태 ──────────────────────────────────────────────
+let library = { folders: [], assignments: {} }; // {folders:[{id,name}], assignments:{hash:folderId}}
+let historyItems = []; // 최근 불러온 히스토리 목록(렌더 재사용)
+const collapsedFolders = new Set(JSON.parse(localStorage.getItem("collapsedFolders") || "[]")); // 접힌 폴더(기기별)
+const UNFILED = "__unfiled__";
+function saveCollapsed() { localStorage.setItem("collapsedFolders", JSON.stringify([...collapsedFolders])); }
+function newFolderId() { return "f" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+async function saveLibrary() {
+  try {
+    await fetch(`${API_BASE}/api/library`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(library),
+    });
+  } catch {}
+}
+
 async function loadHistory() {
   try {
-    const res = await fetch(`${API_BASE}/api/history`);
-    const items = await res.json();
-    if (!res.ok) throw new Error(items.error || "히스토리 조회 실패");
-
-    historyList.innerHTML = "";
-    if (!items.length) {
-      historyList.innerHTML = `<li class="muted">아직 분석한 논문이 없습니다.</li>`;
-      return;
+    const [hRes, lRes] = await Promise.all([
+      fetch(`${API_BASE}/api/history`),
+      fetch(`${API_BASE}/api/library`).catch(() => null),
+    ]);
+    const items = await hRes.json();
+    if (!hRes.ok) throw new Error(items.error || "히스토리 조회 실패");
+    historyItems = Array.isArray(items) ? items : [];
+    if (lRes && lRes.ok) {
+      const lib = await lRes.json();
+      library = {
+        folders: Array.isArray(lib.folders) ? lib.folders : [],
+        assignments: lib.assignments && typeof lib.assignments === "object" ? lib.assignments : {},
+      };
     }
-    items.forEach((it) => {
-      const li = document.createElement("li");
-      const title = document.createElement("div");
-      title.className = "h-title";
-      title.textContent = it.title || "(제목 없음)";
-      const line = document.createElement("div");
-      line.className = "h-line";
-      renderRich(line, it.one_liner || "");
-      const date = document.createElement("div");
-      date.className = "h-date";
-      date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
-      li.dataset.hash = it.hash;
-      if (it.hash === currentHash) li.classList.add("h-active");
-      li.append(title, line, date);
-      li.addEventListener("click", () => openHistory(it.hash));
-
-      const re = document.createElement("button");
-      re.type = "button";
-      re.className = "h-del h-re";
-      re.title = "최신 분석 방식으로 재분석";
-      re.textContent = "🔄";
-      re.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (!confirm(`'${it.title}'을(를) 최신 분석 방식으로 재분석할까요?\n(몇 분 걸리며, 기존 결과는 대체됩니다)`)) return;
-        hideError();
-        // 지금 보고 있는 논문이면 화면을 비우지 않고 배너만 띄운다(읽던 내용 유지)
-        const inline = it.hash === currentHash && !workspaceEl.classList.contains("hidden");
-        if (inline) {
-          showReanalyzeBanner();
-        } else {
-          workspaceEl.classList.add("hidden");
-          loadingEl.classList.remove("hidden");
-          setLoadingProgress("재분석을 시작하는 중…", 0);
-        }
-        setActiveAnalysis(it.title || "재분석");
-        const ac = beginCancellable();
-        try {
-          const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, {
-            method: "POST", signal: ac.signal,
-          });
-          if (!res.ok) {
-            const d = await safeJson(res);
-            throw new Error((d && d.error) || `HTTP ${res.status}`);
-          }
-          const data = await consumeAnalysisStream(res);
-          renderResult(data);
-          loadHistory();
-          if (!inline) window.scrollTo({ top: 0, behavior: "smooth" });
-        } catch (err) {
-          if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
-        } finally {
-          // 새 흐름으로 대체됐으면(두 번째 재분석 등) UI 정리를 건너뛴다 — 새 흐름의 배너/표시 유지
-          if (endCancellable(ac)) {
-            hideReanalyzeBanner();
-            loadingEl.classList.add("hidden");
-            setActiveAnalysis(null);
-            setLoadingText("논문을 분석하고 있습니다…");
-          }
-        }
-      });
-      li.appendChild(re);
-
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "h-del";
-      del.title = "이 분석 기록 삭제";
-      del.textContent = "×";
-      del.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        if (!confirm(`'${it.title}' 분석 기록을 삭제할까요?\n(같은 PDF를 다시 올리면 재분석됩니다)`)) return;
-        try {
-          const r = await fetch(`${API_BASE}/api/history/${it.hash}`, { method: "DELETE" });
-          if (!r.ok) {
-            const d = await safeJson(r);
-            throw new Error((d && d.error) || "삭제 실패");
-          }
-          loadHistory();
-        } catch (err) {
-          showError(err.message);
-        }
-      });
-      li.appendChild(del);
-      historyList.appendChild(li);
-    });
-    applyHistoryFilter(); // 재로드 후에도 검색어 유지
+    renderHistory();
   } catch (e) {
     historyList.innerHTML = `<li class="muted">히스토리를 불러오지 못했습니다: ${e.message}</li>`;
   }
 }
+
+// 폴더 그룹 + 검색 필터를 반영해 사이드바 목록을 다시 그린다
+function renderHistory() {
+  closeFolderMenu();
+  historyList.classList.toggle("has-folders", library.folders.length > 0);
+  historyList.innerHTML = "";
+  if (!historyItems.length) {
+    historyList.innerHTML = `<li class="muted">아직 분석한 논문이 없습니다.</li>`;
+    return;
+  }
+  const f = historyFilter;
+  const matches = (it) => !f || ((it.title || "") + " " + (it.one_liner || "")).toLowerCase().includes(f);
+  const folderOf = (hash) => {
+    const fid = library.assignments[hash];
+    return fid && library.folders.some((x) => x.id === fid) ? fid : null;
+  };
+  // 폴더가 하나도 없으면 평면 목록(기존 동작 유지)
+  if (!library.folders.length) {
+    historyItems.forEach((it) => { if (matches(it)) historyList.appendChild(buildHistoryItem(it)); });
+    return;
+  }
+  const renderGroup = (folder) => {
+    const fid = folder ? folder.id : null;
+    const key = fid || UNFILED;
+    const members = historyItems.filter((it) => folderOf(it.hash) === fid);
+    if (!folder && !members.length) return; // 미분류는 비어 있으면 머리글 생략
+    const visible = members.filter(matches);
+    if (f && !visible.length) return; // 검색 중 매칭 없는 그룹 숨김
+    const collapsed = !f && collapsedFolders.has(key);
+    // 검색 중에는 '보이는 수', 평소엔 전체 멤버 수를 카운트로 표시
+    historyList.appendChild(buildFolderHead(folder, f ? visible.length : members.length, collapsed));
+    if (collapsed) return;
+    if (!visible.length) {
+      const empty = document.createElement("li");
+      empty.className = "sb-folder-empty muted";
+      empty.textContent = "(비어 있음 — 논문을 끌어다 놓거나 📁로 옮기세요)";
+      historyList.appendChild(empty);
+    } else {
+      visible.forEach((it) => historyList.appendChild(buildHistoryItem(it)));
+    }
+  };
+  library.folders.forEach((folder) => renderGroup(folder));
+  renderGroup(null); // 미분류
+}
+
+function buildFolderHead(folder, count, collapsed) {
+  const fid = folder ? folder.id : null;
+  const key = fid || UNFILED;
+  const li = document.createElement("li");
+  li.className = "sb-folder" + (collapsed ? " collapsed" : "");
+  li.dataset.folderHead = key;
+  const tw = document.createElement("span");
+  tw.className = "sb-folder-tw";
+  tw.textContent = collapsed ? "▸" : "▾";
+  const name = document.createElement("span");
+  name.className = "sb-folder-name";
+  name.textContent = folder ? folder.name : "미분류";
+  const cnt = document.createElement("span");
+  cnt.className = "sb-folder-count";
+  cnt.textContent = count;
+  li.append(tw, name, cnt);
+  li.addEventListener("click", () => {
+    if (collapsedFolders.has(key)) collapsedFolders.delete(key);
+    else collapsedFolders.add(key);
+    saveCollapsed();
+    renderHistory();
+  });
+  if (folder) {
+    const mk = (label, title, fn) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "sb-folder-btn"; b.textContent = label; b.title = title;
+      b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
+      return b;
+    };
+    li.append(
+      mk("✎", "폴더 이름 변경", () => renameFolder(folder)),
+      mk("×", "폴더 삭제(논문은 미분류로 이동)", () => deleteFolder(folder))
+    );
+  }
+  // 드롭 타깃 — 논문을 끌어다 놓으면 이 폴더로 이동(미분류 머리글은 배정 해제)
+  li.addEventListener("dragover", (e) => { e.preventDefault(); li.classList.add("drop-over"); });
+  li.addEventListener("dragleave", () => li.classList.remove("drop-over"));
+  li.addEventListener("drop", (e) => {
+    e.preventDefault();
+    li.classList.remove("drop-over");
+    const hash = e.dataTransfer.getData("text/plain");
+    if (hash) moveToFolder(hash, fid);
+  });
+  return li;
+}
+
+function buildHistoryItem(it) {
+  const li = document.createElement("li");
+  li.dataset.hash = it.hash;
+  li.draggable = true;
+  if (it.hash === currentHash) li.classList.add("h-active");
+  const title = document.createElement("div");
+  title.className = "h-title";
+  title.textContent = it.title || "(제목 없음)";
+  const line = document.createElement("div");
+  line.className = "h-line";
+  renderRich(line, it.one_liner || "");
+  const date = document.createElement("div");
+  date.className = "h-date";
+  date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
+  li.append(title, line, date);
+  li.addEventListener("click", () => openHistory(it.hash));
+  li.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/plain", it.hash);
+    e.dataTransfer.effectAllowed = "move";
+    li.classList.add("dragging");
+  });
+  li.addEventListener("dragend", () => li.classList.remove("dragging"));
+
+  // 폴더로 옮기기(메뉴) — 드래그가 어려운 경우의 대체 경로
+  const mv = document.createElement("button");
+  mv.type = "button";
+  mv.className = "h-del h-move";
+  mv.title = "폴더로 옮기기";
+  mv.textContent = "📁";
+  mv.addEventListener("click", (e) => { e.stopPropagation(); openFolderMenu(it.hash, mv); });
+  li.appendChild(mv);
+
+  const re = document.createElement("button");
+  re.type = "button";
+  re.className = "h-del h-re";
+  re.title = "최신 분석 방식으로 재분석";
+  re.textContent = "🔄";
+  re.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(`'${it.title}'을(를) 최신 분석 방식으로 재분석할까요?\n(몇 분 걸리며, 기존 결과는 대체됩니다)`)) return;
+    hideError();
+    // 지금 보고 있는 논문이면 화면을 비우지 않고 배너만 띄운다(읽던 내용 유지)
+    const inline = it.hash === currentHash && !workspaceEl.classList.contains("hidden");
+    if (inline) {
+      showReanalyzeBanner();
+    } else {
+      workspaceEl.classList.add("hidden");
+      loadingEl.classList.remove("hidden");
+      setLoadingProgress("재분석을 시작하는 중…", 0);
+    }
+    setActiveAnalysis(it.title || "재분석");
+    const ac = beginCancellable();
+    try {
+      const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, {
+        method: "POST", signal: ac.signal,
+      });
+      if (!res.ok) {
+        const d = await safeJson(res);
+        throw new Error((d && d.error) || `HTTP ${res.status}`);
+      }
+      const data = await consumeAnalysisStream(res);
+      renderResult(data);
+      loadHistory();
+      if (!inline) window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (err) {
+      if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
+    } finally {
+      // 새 흐름으로 대체됐으면(두 번째 재분석 등) UI 정리를 건너뛴다 — 새 흐름의 배너/표시 유지
+      if (endCancellable(ac)) {
+        hideReanalyzeBanner();
+        loadingEl.classList.add("hidden");
+        setActiveAnalysis(null);
+        setLoadingText("논문을 분석하고 있습니다…");
+      }
+    }
+  });
+  li.appendChild(re);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "h-del";
+  del.title = "이 분석 기록 삭제";
+  del.textContent = "×";
+  del.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!confirm(`'${it.title}' 분석 기록을 삭제할까요?\n(같은 PDF를 다시 올리면 재분석됩니다)`)) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/history/${it.hash}`, { method: "DELETE" });
+      if (!r.ok) {
+        const d = await safeJson(r);
+        throw new Error((d && d.error) || "삭제 실패");
+      }
+      // 폴더 배정 정리는 서버 DELETE가 처리한다 — 여기서 PUT하지 않아 GET과의 경합을 피한다
+      loadHistory();
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+  li.appendChild(del);
+  return li;
+}
+
+// ── 폴더 동작 (생성·이름변경·삭제·이동) ────────────────────────────────
+function createFolder() {
+  const name = (prompt("새 폴더 이름") || "").trim();
+  if (!name) return;
+  library.folders.push({ id: newFolderId(), name: name.slice(0, 60) });
+  saveLibrary();
+  renderHistory();
+}
+function renameFolder(folder) {
+  const name = (prompt("폴더 이름 변경", folder.name) || "").trim();
+  if (!name || name === folder.name) return;
+  folder.name = name.slice(0, 60);
+  saveLibrary();
+  renderHistory();
+}
+function deleteFolder(folder) {
+  if (!confirm(`'${folder.name}' 폴더를 삭제할까요?\n(폴더 안 논문은 삭제되지 않고 '미분류'로 이동합니다)`)) return;
+  library.folders = library.folders.filter((x) => x.id !== folder.id);
+  for (const h of Object.keys(library.assignments)) {
+    if (library.assignments[h] === folder.id) delete library.assignments[h];
+  }
+  collapsedFolders.delete(folder.id);
+  saveCollapsed();
+  saveLibrary();
+  renderHistory();
+}
+function moveToFolder(hash, fid) {
+  if (fid) library.assignments[hash] = fid;
+  else delete library.assignments[hash];
+  saveLibrary();
+  renderHistory();
+}
+
+// 논문을 옮길 폴더 선택 메뉴 (📁 버튼 클릭 시)
+function closeFolderMenu() { document.getElementById("sb-foldermenu")?.remove(); }
+function openFolderMenu(hash, anchor) {
+  closeFolderMenu();
+  const menu = document.createElement("div");
+  menu.className = "sb-foldermenu";
+  menu.id = "sb-foldermenu";
+  const cur = library.assignments[hash] || null;
+  const row = (label, onClick, marked) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-fm-row" + (marked ? " marked" : "");
+    b.textContent = (marked ? "✓ " : "") + label;
+    b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); closeFolderMenu(); });
+    menu.appendChild(b);
+  };
+  library.folders.forEach((fo) => row("📁 " + fo.name, () => moveToFolder(hash, fo.id), cur === fo.id));
+  row("미분류", () => moveToFolder(hash, null), !cur);
+  const nf = document.createElement("button");
+  nf.type = "button";
+  nf.className = "sb-fm-row sb-fm-new";
+  nf.textContent = "＋ 새 폴더로…";
+  nf.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeFolderMenu();
+    const name = (prompt("새 폴더 이름") || "").trim();
+    if (!name) return;
+    const folder = { id: newFolderId(), name: name.slice(0, 60) };
+    library.folders.push(folder);
+    moveToFolder(hash, folder.id); // 저장 + 재렌더
+  });
+  menu.appendChild(nf);
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 10)) + "px";
+  menu.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 10)) + "px";
+  // 바깥 클릭 시 닫기 (이번 클릭 이벤트가 끝난 뒤 등록)
+  setTimeout(() => document.addEventListener("click", closeFolderMenu, { once: true }), 0);
+}
+document.getElementById("folder-new").addEventListener("click", createFolder);
 
 async function openHistory(hash) {
   hideError();

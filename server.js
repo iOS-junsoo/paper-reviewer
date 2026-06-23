@@ -59,8 +59,24 @@ if (fs.existsSync(serviceAccountPath)) {
   const analyses = db.collection("analyses");
   const chats = db.collection("chats");
   const notes = db.collection("notes");
+  const library = db.collection("library");
   store = {
     kind: "firestore",
+    async getLibrary() {
+      try {
+        const doc = await library.doc("default").get();
+        return doc.exists ? JSON.parse(doc.data().libraryJson || "{}") : { folders: [], assignments: {} };
+      } catch (e) {
+        console.error("[라이브러리 읽기 실패 — 빈 값으로 폴백]", e.message);
+        return { folders: [], assignments: {} };
+      }
+    },
+    async setLibrary(data) {
+      await library.doc("default").set({
+        libraryJson: JSON.stringify(data),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    },
     async getChat(hash) {
       const doc = await chats.doc(hash).get();
       return doc.exists ? JSON.parse(doc.data().messagesJson || "[]") : [];
@@ -132,8 +148,15 @@ if (!firestoreReady) {
   const mem = new Map();
   const chatMem = new Map();
   const notesMem = new Map();
+  let libMem = { folders: [], assignments: {} };
   store = {
     kind: "memory",
+    async getLibrary() {
+      return libMem;
+    },
+    async setLibrary(data) {
+      libMem = data;
+    },
     async getChat(hash) {
       return chatMem.get(hash) || [];
     },
@@ -1129,6 +1152,41 @@ app.put("/api/notes/:hash", async (req, res) => {
   }
 });
 
+// --- 라이브러리: 폴더 목록 + 논문→폴더 배정 (전역, 기기 간 공유) -----------------
+app.get("/api/library", async (req, res) => {
+  try {
+    const lib = (await store.getLibrary()) || {};
+    res.json({
+      folders: Array.isArray(lib.folders) ? lib.folders : [],
+      assignments: lib.assignments && typeof lib.assignments === "object" ? lib.assignments : {},
+    });
+  } catch (e) {
+    res.status(500).json({ error: `라이브러리 조회 실패: ${e.message}` });
+  }
+});
+app.put("/api/library", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const folders = (Array.isArray(body.folders) ? body.folders : [])
+      .slice(0, 200)
+      .map((f) => ({ id: String((f && f.id) || "").slice(0, 40), name: String((f && f.name) || "").trim().slice(0, 60) }))
+      .filter((f) => f.id && f.name);
+    const ids = new Set(folders.map((f) => f.id));
+    const assignments = {};
+    const src = body.assignments && typeof body.assignments === "object" ? body.assignments : {};
+    let n = 0;
+    for (const [hash, fid] of Object.entries(src)) {
+      if (n >= 5000) break; // 무한 증가 방지 상한
+      if (isValidHash(hash) && ids.has(String(fid))) { assignments[hash] = String(fid); n++; }
+    }
+    const data = { folders, assignments };
+    await store.setLibrary(data);
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    res.status(500).json({ error: `라이브러리 저장 실패: ${e.message}` });
+  }
+});
+
 // --- POST /api/reanalyze-section/:hash — 한 섹션만 다시 생성 (전체 재분석 없이) ---
 // 캐시된 원문 PDF에서 해당 부분만 다시 읽어 그 섹션의 JSON만 받아 기존 분석에 병합한다.
 // 전체 재분석(30페이지 재독)의 일부 비용으로 약한 섹션만 보강 — Max 사용량 절약.
@@ -1257,6 +1315,14 @@ app.delete("/api/history/:hash", async (req, res) => {
   try {
     const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
     await store.delete(hash);
+    // 폴더 배정도 서버에서 정리 — 어느 경로(다른 기기·직접 호출)로 지워도 stale 배정이 남지 않게
+    try {
+      const lib = (await store.getLibrary()) || {};
+      if (lib.assignments && lib.assignments[hash]) {
+        delete lib.assignments[hash];
+        await store.setLibrary(lib);
+      }
+    } catch (e) { console.error("[삭제: 라이브러리 정리 실패]", e.message); }
     // 원문 PDF도 함께 제거 (재분석 경로는 store.delete만 호출하므로 여기서만 지운다)
     await fs.promises.rm(path.join(PDF_DIR, `${hash}.pdf`), { force: true }).catch(() => {});
     // 그림 크롭 캐시도 정리 (이 논문의 hash로 시작하는 파일들)
