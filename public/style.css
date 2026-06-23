@@ -1608,19 +1608,29 @@ body.chat-resizing .pdf-scroll { pointer-events: none; }
 }
 .chat-chip:hover { border-color: var(--accent); color: var(--accent); }
 
-.chat-form { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--card); }
+.chat-form { display: flex; align-items: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--card); }
 #chat-input {
   flex: 1;
   font-family: var(--sans);
   font-size: 0.92rem;
+  line-height: 1.5;
   padding: 11px 16px;
   border: 1.5px solid var(--line);
-  border-radius: 999px;
+  border-radius: 18px;
   background: #fff;
+  color: var(--ink);
   outline: none;
+  resize: none;                 /* 수동 리사이즈 핸들 숨김 — 자동 높이만 사용 */
+  min-height: 44px;
+  max-height: 160px;            /* 그 이상은 입력란 내부 스크롤 */
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 #chat-input:focus { border-color: var(--accent); }
 #chat-send {
+  flex: none;
+  align-self: flex-end;
+  height: 44px;
   font-family: var(--sans);
   background: var(--accent);
   color: #fff;
@@ -1630,8 +1640,26 @@ body.chat-resizing .pdf-scroll { pointer-events: none; }
   font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
 }
 #chat-send:disabled { opacity: 0.5; cursor: default; }
+#chat-send.chat-stop { background: var(--ink); padding: 0 18px; } /* 생성 중 = 멈춤 버튼(어두운색) */
+
+/* 최근 내 질문 아래 액션 줄 (수정·복사·다시 보내기) */
+.chat-q-actions { flex: none; align-self: flex-end; display: flex; gap: 6px; margin: -2px 2px 2px; }
+.chat-act {
+  font-family: var(--sans);
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.chat-act:hover { color: var(--accent); border-color: var(--accent); }
+.chat-note { flex: none; align-self: center; color: var(--ink-faint); font-size: 0.8rem; padding: 2px 0; }
 
 /* ── 관련 논문 ─────────────────────────────────────────────────────── */
 .related { margin-top: 28px; }

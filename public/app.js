@@ -1317,6 +1317,8 @@ const chatInput = document.getElementById("chat-input");
 const chatSend = document.getElementById("chat-send");
 const chatFab = document.getElementById("chat-fab");
 const chatDrawer = document.getElementById("chat-drawer");
+let chatBusy = false; // 답변 생성 중 (보내기 버튼이 '멈춤'으로 바뀜)
+let chatAbort = null; // 진행 중인 질문 fetch 취소용
 
 chatFab.addEventListener("click", () => {
   const open = chatDrawer.classList.toggle("open");
@@ -1386,6 +1388,7 @@ function renderChatLog() {
     chatMessages.appendChild(chips);
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
+  refreshQuestionActions(); // 불러온 기록의 마지막 질문에도 액션 줄 부착
 }
 
 async function loadChat(hash) {
@@ -1407,6 +1410,7 @@ async function loadChat(hash) {
 function appendChat(role, text) {
   const div = document.createElement("div");
   div.className = role === "q" ? "chat-q" : "chat-a";
+  if (role === "q") div.dataset.text = typeof text === "string" ? text : String(text == null ? "" : text);
   renderRich(div, text);
   chatMessages.querySelector(".chat-hint")?.remove();
   chatMessages.appendChild(div);
@@ -1414,23 +1418,69 @@ function appendChat(role, text) {
   return div;
 }
 
-chatForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const q = chatInput.value.trim();
-  if (!q || !currentHash || chatSend.disabled) return;
-  chatInput.value = "";
+// 가장 최근 '내 질문' 바로 아래에 수정·복사·다시 보내기 버튼 줄을 둔다 (직전 것은 제거)
+function refreshQuestionActions() {
+  chatMessages.querySelectorAll(".chat-q-actions").forEach((el) => el.remove());
+  if (chatBusy) return; // 생성 중에는 표시하지 않음
+  const qs = chatMessages.querySelectorAll(".chat-q");
+  const lastQ = qs[qs.length - 1];
+  const text = lastQ && lastQ.dataset.text;
+  if (!text) return;
+  const row = document.createElement("div");
+  row.className = "chat-q-actions";
+  const mk = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chat-act";
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  row.appendChild(mk("✎ 수정", "이 질문을 입력란에 불러와 수정", () => {
+    chatInput.value = text;
+    autoGrowChat();
+    chatInput.focus();
+    chatInput.setSelectionRange(text.length, text.length);
+  }));
+  row.appendChild(mk("⧉ 복사", "이 질문 복사", (e) => copyText(text, e.currentTarget)));
+  row.appendChild(mk("↻ 다시 보내기", "같은 질문을 모델에 다시 보내기", () => askQuestion(text)));
+  lastQ.after(row);
+}
+
+// 입력란 자동 높이(문장 길이에 따라 아래로 늘어남, 최대 160px 후 내부 스크롤)
+function autoGrowChat() {
+  if (!chatInput.value) { chatInput.style.height = ""; return; } // 비었으면 CSS 기본(한 줄)
+  chatInput.style.height = "auto";
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 160) + "px";
+}
+// 보내기 ↔ 멈춤 상태 전환 (생성 중에도 버튼은 활성 — 누르면 중단)
+function setChatBusy(b) {
+  chatBusy = b;
+  chatSend.textContent = b ? "■" : "질문";
+  chatSend.title = b ? "답변 생성 멈추기" : "질문 보내기";
+  chatSend.classList.toggle("chat-stop", b);
+}
+
+async function askQuestion(q) {
+  q = (q || "").trim();
+  if (!q || !currentHash || chatBusy) return;
   chatMessages.querySelector(".chat-chips")?.remove(); // 첫 질문 후 추천 칩 제거
+  chatMessages.querySelectorAll(".chat-note").forEach((el) => el.remove());
+  refreshQuestionActions(); // 직전 질문의 액션 줄 먼저 제거(곧 새 질문이 마지막이 됨)
   appendChat("q", q);
   const thinking = appendChat("a", "");
   thinking.classList.add("chat-thinking");
   setThinking(thinking, "논문을 살펴보는 중…");
-  chatSend.disabled = true;
+  setChatBusy(true);
+  chatAbort = new AbortController();
 
   try {
     const res = await fetch(`${API_BASE}/api/ask/${currentHash}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: q, history: chatHistory }),
+      signal: chatAbort.signal,
     });
     if (!res.ok) {
       const data = await safeJson(res);
@@ -1442,10 +1492,42 @@ chatForm.addEventListener("submit", async (e) => {
     chatHistory.push({ q, a: answer });
   } catch (err) {
     thinking.remove();
-    appendChat("a", "⚠️ " + err.message);
+    if (err.name === "AbortError") {
+      const note = document.createElement("div");
+      note.className = "chat-note";
+      note.textContent = "⏹ 답변 생성을 멈췄어요.";
+      chatMessages.appendChild(note);
+    } else {
+      appendChat("a", "⚠️ " + err.message);
+    }
   } finally {
-    chatSend.disabled = false;
+    chatAbort = null;
+    setChatBusy(false);
+    refreshQuestionActions(); // 마지막 질문 아래에 수정·복사·다시 보내기 부착
     chatInput.focus();
+  }
+}
+
+chatForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (chatBusy) return;
+  const q = chatInput.value.trim();
+  if (!q) return;
+  chatInput.value = "";
+  autoGrowChat();
+  askQuestion(q);
+});
+// 생성 중 보내기 버튼을 누르면 폼 제출 대신 중단
+chatSend.addEventListener("click", (e) => {
+  if (chatBusy) { e.preventDefault(); if (chatAbort) chatAbort.abort(); }
+});
+// 입력란: 자동 높이 + Enter 전송 / Shift+Enter 줄바꿈 (IME 조합 중엔 무시)
+chatInput.addEventListener("input", autoGrowChat);
+chatInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    if (chatForm.requestSubmit) chatForm.requestSubmit();
+    else chatForm.dispatchEvent(new Event("submit", { cancelable: true }));
   }
 });
 
@@ -2713,8 +2795,9 @@ function openChat() {
 function askSuggested(q) {
   if (!currentHash) return;
   openChat();
-  if (chatSend.disabled) return; // 이미 답변 생성 중 — 입력을 덮어쓰지 않고 드로어만 연다
+  if (chatBusy) return; // 이미 답변 생성 중 — 입력을 덮어쓰지 않고 드로어만 연다
   chatInput.value = q;
+  autoGrowChat();
   if (chatForm.requestSubmit) chatForm.requestSubmit();
   else chatForm.dispatchEvent(new Event("submit", { cancelable: true }));
 }
