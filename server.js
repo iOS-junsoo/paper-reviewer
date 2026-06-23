@@ -124,11 +124,13 @@ if (fs.existsSync(serviceAccountPath)) {
     async list() {
       const snap = await analyses.orderBy("createdAt", "desc").limit(100).get();
       return snap.docs.map((d) => {
-        const { hash, title, one_liner, createdAt } = d.data();
+        const { hash, title, one_liner, venue, year, createdAt } = d.data();
         return {
           hash,
           title,
           one_liner,
+          venue: venue || null,
+          year: year || null,
           createdAt: createdAt ? createdAt.toDate().toISOString() : null,
         };
       });
@@ -183,10 +185,12 @@ if (!firestoreReady) {
     async list() {
       return [...mem.values()]
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-        .map(({ hash, title, one_liner, createdAt }) => ({
+        .map(({ hash, title, one_liner, venue, year, createdAt }) => ({
           hash,
           title,
           one_liner,
+          venue: venue || null,
+          year: year || null,
           createdAt,
         }));
     },
@@ -208,6 +212,8 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 {
   "title": "논문 원제목 (영어 그대로)",
   "one_liner": "논문 핵심을 담은 한 줄 요약",
+  "venue": "이 논문이 실린 학회/저널 약칭 (예: 'NeurIPS', 'ACL', 'CVPR', 'ICLR', 'TPAMI', 'EMNLP'). 학회/저널이 명시 안 된 arXiv 프리프린트면 'arXiv', 전혀 알 수 없으면 null",
+  "year": "출판/공개 연도 (정수, 예: 2023). 모르면 null",
   "contributions": ["이 논문의 핵심 기여 2~4개 — 각각 한 문장, 가장 중요한 것부터"],
   "background": "연구 배경 (## 소제목으로 단락 구분)",
   "timeline": [
@@ -327,6 +333,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 }
 
 섹션별 작성 지침 (독자는 세미나 발표를 준비하거나 정독 전 구조를 잡으려는 대학원생):
+- venue / year: 논문 ==첫 페이지 머리말·각주·표지, 헤더/푸터, 워터마크(예: 'Published as a conference paper at ICLR 2024', 저널명, 'Proceedings of …', 'arXiv:2312.xxxxx [cs.CL]')==에서 발표 학회/저널과 연도를 찾아 적으세요. venue는 약칭(NeurIPS·ACL·CVPR 등), 학회/저널 명시가 없는 arXiv 프리프린트면 'arXiv'. 추측하지 말고, 근거가 없으면 둘 다 null. year는 정수.
 - contributions: 이 논문이 기존과 다르게 새로 해낸 것 2~4개. 방법·성능·관점 중에서 "이전엔 못 했는데 이 논문이 가능케 한 것"을 한 문장씩, 가장 중요한 것부터. 도입부(제목 아래)에 표시됩니다. 강조 마크업 사용 가능.
 - background: "## 소제목" 줄로 2~3개 단락을 나누세요 (예: "## 분야의 흐름", "## 남아 있는 공백"). 분야가 어떤 흐름으로 발전해왔는지 → 현재 어디까지 와 있는지 → 이 논문이 들어갈 공백(gap)이 무엇인지 순서로.
 - timeline: 연구 배경 탭 상단에 표시될 분야 발전 이정표 3~6개 (연도순). label은 기법/모델명(영어), note는 한 줄 의미. 마지막 항목은 이 논문 자신으로.
@@ -588,6 +595,8 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
     hash,
     title: analysis.title || fallbackTitle,
     one_liner: analysis.one_liner || "",
+    venue: typeof analysis.venue === "string" ? analysis.venue.slice(0, 40) : null,
+    year: Number.isFinite(Number(analysis.year)) ? Number(analysis.year) : null,
     analysis,
   });
   console.log(`[분석 완료] ${analysis.title || fallbackTitle}`);

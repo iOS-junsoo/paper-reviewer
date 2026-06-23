@@ -1731,10 +1731,18 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
   -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
 .h-line { display: none; } /* 사이드바에선 한 줄 요약 숨김 (제목 위주) */
+.h-venue {
+  font-size: 0.69rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding-right: 30px;
+}
 .h-date {
   color: var(--ink-faint);
   font-size: 0.68rem;
-  margin-top: 3px;
+  margin-top: 2px;
   letter-spacing: 0.03em;
 }
 

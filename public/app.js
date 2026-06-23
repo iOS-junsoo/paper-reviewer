@@ -2743,7 +2743,17 @@ function buildHistoryItem(it) {
   const date = document.createElement("div");
   date.className = "h-date";
   date.textContent = it.createdAt ? new Date(it.createdAt).toLocaleString("ko-KR") : "";
-  li.append(title, line, date);
+  // 제목 아래: 학회/저널 · 연도 (있을 때만)
+  const venueText = [it.venue, it.year].filter((v) => v != null && String(v).trim() !== "").join(" · ");
+  const parts = [title, line];
+  if (venueText) {
+    const venue = document.createElement("div");
+    venue.className = "h-venue";
+    venue.textContent = venueText;
+    parts.push(venue);
+  }
+  parts.push(date);
+  li.append(...parts);
   li.addEventListener("click", () => openHistory(it.hash));
   li.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/plain", it.hash);
