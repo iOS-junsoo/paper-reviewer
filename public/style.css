@@ -1796,6 +1796,7 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 #history-list.has-folders li[data-hash] { margin-left: 10px; }
 #history-list li[data-hash].dragging { opacity: 0.4; }
 .h-move { right: 60px; }
+.h-pdf { right: 86px; font-size: 0.78rem; }
 
 /* 폴더 이동 메뉴 */
 .sb-foldermenu {

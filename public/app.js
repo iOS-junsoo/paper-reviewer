@@ -2762,6 +2762,18 @@ function buildHistoryItem(it) {
   });
   li.addEventListener("dragend", () => li.classList.remove("dragging"));
 
+  // 원문 PDF 파일 열기 (새 탭)
+  const pdf = document.createElement("button");
+  pdf.type = "button";
+  pdf.className = "h-del h-pdf";
+  pdf.title = "원문 PDF 파일 열기";
+  pdf.textContent = "📄";
+  pdf.addEventListener("click", (e) => {
+    e.stopPropagation();
+    window.open(`${API_BASE}/api/pdf/${it.hash}`, "_blank", "noopener");
+  });
+  li.appendChild(pdf);
+
   // 폴더로 옮기기(메뉴) — 드래그가 어려운 경우의 대체 경로
   const mv = document.createElement("button");
   mv.type = "button";
