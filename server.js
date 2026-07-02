@@ -240,48 +240,55 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "analogy": "이 단계를 일상에 빗댄 비유 한 문장 (예: '도서관에서 질문과 가장 관련 있는 책들을 골라 가중 평균하는 것과 같다')"
     }
   ],
-  "figures": [
-    {
-      "type": "flow | bar | line",
-      "title": "그림 제목 (한국어)",
-      "source": "원 논문의 어느 Figure를 재구성했는지 (예: 'Figure 1 재구성')",
-      "caption": "이 그림에서 읽어야 할 핵심 한 줄",
-      "example": "flow 전체를 관통하는 하나의 구체적 예시 (예: \\"예시 문장: 'The cat sat'\\" — 모든 inner_viz가 이 예시를 공유)",
-      "svg": "원 논문 figure를 그대로 재현한 SVG 문자열 (flow 타입이면 반드시 포함 — 아래 'SVG 작성 규칙' 참고)",
-      "flow": [
-        {
-          "name": "블록 이름 (영어 원어)",
-          "sublabel": "보조 설명(선택)",
-          "repeat": "× 6 같은 반복 표기(선택)",
-          "children": ["내부 서브층(영어)", "..."],
-          "lane": "원 그림에서 블록들이 두 기둥으로 나란히 놓여 있으면 그 기둥 이름 (예: 'Encoder', 'Decoder'). 입력/출력처럼 전체 폭 블록은 생략",
-          "role": "이 블록이 데이터에 무슨 일을 하는지 1~2문장 — 사용자가 스테퍼로 한 블록씩 짚을 때 표시됨. 쉬운 비유를 섞어도 좋음",
-          "data_state": "이 블록을 통과한 직후 데이터가 어떤 형태·의미인지 짧게 (예: '토큰마다 512차원 벡터', '단어 간 관련도 가중치 행렬') — 데이터가 변해가는 흐름을 보여주는 용도",
-          "inner_viz": {
-            "설명": "이 블록 '내부'에서 예시 값/데이터가 어떻게 변하는지 보여주는 미니 시각화. ==flow의 모든 블록에 반드시 하나씩 넣으세요(빈 블록 금지)==",
-            "type": "heatmap | vectors | bars | distribution | scatter | surface | transform",
-            "title": "시각화 제목 (예: '단어×단어 어텐션 가중치')",
-            "tokens": ["heatmap/vectors의 행·열 레이블 (예시 문장의 토큰들, 3~6개)"],
-            "matrix": [[0.8, 0.15, 0.05]],
-            "vectors": [ { "label": "행 레이블", "values": [0.2, -0.5, 0.8] } ],
-            "bars": [ { "label": "항목", "value": 0.62, "highlight": true } ],
-            "curves": [ { "name": "곡선 이름", "points": [ { "x": 0, "y": 0.1 }, "... 8~20개로 곡선 모양 보존" ] } ],
-            "points": [ { "x": 1.2, "y": 0.8, "label": "선택 레이블", "group": "군집 이름(선택)" } ],
-            "grid": [[0.1, 0.8], [0.4, 0.2]],
-            "from": { "label": "입력 데이터 이름", "shape": "[n, 512]", "kind": "tokens|vector|matrix|image|scalar(선택)" },
-            "to": { "label": "출력 데이터 이름", "shape": "[n, 512]", "kind": "vector(선택)" },
-            "op": "transform에서 이 블록이 가하는 연산 한마디 (예: 'LayerNorm으로 분포 정규화', '잔차 더하기 ⊕')",
-            "x_label": "x축 이름 (distribution/scatter)", "y_label": "y축 이름",
-            "explanation": "이 시각화에서 읽어야 할 패턴 1~2문장 (예: \\"'sat' 행에서 'cat' 칸이 가장 진함 — 동사가 주어를 찾는 패턴\\")"
-          }
+  "method_visualization": {
+    "설명": "논문의 방법(method) 그림 1개를 인터랙티브 2.5D 파이프라인으로 재구성하는 스펙. SVG/HTML을 직접 그리지 않고 아래 구조만 채우면 앱 렌더러가 그린다. 방법 그림이 없는 순수 이론/서베이 논문이면 이 필드를 통째로 생략(null).",
+    "paper_type": "architecture(핵심 기여가 새 네트워크 구조 자체) | method(기존 네트워크 위에서 도는 기법: 프루닝·증류·LoRA·공정성 제약 등)",
+    "paper_type_reason": "판정 근거 한 문장",
+    "section_ref": "재구성한 논문 위치 (예: 'Fig.2, §4.2~4.3')",
+    "example": { "설명": "데이터셋의 구체적 샘플 하나 — 모든 모듈·단계를 관통", "dataset": "CelebA", "sample": "얼굴 이미지 한 장", "task": "Smiling 이진 분류", "group": "집단 축(공정성 논문이 아니면 생략)" },
+    "modules": [
+      {
+        "id": "영문 소문자 스네이크, 고유 (예: 'dense')",
+        "name": "모듈 이름 (예: 'Frozen Dense Net f(θ)')",
+        "sub": "12자 내외 부제 (예: '가중치 동결')",
+        "primitive": "io_cube | iso_stack | card_stack | op_box | dual_dist_box (아래 프리미티브 사전 참고)",
+        "primitive_spec": {
+          "설명": "primitive별 필수 필드. io_cube:{glyph:'face|text|none'} / iso_stack:{layers:[{ch:4,h:118},...] (ch 4~8, h 50~130), frozen:true|false} / card_stack:{count:6,label:'r₁ … r_C',color:'purple|tan'} / op_box:{dynamic_sub:true|false} / dual_dist_box:{labels:['집단 A','집단 B']}"
+        },
+        "role": "이 모듈이 하는 일 한 문장",
+        "data_state": "통과 후 데이터의 형태 한 문장 (실제 채널 수 등은 여기에 텍스트로 병기)"
+      }
+    ],
+    "edges": [
+      { "from": "모듈 id 또는 'input'", "to": "모듈 id", "kind": "forward(실선) | gradient(버건디 점선, 역방향 허용) | frozen(회색 점선)", "label": "선택 (예: '∂ℓ/∂r')" }
+    ],
+    "control": {
+      "설명": "조작 파라미터 정확히 1개. 조작 시 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T > 학습률은 피함).",
+      "param": "eta", "symbol": "η", "label": "sparsity η",
+      "min": 10, "max": 90, "default": 50, "step": 5, "unit": "%",
+      "affects": ["조작 시 화면이 변하는 모듈 id 목록"],
+      "semantics": "이 값이 무엇을 하는지 (예: '상위 η% 점수 채널만 유지')"
+    },
+    "sim": {
+      "설명": "'학습 반복' 버튼의 정성적 시뮬레이션 정의 (실제 gradient 아님, 수치는 예시)",
+      "state": "시뮬레이션 상태 (예: '채널별 점수 배열 r')",
+      "update_rule": "반복마다 상태가 어떻게 변하는지 정성 규칙",
+      "qualitative_trends": ["반복에 따라 나타나는 경향 2~3개"],
+      "disclaimer": "정성적 시뮬레이션·예시값임을 밝히는 한 줄"
+    },
+    "steps": [
+      {
+        "module": "modules의 id와 정확히 일치",
+        "title": "단계 제목",
+        "desc": "무엇을+왜 2~3문장. 관통 예시가 이 모듈에서 어떤 형태로 변하는지 반드시 언급",
+        "detail_viz": {
+          "type": "pixel_grid | activation_bars | histogram | sorted_threshold | slab_mask | convergence_curve | transform | summary_rows (아래 detail_viz 사전 참고)",
+          "binds": ["이 시각화가 읽는 상태: example | sim.state | control | sim.iter 중 필요한 것"],
+          "caption": "패널 하단 한 줄. 예시값이면 '(예시)' 표기"
         }
-      ],
-      "bars": [ { "label": "항목", "value": 28.4, "highlight": true } ],
-      "unit": "bar 차트의 단위 (예: BLEU, accuracy %)",
-      "lines": [ { "name": "계열 이름", "points": [ { "x": 1, "y": 2.5 }, ... ] } ],
-      "x_label": "line 차트 x축 이름", "y_label": "line 차트 y축 이름"
-    }
-  ],
+      }
+    ]
+  },
   "experiments": {
     "takeaway": "전체 실험이 보여주는 핵심 결론 한 줄 (이 논문이 '무엇을 얼마나' 입증했는지)",
     "metrics_explained": [ { "name": "측정 지표 이름 (예: BLEU, perplexity, accuracy)", "meaning": "그 지표가 무엇을 재는지 + 높을수록/낮을수록 좋은지 쉬운 한 줄" } ],
@@ -352,35 +359,18 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 - timeline: 연구 배경 탭 상단에 표시될 분야 발전 이정표 3~6개 (연도순). label은 기법/모델명(영어), note는 한 줄 의미. 마지막 항목은 이 논문 자신으로.
 - problem: "## 소제목"으로 2~3개 단락 구분. 기존 방법(existing methods)들을 구체적으로 거명하고 각각의 한계를 짚은 뒤, 이 논문이 정확히 어떤 문제를 타깃하는지 명시하세요.
 - method_steps: 4~8개 단계. 각 단계는 짧은 title + "무엇을 + 왜"를 담은 description + 일상 비유(analogy). 비유는 그 단계의 핵심 직관을 비전공자도 떠올릴 수 있게. 데이터가 흘러가는 순서대로 배열하세요.
-- figures: ==논문의 핵심 방법론(method)을 보여주는 그림만 1~2개 재구성하세요== — 모델 구조, 파이프라인, 방법의 동작 원리를 담은 그림. ==성능 비교·실험 결과 그림과 표(table)는 재구성하지 마세요== (BLEU/accuracy 비교 막대, 벤치마크 표 등 금지). 시각 유형은 내용에 맞게:
-  · 모델 구조/파이프라인 그림 → "flow". svg 필드에 SVG를 직접 그리세요. flow 배열은 그 그림의 의미 블록 목록으로, 배열 순서 = 데이터가 흐르는 순서(스테퍼 진행 순서)이며 모든 블록에 role과 data_state를 채우세요.
-    - 논문에 ==명확한 모델 구조 그림(Figure 1 등)이 있으면 그것과 똑같이 생기게== 재현하세요 (재배치·단순화 금지).
-    - 논문에 깔끔한 구조 그림이 없거나 알고리즘/학습기법 논문이면, ==그 방법이 컴포넌트를 어떻게 배선하는지를 2D 구조도로 합성==하세요.
-  **SVG 작성 규칙 (flow 타입 필수)**:
-  - ==절대 블록을 위에서 아래로 일렬로만 쌓지 마세요(밋밋한 수직하강 금지)==. 그 방법의 실제 구조 관계가 그림에서 드러나야 합니다 — 병렬 모듈은 좌우 기둥으로 나란히, 분기는 갈라지는 화살표로, 합류는 ⊕/⊗ 합류점으로, 스킵·잔차·피드백은 블록을 우회하는 곡선 화살표로, 반복은 "N×" 라벨과 되돌아가는 루프 화살표로, 모듈 묶음은 외곽 점선 상자로. 입력·출력 라벨도 표기.
-  - 방법 유형별 배선 예시(해당하면 이 구조를 따르세요):
-    · adapter/LoRA류 → 동결된 본체 경로를 가운데 세로로 두고, 그 ==옆에 저계수 곁가지(A↓ B↑)를 병렬로 그린 뒤 ⊕로 본체에 합류==. "frozen"은 회색, 학습 분기는 강조색.
-    · teacher–student(증류) → 교사·학생 두 모델을 ==좌우로 나란히==, 교사 출력(soft label)이 가로질러 학생으로 흐르는 화살표.
-    · 이중 인코더/대조학습(CLIP류) → 두 인코더를 좌우로, 각 출력이 ==가운데 공유 임베딩 공간에서 만나 정렬(↔)==.
-    · 프루닝/중요도 기반 → 원본 모델 → 중요도 산정 분기 → 가지치기 → 압축 모델, 중요도가 본체로 되먹임되는 화살표.
-    · 반복/EM/GAN/RL → 핵심 단계들을 두고 ==마지막에서 처음으로 되돌아가는 루프 화살표==로 반복을 표현.
-  - viewBox는 가로가 넓게 "0 0 W H" (구조가 옆으로 퍼지므로 W는 480~640 권장, H는 필요한 만큼). width/height 속성은 넣지 마세요.
-  - 색상 테마: 배경 투명, 블록은 fill="#fff" stroke="#d8cfbc" (윗변 강조는 #8c2f39), 화살표·강조 #8c2f39, 텍스트 #211d19 (보조 텍스트 #9b9285), 글꼴 font-family="sans-serif" font-size 11~13.
-  - ==flow 배열의 i번째 블록에 해당하는 SVG 요소들을 <g data-block="i">로 감싸세요== (스테퍼가 이 그룹을 하이라이트함). 화살표·장식은 g 밖에 둬도 됩니다.
-  - rect는 rx="6" 둥근 모서리, 블록 안 텍스트는 <text text-anchor="middle">. JSON 문자열 안이므로 큰따옴표 이스케이프에 주의.
-  · 방법 자체가 분포·수치 변화를 다루는 경우에만 → "bar" 또는 "line" (예: 방법이 만드는 분포의 모양, 방법 내부 함수의 곡선)
-  수치는 반드시 논문에서 실제로 읽은 값만 쓰세요. ==수치를 확인할 수 없으면 그 figure는 빼세요 (지어내기 절대 금지)==. 각 figure에는 type에 해당하는 데이터 필드만 포함하세요.
-- inner_viz (블록 내부 시각화): ==flow의 모든 블록에 빠짐없이 하나씩== 넣으세요(빈 블록 금지). 그 블록 안에서 구체적인 예시 값/데이터가 어떻게 변하는지 보여줍니다.
-  · figure의 example에 하나의 구체적 예시(짧은 문장, 이미지 패치 등)를 정하고, 모든 inner_viz가 같은 예시를 따라가게 하세요 (연속성).
-  · ==시각화를 만들기 전에 WebSearch로 이 논문의 유명 해설·시각화 자료를 1~2회 검색해 참고하세요== (예: "illustrated transformer", "<논문명> explained visualization"). 널리 알려진 예시(예: 어텐션 논문의 "The animal didn't cross the street because it was too tired")가 있으면 그것을 쓰세요.
-  · 값은 논문이 명시한 수치가 있으면 그대로, 없으면 ==논문이 설명하는 정성적 패턴을 정확히 반영한 예시값==으로 (예: 동사는 주어에 높은 어텐션, 합이 1인 softmax 행 등). explanation에 "예시값"임이 드러나게 쓰지 말고, 읽어야 할 패턴을 설명하세요.
-  · type 선택 — ==행렬(heatmap)만 반복하지 말고, 그 블록이 다루는 데이터 성격에 가장 잘 맞는 유형을 고르세요==:
-    heatmap: 관계·가중치 행렬 (행=보는 주체, 각 행 합 ≈ 1) / vectors: 벡터·표현의 변화 (값 -1~1, 4~8칸) / bars: 이산 확률·점수 비교 /
-    distribution: 연속 분포·함수 곡선이 핵심일 때 (예: softmax 온도에 따른 분포 모양, 가우시안 초기화, 게이트 함수 곡선 — curves에 점 8~20개) /
-    scatter: 공간 배치·군집·임베딩 관계 (예: 임베딩 공간에서 단어들의 위치, 클래스 분리 — group으로 군집 구분) /
-    surface: 행렬의 값 크기 지형이 핵심일 때 3D 막대 지형으로 (예: low-rank 행렬의 구조, 마스킹 패턴 — grid는 4×4 ~ 8×8, 값 0~1 정규화) /
-    transform: ==보여줄 흥미로운 내부 수치가 없는 블록(Add & Norm, residual 덧셈, reshape, projection, dropout 등)의 기본 선택==. 입력 데이터(from)가 이 블록을 거쳐 출력 데이터(to)로 어떤 형태(shape)·의미로 바뀌는지 from/to/op로 보여줍니다. 예: from {label:"임베딩", shape:"[n, 512]"} op:"잔차 더하기 ⊕ 후 LayerNorm" to {label:"정규화된 표현", shape:"[n, 512]"}.
-  어떤 블록이든 위 6개로 표현이 애매하면 transform을 쓰세요. ==전체 flow에서 같은 type만 반복하지 말고, 데이터가 토큰→벡터→가중치행렬→확률처럼 변해가는 흐름이 type 선택에서 드러나게== 하세요.
+- method_visualization: ==논문의 방법(method) 그림 딱 1개를 인터랙티브 2.5D 파이프라인 스펙으로 재구성==하세요. ==SVG/HTML 코드를 직접 출력하지 말고== 위 스키마 구조만 채우면 앱 렌더러가 그립니다. ==성능/실험 결과 그림·표는 금지==(방법 그림만). 방법 그림이 없는 순수 이론/서베이 논문이면 이 필드를 생략(null)하세요. 목표는 화려함이 아니라 ==아래 검증을 통과하는 정확한 스펙==입니다.
+  [작성 전] 논문/기법의 유명 해설 자료를 WebSearch로 1~2회 찾아 통용되는 시각적 관례를 참고하세요.
+  [사전 판정] paper_type(architecture=새 구조 자체 / method=기존 망 위 기법)을 근거와 함께 정하고, 재구성할 방법 그림 1개와 관통 예시(데이터셋 실제 샘플 하나)를 정합니다. 예시 하나가 모든 모듈·단계를 관통해야 합니다(모듈마다 다른 예시 금지).
+  [modules] 6~8개, 배열 순서 = 데이터 흐름. 각 모듈의 primitive를 성격에 맞게 고르되 ==같은 primitive를 3개 이상 반복 금지==:
+    · io_cube: 입력/출력 데이터(이미지·텍스트). · iso_stack: CNN/백본(채널 슬래브 2.5D 스택; layers는 실제 백본을 비례 축소 — 공간↓=h감소·채널↑=ch증가, ch 4~8·h 50~130, 실제 채널 수는 data_state에 텍스트 병기). · card_stack: 벡터/점수 집합(중요도 r 등). · op_box: 연산·선택(마스크·게이트·라우터; dynamic_sub=control 따라 부제 갱신). · dual_dist_box: 두 집단/두 분포 비교하는 손실·지표.
+  [edges] 모듈 간 연결. kind: forward(실선) / gradient(버건디 점선, 역방향 허용) / frozen(회색 점선). ==위→아래 일렬 금지==: 병렬은 modules 순서+edges 분기로, 합류는 op_box(⊕), 스킵/잔차는 별도 forward edge, 동결 경로는 frozen edge, 반복은 왕복 edge로 위상을 옮기세요.
+  [control] 조작 파라미터 ==정확히 1개==. 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T; 학습률류는 피함). min/max/default는 ==논문 실험 설정 범위==에서. affects의 모든 모듈은 실제로 화면이 변해야 하고, affects 대상 단계에는 반드시 control을 binds에 넣은 detail_viz(sorted_threshold/slab_mask)를 두세요.
+  [sim] '학습 반복' 버튼용 정성 시뮬레이션(실제 gradient 아님). state·update_rule·qualitative_trends·disclaimer를 채웁니다.
+  [steps] 5~8개, 각 단계는 정확히 하나의 module에 매핑(module은 modules의 id와 일치). desc는 "무엇을+왜" 2~3문장 + 관통 예시가 이 모듈에서 어떤 형태로 변하는지 언급. detail_viz는 ==반드시 상태에 바인딩(binds)==되며 ==같은 type 2개 이상 반복 금지==(histogram 남발 금지). 데이터가 "샘플→활성→점수→마스크→서브넷→지표"로 변해가는 흐름이 type 선택에 드러나게:
+    · pixel_grid(입력 격자, binds:[example], 입력 1회) · activation_bars(레이어별 채널 활성, binds:[example], 캡션 '(예시)') · histogram(상태 배열 분포, binds:[sim.state]) · sorted_threshold(정렬+control 임계선, binds:[sim.state,control]) · slab_mask(슬래브 마스크 소멸, binds:[sim.state,control], iso_stack과 짝) · convergence_curve(정성 수렴 곡선+현재 위치, binds:[sim.iter], 캡션 '예시 곡선') · transform(형태 변화만; reshape/⊕ 등의 기본값, binds:[example]) · summary_rows(최종 요약, binds:[sim.state,control,sim.iter], 마지막 단계).
+  [수치 정직성] 값은 논문에서 읽은 실제 수치만. 없으면 정성적 패턴 반영 예시값을 쓰되 caption/desc에 '(예시)' 명시. ==지어낸 수치를 실제처럼 쓰기 금지==.
+  [검증 대비] 렌더러가 검사합니다(실패 항목은 부분 강등): modules 6~8·id 고유, steps.module이 modules에 존재, control.affects가 modules에 존재+연동 정의, iso_stack layers 범위, detail_viz type이 사전에 존재+필수 binds 충족, edges from/to가 modules에 존재. 통과를 목표로 정확히 작성하세요.
 - equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
 - experiments: 실험·결과 섹션 (전용 탭). ==논문의 Experiments(실험) 절을 보고, 실험을 논문에 나온 번호·순서대로 정리==하세요. 구성:
   · 맨 위 takeaway: 전체 실험이 입증한 핵심 결론 한 줄.
@@ -1231,7 +1221,7 @@ app.put("/api/library", async (req, res) => {
 const SECTION_FIELDS = {
   background: { keys: ["background", "timeline"], label: "연구 배경(과 분야 타임라인)" },
   problem: { keys: ["problem"], label: "해결하려는 것" },
-  method: { keys: ["method_steps", "figures"], label: "연구 방법론(단계·시각화)" },
+  method: { keys: ["method_steps", "method_visualization"], label: "연구 방법론(단계·시각화)" },
   results: { keys: ["experiments"], label: "실험·결과" },
   equations: { keys: ["equations", "equation_flow"], label: "수식 정리(와 수식 흐름도)" },
   figures: { keys: ["figure_guide"], label: "그림 해설" },

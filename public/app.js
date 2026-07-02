@@ -1596,18 +1596,28 @@ function setThinking(el, msg) {
 // ---------- 연구 방법론: 재구성 figure들 + 스테퍼 ----------
 function renderMethod(data) {
   const panel = document.getElementById("panel-method");
+  if (activeMethodViz) { activeMethodViz.destroy(); activeMethodViz = null; } // 이전 애니메이션·타이머 정리
   panel.innerHTML = "";
 
-  // figures (신규) 또는 architecture (구버전 호환)
-  const figures = Array.isArray(data.figures)
-    ? data.figures
-    : data.architecture && Array.isArray(data.architecture.flow)
-      ? [{ type: "flow", ...data.architecture, title: "모델 아키텍처" }]
-      : [];
-  figures.forEach((f) => {
-    const el = buildFigure(f);
-    if (el) panel.appendChild(el);
-  });
+  // 신규: 인터랙티브 2.5D 파이프라인 (method_visualization) 우선
+  let vizEl = null;
+  if (data.method_visualization) {
+    try { vizEl = buildMethodViz(data.method_visualization); } catch (e) { console.error("[method viz 렌더 실패 — 폴백]", e); vizEl = null; }
+  }
+  if (vizEl) {
+    panel.appendChild(vizEl);
+  } else {
+    // 구버전 분석(figures/architecture) 호환 폴백
+    const figures = Array.isArray(data.figures)
+      ? data.figures
+      : data.architecture && Array.isArray(data.architecture.flow)
+        ? [{ type: "flow", ...data.architecture, title: "모델 아키텍처" }]
+        : [];
+    figures.forEach((f) => {
+      const el = buildFigure(f);
+      if (el) panel.appendChild(el);
+    });
+  }
 
   if (Array.isArray(data.method_steps) && data.method_steps.length) {
     const ol = document.createElement("ol");
@@ -1640,7 +1650,424 @@ function renderMethod(data) {
   }
 }
 
-// ---------- figure 렌더러 (flow / bar / line) ----------
+/* ==========================================================================
+   연구 방법론: 인터랙티브 2.5D 파이프라인 (method_visualization)
+   모델이 준 구조 스펙을 렌더러가 SVG 파이프라인 + 스테퍼 + 컨트롤 슬라이더 +
+   정성 시뮬레이션 + 상태 바인딩 detail_viz 패널로 그린다. (method_viz_prompt v3)
+   ========================================================================== */
+let activeMethodViz = null; // 현재 애니메이션/타이머 컨트롤러 (논문 전환 시 destroy)
+const MVNS = "http://www.w3.org/2000/svg";
+function mvE(tag, attrs) { const e = document.createElementNS(MVNS, tag); for (const k in (attrs || {})) e.setAttribute(k, attrs[k]); return e; }
+function mvT(x, y, s, attrs) { const t = mvE("text", Object.assign({ x, y }, attrs || {})); t.textContent = s == null ? "" : String(s); return t; }
+function mvClamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+// 슬래브(2.5D 판): 앞면 rect + 윗면 평행사변형으로 살짝 입체감
+function mvSlab(x, y, w, h, fill, stroke, rx) {
+  const g = mvE("g");
+  const d = 6;
+  g.appendChild(mvE("path", { d: `M${x} ${y} L${x + d} ${y - d} L${x + w + d} ${y - d} L${x + w} ${y} Z`, fill: stroke, opacity: "0.35" }));
+  g.appendChild(mvE("rect", { x, y, width: w, height: h, rx: rx || 4, fill, stroke, "stroke-width": "1" }));
+  return g;
+}
+
+function validateMethodViz(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const PRIM = new Set(["io_cube", "iso_stack", "card_stack", "op_box", "dual_dist_box"]);
+  const DVIZ = new Set(["pixel_grid", "activation_bars", "histogram", "sorted_threshold", "slab_mask", "convergence_curve", "transform", "summary_rows"]);
+  const seen = new Set();
+  let modules = (Array.isArray(raw.modules) ? raw.modules : [])
+    .filter((m) => m && typeof m === "object" && m.id && !seen.has(m.id) && seen.add(m.id));
+  if (modules.length < 2) return null; // 최소 구조 없음 → 상위에서 폴백
+  modules.forEach((m) => {
+    if (!PRIM.has(m.primitive)) m.primitive = "op_box";
+    m.primitive_spec = m.primitive_spec && typeof m.primitive_spec === "object" ? m.primitive_spec : {};
+    if (m.primitive === "iso_stack") {
+      let ls = (Array.isArray(m.primitive_spec.layers) ? m.primitive_spec.layers : [])
+        .filter((l) => l && Number.isFinite(Number(l.ch)))
+        .map((l) => ({ ch: mvClamp(Math.round(Number(l.ch)), 4, 8), h: mvClamp(Math.round(Number(l.h)) || 90, 50, 130) }));
+      if (!ls.length) ls = [{ ch: 4, h: 116 }, { ch: 6, h: 84 }, { ch: 8, h: 58 }];
+      m.primitive_spec.layers = ls;
+    }
+  });
+  const ids = new Set(modules.map((m) => m.id));
+  const edges = (Array.isArray(raw.edges) ? raw.edges : [])
+    .filter((e) => e && (ids.has(e.from) || e.from === "input") && ids.has(e.to))
+    .map((e) => ({ from: e.from, to: e.to, kind: ["forward", "gradient", "frozen"].includes(e.kind) ? e.kind : "forward", label: e.label || "" }));
+  let steps = (Array.isArray(raw.steps) ? raw.steps : []).filter((s) => s && ids.has(s.module));
+  if (steps.length < 2) {
+    steps = modules.map((m) => ({ module: m.id, title: m.name || m.id, desc: m.role || "", detail_viz: { type: "transform", binds: ["example"], caption: m.data_state || "" } }));
+  }
+  steps.forEach((s) => {
+    s.detail_viz = s.detail_viz && typeof s.detail_viz === "object" ? s.detail_viz : {};
+    if (!DVIZ.has(s.detail_viz.type)) s.detail_viz.type = "transform";
+    s.detail_viz.binds = Array.isArray(s.detail_viz.binds) ? s.detail_viz.binds : [];
+  });
+  let control = raw.control && typeof raw.control === "object" ? raw.control : null;
+  if (control) {
+    control.affects = (Array.isArray(control.affects) ? control.affects : []).filter((id) => ids.has(id));
+    let { min, max, default: def, step } = control;
+    min = Number(min); max = Number(max); def = Number(def); step = Number(step);
+    if (!Number.isFinite(min)) min = 0;
+    if (!Number.isFinite(max) || max <= min) max = min + 100;
+    if (!Number.isFinite(def)) def = (min + max) / 2;
+    def = mvClamp(def, min, max);
+    if (!Number.isFinite(step) || step <= 0) step = Math.max(1, Math.round((max - min) / 20));
+    control.min = min; control.max = max; control.default = def; control.step = step;
+    if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
+  }
+  const sim = raw.sim && typeof raw.sim === "object" ? raw.sim : {};
+  return { ...raw, modules, edges, steps, control, sim };
+}
+
+function buildMethodViz(raw) {
+  const spec = validateMethodViz(raw);
+  if (!spec) return null;
+
+  // ── 상태 ──
+  const cardMod = spec.modules.find((m) => m.primitive === "card_stack");
+  const C = cardMod ? mvClamp(Number(cardMod.primitive_spec.count) || 16, 8, 24) : 16;
+  const S = {
+    spec, stepIdx: 0,
+    eta: spec.control ? spec.control.default : 50,
+    iter: 0, C, scores: [], flips: 0,
+    reduce: window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    raf: 0, playTimer: 0, mods: new Map(),
+  };
+  const resetScores = () => { S.scores = Array.from({ length: C }, () => 0.35 + Math.random() * 0.3); S.iter = 0; S.flips = 0; };
+  resetScores();
+  const maskOf = () => {
+    const keep = mvClamp(Math.round(C * (S.eta / 100)), 0, C);
+    const order = S.scores.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, keep).map((x) => x[1]);
+    const m = new Array(C).fill(0); order.forEach((i) => (m[i] = 1)); return m;
+  };
+  const simStep = () => {
+    const before = maskOf();
+    const noise = 0.16 / (1 + S.iter * 0.6);
+    S.scores = S.scores.map((v, i) => mvClamp(v + (before[i] ? 0.06 : -0.06) + (Math.random() - 0.5) * noise, 0, 1));
+    const after = maskOf();
+    S.flips = before.reduce((a, _, i) => a + (before[i] !== after[i] ? 1 : 0), 0);
+    S.iter++;
+  };
+
+  // ── 골격 DOM ──
+  const wrap = document.createElement("div");
+  wrap.className = "mviz";
+  const header = document.createElement("div");
+  header.className = "mviz-head";
+  header.innerHTML = `<span class="mviz-badge">인터랙티브 파이프라인</span>` +
+    (spec.section_ref ? `<span class="mviz-ref">${escapeHtmlAttr(spec.section_ref)}</span>` : "");
+  wrap.appendChild(header);
+
+  // 파이프라인 SVG (가로 스크롤 가능)
+  const SLOT = 150, BW = 92, cy = 118, H = 236;
+  const width = spec.modules.length * SLOT + 40;
+  const scroller = document.createElement("div");
+  scroller.className = "mviz-stage";
+  const svg = mvE("svg", { viewBox: `0 0 ${width} ${H}`, class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
+  const gEdges = mvE("g"); const gMods = mvE("g"); const gParticles = mvE("g");
+  svg.append(gEdges, gMods, gParticles);
+  scroller.appendChild(svg);
+  wrap.appendChild(scroller);
+
+  const centerX = (i) => 20 + i * SLOT + SLOT / 2 - 15;
+  const idxOf = (id) => spec.modules.findIndex((m) => m.id === id);
+
+  // ── 모듈 그리기 (primitive별) ──
+  function drawModule(m, i) {
+    const cx = centerX(i);
+    const g = mvE("g", { "data-mod": m.id, class: "mviz-mod", transform: `translate(${cx},0)` });
+    const affected = spec.control && spec.control.affects.includes(m.id);
+    const mask = maskOf();
+    const TAN = "#e7dcc3", TAN_S = "#c9b892", PURPLE = "#7c5cbf", GRAY = "#d8cfbc", INK = "#211d19", FAINT = "#9b9285";
+    if (m.primitive === "io_cube") {
+      const glyph = (m.primitive_spec.glyph || "none");
+      g.appendChild(mvSlab(-26, cy - 26, 52, 52, "#fff", "#c9b892", 8));
+      if (glyph === "face") {
+        g.append(mvE("circle", { cx: -8, cy: cy - 6, r: 3, fill: INK }), mvE("circle", { cx: 8, cy: cy - 6, r: 3, fill: INK }),
+          mvE("path", { d: `M-10 ${cy + 8} Q0 ${cy + 16} 10 ${cy + 8}`, stroke: INK, fill: "none", "stroke-width": "2" }));
+      } else if (glyph === "text") {
+        [-8, 0, 8].forEach((dy, k) => g.appendChild(mvE("rect", { x: -16, y: cy - 8 + k * 8, width: 32 - k * 6, height: 3, rx: 1.5, fill: FAINT })));
+      } else g.appendChild(mvT(0, cy + 4, "▦", { "text-anchor": "middle", fill: FAINT, "font-size": "18" }));
+    } else if (m.primitive === "iso_stack") {
+      const layers = m.primitive_spec.layers;
+      const frozen = !!m.primitive_spec.frozen;
+      const totalW = layers.length * 20 - 6;
+      let lx = -totalW / 2;
+      layers.forEach((L) => {
+        const h = L.h * 0.62, top = cy + 22 - h;
+        const slab = mvSlab(lx, top, 15, h, frozen ? "#eee9de" : TAN, frozen ? "#c8c0b0" : TAN_S, 3);
+        // 채널 슬래브 선 (affects면 마스크된 비율만 실선, 나머지 점선)
+        const nLines = Math.min(L.ch, 6);
+        for (let c = 0; c < nLines; c++) {
+          const yy = top + 5 + (c * (h - 10)) / Math.max(1, nLines - 1);
+          const off = affected && c / nLines > S.eta / 100;
+          slab.appendChild(mvE("line", { x1: lx + 3, y1: yy, x2: lx + 12, y2: yy, stroke: off ? "#c9b892" : TAN_S, "stroke-width": off ? "1" : "1.6", "stroke-dasharray": off ? "2 2" : "", opacity: off ? "0.5" : "1" }));
+        }
+        g.appendChild(slab);
+        lx += 20;
+      });
+      if (frozen) g.appendChild(mvT(0, cy - 40, "🔒 frozen", { "text-anchor": "middle", fill: FAINT, "font-size": "9" }));
+    } else if (m.primitive === "card_stack") {
+      const col = m.primitive_spec.color === "tan" ? TAN : PURPLE;
+      for (let k = 3; k >= 0; k--) {
+        g.appendChild(mvE("rect", { x: -20 + k * 4, y: cy - 24 + k * 4, width: 40, height: 46, rx: 5, fill: k === 0 ? col : "#fff", stroke: col, "stroke-width": "1.4", opacity: k === 0 ? "0.92" : "0.5" }));
+      }
+      g.appendChild(mvT(0, cy + 4, m.primitive_spec.label || "r", { "text-anchor": "middle", fill: "#fff", "font-size": "11", "font-weight": "600" }));
+    } else if (m.primitive === "dual_dist_box") {
+      g.appendChild(mvSlab(-30, cy - 24, 60, 50, "#fff", "#c9b892", 7));
+      const labels = Array.isArray(m.primitive_spec.labels) ? m.primitive_spec.labels : [];
+      [["#8c2f39", -14], ["#7c5cbf", 12]].forEach(([col, ox], di) => {
+        let d = `M${ox - 12} ${cy + 12}`;
+        for (let t = 0; t <= 12; t++) { const x = ox - 12 + t * 2; const yy = cy + 12 - 26 * Math.exp(-Math.pow((t - 6) / 3, 2)); d += ` L${x} ${yy}`; }
+        g.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6" }));
+      });
+      if (labels.length) g.appendChild(mvT(0, cy + 22, labels.slice(0, 2).join(" · "), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
+    } else { // op_box
+      g.appendChild(mvSlab(-32, cy - 22, 64, 46, "#fff", "#8c2f39", 7));
+      let sub = m.sub || "";
+      if (m.primitive_spec.dynamic_sub && spec.control) sub = `${spec.control.symbol || spec.control.param}=${S.eta}${spec.control.unit || ""}`;
+      g.appendChild(mvT(0, cy - 2, (m.name || "").slice(0, 12), { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" }));
+      if (sub) g.appendChild(mvT(0, cy + 12, sub.slice(0, 16), { "text-anchor": "middle", fill: "#8c2f39", "font-size": "9" }));
+    }
+    // 이름 라벨
+    g.appendChild(mvT(0, cy + 44, (m.name || m.id).slice(0, 16), { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" }));
+    if (m.sub && m.primitive !== "op_box") g.appendChild(mvT(0, cy + 56, m.sub.slice(0, 18), { "text-anchor": "middle", fill: FAINT, "font-size": "8.5" }));
+    return g;
+  }
+
+  function refreshMods() {
+    gMods.textContent = "";
+    S.mods.clear();
+    spec.modules.forEach((m, i) => { const g = drawModule(m, i); gMods.appendChild(g); S.mods.set(m.id, g); });
+    applyHighlight();
+  }
+
+  // ── 엣지 ──
+  function drawEdges() {
+    gEdges.textContent = "";
+    if (!document.getElementById("mviz-arrow")) {
+      const defs = mvE("defs");
+      ["#6b6258", "#8c2f39"].forEach((c, k) => {
+        const mk = mvE("marker", { id: `mviz-arrow${k}`, viewBox: "0 0 8 8", refX: "6", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" });
+        mk.appendChild(mvE("path", { d: "M0 0 L8 4 L0 8 Z", fill: c }));
+        defs.appendChild(mk);
+      });
+      svg.insertBefore(defs, gEdges);
+    }
+    spec.edges.forEach((e) => {
+      const fi = e.from === "input" ? -1 : idxOf(e.from);
+      const ti = idxOf(e.to);
+      if (ti < 0) return;
+      const x1 = fi < 0 ? 10 : centerX(fi) + 34;
+      const x2 = centerX(ti) - 34;
+      const col = e.kind === "gradient" ? "#8c2f39" : e.kind === "frozen" ? "#c2b8a2" : "#6b6258";
+      const dash = e.kind === "forward" ? "" : e.kind === "gradient" ? "5 4" : "3 4";
+      const mk = e.kind === "gradient" ? "url(#mviz-arrow1)" : "url(#mviz-arrow0)";
+      let d;
+      if (ti > fi) { d = `M${x1} ${cy} L${x2} ${cy}`; }
+      else { // 되먹임(gradient loss→score 등) — 아래로 아치
+        const xa = centerX(fi) + 34, xb = centerX(ti) - 34;
+        d = `M${centerX(fi)} ${cy + 30} C${xa} ${cy + 70} ${xb} ${cy + 70} ${centerX(ti)} ${cy + 30}`;
+      }
+      gEdges.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": ti > fi || fi < 0 ? mk : "" }));
+      if (e.label) {
+        const mx = (x1 + x2) / 2, my = ti > fi ? cy - 8 : cy + 66;
+        gEdges.appendChild(mvT(mx, my, e.label.slice(0, 16), { "text-anchor": "middle", fill: col, "font-size": "8.5" }));
+      }
+    });
+  }
+
+  function applyHighlight() {
+    const active = spec.steps[S.stepIdx] && spec.steps[S.stepIdx].module;
+    S.mods.forEach((g, id) => g.setAttribute("opacity", !active || id === active ? "1" : "0.32"));
+  }
+
+  // ── 스테퍼 + desc + detail 패널 ──
+  const stepBar = document.createElement("div");
+  stepBar.className = "mviz-stepbar";
+  const stepInfo = document.createElement("div");
+  stepInfo.className = "mviz-stepinfo";
+  const detailWrap = document.createElement("div");
+  detailWrap.className = "mviz-detail";
+  const detailSvg = mvE("svg", { viewBox: "0 0 320 132", class: "mviz-detail-svg", preserveAspectRatio: "xMidYMid meet" });
+  const detailCap = document.createElement("div");
+  detailCap.className = "mviz-detail-cap";
+  detailWrap.append(detailSvg, detailCap);
+
+  function drawDetail() {
+    const step = spec.steps[S.stepIdx]; if (!step) return;
+    const dv = step.detail_viz || {};
+    detailSvg.textContent = "";
+    const g = mvE("g"); detailSvg.appendChild(g);
+    const INK = "#211d19", FAINT = "#9b9285", ACC = "#8c2f39", TAN = "#c9b892";
+    const type = dv.type;
+    try {
+      if (type === "pixel_grid") {
+        for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+          const dcx = 3.5, dcy = 3.5, dist = Math.hypot(r - dcx, c - dcy) / 5;
+          g.appendChild(mvE("rect", { x: 120 + c * 12, y: 12 + r * 12, width: 11, height: 11, fill: ACC, opacity: (1 - dist).toFixed(2) }));
+        }
+      } else if (type === "activation_bars") {
+        const rv = (k) => { const x = Math.sin(k * 91.7 + S.stepIdx * 13.1) * 43758.5; return x - Math.floor(x); };
+        for (let k = 0; k < 12; k++) { const h = 12 + rv(k) * 92; g.appendChild(mvE("rect", { x: 20 + k * 24, y: 116 - h, width: 16, height: h, rx: 2, fill: TAN, stroke: "#b7a680" })); }
+      } else if (type === "histogram") {
+        const bins = new Array(10).fill(0); S.scores.forEach((v) => bins[mvClamp(Math.floor(v * 10), 0, 9)]++);
+        const mx = Math.max(1, ...bins);
+        bins.forEach((b, k) => { const h = (b / mx) * 96; g.appendChild(mvE("rect", { x: 24 + k * 28, y: 116 - h, width: 22, height: h, rx: 2, fill: "#7c5cbf" })); });
+      } else if (type === "sorted_threshold") {
+        const sorted = S.scores.slice().sort((a, b) => b - a);
+        const keep = Math.round(C * (S.eta / 100));
+        const bw = Math.max(3, 300 / C);
+        sorted.forEach((v, k) => { const h = v * 96; g.appendChild(mvE("rect", { x: 12 + k * bw, y: 116 - h, width: bw - 1, height: h, fill: k < keep ? ACC : "#d8cfbc" })); });
+        const tx = 12 + keep * bw;
+        g.append(mvE("line", { x1: tx, y1: 8, x2: tx, y2: 116, stroke: ACC, "stroke-width": "1.5", "stroke-dasharray": "4 3" }),
+          mvT(mvClamp(tx + 3, 12, 250), 16, `η=${S.eta}%`, { fill: ACC, "font-size": "10", "font-weight": "600" }));
+      } else if (type === "slab_mask") {
+        const mask = maskOf();
+        const bw = Math.max(8, 300 / C);
+        mask.forEach((mk, k) => g.appendChild(mvE("rect", { x: 12 + k * bw, y: 40, width: bw - 3, height: 52, rx: 2, fill: mk ? TAN : "#fff", stroke: mk ? "#b7a680" : "#d8cfbc", "stroke-dasharray": mk ? "" : "3 2", opacity: mk ? "1" : "0.6" })));
+      } else if (type === "convergence_curve") {
+        let d = "M12 108"; for (let t = 0; t <= 40; t++) { const x = 12 + t * 7.4; const yy = 108 - 92 * (1 - Math.exp(-t / 10)); d += ` L${x} ${yy}`; }
+        g.appendChild(mvE("path", { d, stroke: ACC, fill: "none", "stroke-width": "2" }));
+        const it = Math.min(40, S.iter); const px = 12 + it * 7.4, py = 108 - 92 * (1 - Math.exp(-it / 10));
+        g.appendChild(mvE("circle", { cx: px, cy: py, r: 4, fill: ACC }));
+        g.appendChild(mvT(px + 6, py - 4, `iter ${S.iter}`, { fill: FAINT, "font-size": "9" }));
+      } else if (type === "summary_rows") {
+        const keep = Math.round(C * (S.eta / 100));
+        [["활성 채널", `${keep} / ${C}`], ["학습 반복", `${S.iter}회`], ["마스크 변동", `${S.flips}`]].forEach((row, k) => {
+          g.append(mvT(20, 36 + k * 30, row[0], { fill: FAINT, "font-size": "12" }), mvT(300, 36 + k * 30, row[1], { fill: INK, "font-size": "13", "font-weight": "700", "text-anchor": "end" }));
+        });
+      } else { // transform
+        const mod = spec.modules.find((mm) => mm.id === step.module) || {};
+        const prev = spec.modules[idxOf(step.module) - 1];
+        const box = (x, label, sub, col) => {
+          const gg = mvE("g");
+          gg.appendChild(mvE("rect", { x, y: 44, width: 96, height: 44, rx: 6, fill: "#fff", stroke: col }));
+          gg.appendChild(mvT(x + 48, 62, (label || "").slice(0, 14), { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" }));
+          if (sub) gg.appendChild(mvT(x + 48, 76, sub.slice(0, 16), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
+          return gg;
+        };
+        g.append(box(6, prev ? prev.name : "입력", prev ? prev.data_state : "", "#c9b892"),
+          mvT(160, 40, (mod.name || "").slice(0, 18), { "text-anchor": "middle", fill: ACC, "font-size": "9" }),
+          mvE("path", { d: "M104 66 L120 66", stroke: ACC, "stroke-width": "1.5", "marker-end": "url(#mviz-arrow1)" }),
+          mvE("path", { d: "M200 66 L216 66", stroke: ACC, "stroke-width": "1.5", "marker-end": "url(#mviz-arrow1)" }),
+          box(218, mod.name || "출력", mod.data_state || "", "#8c2f39"));
+      }
+    } catch (e) { g.appendChild(mvT(160, 66, "(시각화 생략)", { "text-anchor": "middle", fill: FAINT, "font-size": "11" })); }
+    detailCap.textContent = dv.caption || "";
+  }
+
+  function renderStepInfo() {
+    const step = spec.steps[S.stepIdx];
+    stepInfo.innerHTML = "";
+    const t = document.createElement("h4"); t.className = "mviz-step-title";
+    t.textContent = `${S.stepIdx + 1}. ${step.title || ""}`;
+    const d = document.createElement("p"); d.className = "mviz-step-desc";
+    renderRich(d, step.desc || "");
+    stepInfo.append(t, d);
+  }
+  function goStep(i) {
+    S.stepIdx = mvClamp(i, 0, spec.steps.length - 1);
+    posEl.textContent = `${S.stepIdx + 1} / ${spec.steps.length}`;
+    applyHighlight(); renderStepInfo(); drawDetail();
+    // 현재 단계 모듈이 보이게 스크롤
+    const active = spec.steps[S.stepIdx].module, gi = idxOf(active);
+    if (gi >= 0) scroller.scrollTo({ left: Math.max(0, centerX(gi) - scroller.clientWidth / 2), behavior: S.reduce ? "auto" : "smooth" });
+  }
+
+  // 스테퍼 버튼
+  const prevB = mvBtn("◀", "이전 단계", () => goStep(S.stepIdx - 1));
+  const nextB = mvBtn("▶", "다음 단계", () => goStep(S.stepIdx + 1));
+  const playB = mvBtn("⏵ 자동", "자동 재생", () => togglePlay());
+  const posEl = document.createElement("span"); posEl.className = "mviz-pos";
+  stepBar.append(prevB, posEl, nextB, playB);
+  function togglePlay() {
+    if (S.playTimer) { clearInterval(S.playTimer); S.playTimer = 0; playB.textContent = "⏵ 자동"; return; }
+    playB.textContent = "⏸ 정지";
+    S.playTimer = setInterval(() => {
+      if (S.stepIdx >= spec.steps.length - 1) { goStep(0); } else goStep(S.stepIdx + 1);
+    }, 2200);
+  }
+
+  // ── 컨트롤 바 (control + sim) ──
+  const ctrlBar = document.createElement("div");
+  ctrlBar.className = "mviz-ctrl";
+  if (spec.control) {
+    const c = spec.control;
+    const lab = document.createElement("label"); lab.className = "mviz-ctrl-lab";
+    lab.textContent = c.label || `${c.symbol || c.param}`;
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = c.min; slider.max = c.max; slider.step = c.step; slider.value = S.eta;
+    const val = document.createElement("span"); val.className = "mviz-ctrl-val";
+    val.textContent = `${S.eta}${c.unit || ""}`;
+    slider.addEventListener("input", () => {
+      S.eta = Number(slider.value); val.textContent = `${S.eta}${c.unit || ""}`;
+      refreshMods(); drawDetail(); updateReadout();
+    });
+    lab.title = c.semantics || "";
+    ctrlBar.append(lab, slider, val);
+  }
+  const readout = document.createElement("span"); readout.className = "mviz-readout";
+  const simB = mvBtn("↻ 학습 1회 반복", "정성 시뮬레이션 한 스텝", () => { simStep(); refreshMods(); drawDetail(); updateReadout(); });
+  const resetB = mvBtn("초기화", "시뮬레이션 리셋", () => { resetScores(); refreshMods(); drawDetail(); updateReadout(); });
+  simB.classList.add("mviz-sim"); resetB.classList.add("mviz-reset");
+  ctrlBar.append(simB, resetB, readout);
+  function updateReadout() {
+    const keep = Math.round(C * (S.eta / 100));
+    readout.textContent = `활성 ${keep}/${C} · 반복 ${S.iter} · 변동 ${S.flips}`;
+  }
+
+  // disclaimer 각주
+  const foot = document.createElement("p");
+  foot.className = "mviz-foot";
+  foot.textContent = spec.sim.disclaimer || "내부 시각화 값은 논문의 정성적 패턴을 반영한 예시이며 실제 학습 수치가 아닙니다.";
+
+  wrap.append(stepBar, stepInfo, detailWrap, ctrlBar, foot);
+
+  // ── 순전파 입자 애니메이션 (reduce-motion 시 생략) ──
+  function startParticles() {
+    if (S.reduce || spec.modules.length < 2) return;
+    const x0 = centerX(0), x1 = centerX(spec.modules.length - 1);
+    const dots = Array.from({ length: 4 }, (_, k) => {
+      const c = mvE("circle", { r: 3, fill: "#8c2f39", opacity: "0" }); gParticles.appendChild(c);
+      return { c, t: k / 4 };
+    });
+    let last = performance.now();
+    const tick = (now) => {
+      const dt = (now - last) / 1000; last = now;
+      dots.forEach((d) => {
+        d.t += dt / 9; if (d.t > 1.15) d.t -= 1.15;
+        const p = d.t; const x = x0 + (x1 - x0) * Math.min(1, p);
+        d.c.setAttribute("cx", x); d.c.setAttribute("cy", cy);
+        d.c.setAttribute("opacity", p > 1 ? "0" : (p < 0.05 ? (p / 0.05).toFixed(2) : (p > 0.9 ? ((1 - p) / 0.1).toFixed(2) : "0.85")));
+      });
+      S.raf = requestAnimationFrame(tick);
+    };
+    S.raf = requestAnimationFrame(tick);
+  }
+
+  // 초기 렌더
+  drawEdges(); refreshMods(); drawEdges(); // edges 두 번째는 defs 보장
+  goStep(0); updateReadout(); startParticles();
+
+  // 컨트롤러 (논문 전환 시 정리)
+  activeMethodViz = {
+    destroy() {
+      if (S.raf) cancelAnimationFrame(S.raf);
+      if (S.playTimer) clearInterval(S.playTimer);
+      S.raf = 0; S.playTimer = 0;
+    },
+  };
+  return wrap;
+}
+function mvBtn(label, title, fn) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "mviz-btn"; b.textContent = label; b.title = title || "";
+  b.addEventListener("click", fn);
+  return b;
+}
+function escapeHtmlAttr(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// ---------- figure 렌더러 (flow / bar / line) — 구버전 분석 호환 ----------
 function buildFigure(f) {
   let body;
   if (f.type === "flow" && Array.isArray(f.flow) && f.flow.length) body = buildFlow(f);

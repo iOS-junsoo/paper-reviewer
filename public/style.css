@@ -2371,3 +2371,31 @@ footer {
 }
 :root[data-theme="dark"] .sem-tag-added { color: #9bb8ff; background: rgba(120, 150, 255, 0.18); }
 :root[data-theme="dark"] .sem-added { border-left-color: rgba(120, 150, 255, 0.5); background: rgba(120, 150, 255, 0.07); }
+
+/* ── 연구 방법론: 인터랙티브 2.5D 파이프라인 (method_visualization) ── */
+.mviz { margin: 0 0 26px; }
+.mviz-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.mviz-badge { font-family: var(--sans); font-size: 0.72rem; font-weight: 700; color: #8c2f39; background: #f6e9e9; border-radius: 999px; padding: 3px 10px; }
+.mviz-ref { font-size: 0.78rem; color: var(--ink-faint); }
+/* stage/detail은 크림 판(light plate) — SVG의 버건디·탄·잉크 하드코딩 색이 모든 테마에서 정상으로 보이게 */
+.mviz-stage { overflow-x: auto; background: #fbf7f0; border: 1px solid #e3dccd; border-radius: 12px; padding: 6px 4px; }
+.mviz-svg { display: block; width: 100%; min-width: 520px; height: auto; }
+.mviz-stepbar { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; }
+.mviz-btn { font-family: var(--sans); font-size: 0.8rem; color: var(--ink-soft); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; cursor: pointer; transition: border-color 0.12s, color 0.12s; }
+.mviz-btn:hover { border-color: var(--accent); color: var(--accent); }
+.mviz-pos { font-family: var(--sans); font-size: 0.8rem; color: var(--ink-faint); min-width: 52px; text-align: center; }
+.mviz-stepinfo { margin: 4px 0 12px; }
+.mviz-step-title { font-size: 0.98rem; font-weight: 700; color: var(--ink); margin: 0 0 5px; }
+.mviz-step-desc { font-size: 0.9rem; color: var(--ink-soft); line-height: 1.7; margin: 0; }
+.mviz-detail { background: #fbf7f0; border: 1px solid #e3dccd; border-radius: 12px; padding: 10px 12px; }
+.mviz-detail-svg { display: block; width: 100%; max-width: 420px; margin: 0 auto; height: auto; }
+.mviz-detail-cap { font-size: 0.8rem; color: var(--ink-faint); text-align: center; margin-top: 6px; }
+.mviz-ctrl { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px; padding: 10px 12px; background: var(--paper-deep); border-radius: 10px; }
+.mviz-ctrl-lab { font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: var(--ink); cursor: help; }
+.mviz-ctrl input[type="range"] { flex: 1; min-width: 120px; max-width: 260px; accent-color: var(--accent); }
+.mviz-ctrl-val { font-family: var(--sans); font-size: 0.82rem; font-weight: 700; color: var(--accent); min-width: 46px; }
+.mviz-sim { background: var(--accent); color: #fff; border: none; }
+.mviz-sim:hover { color: #fff; opacity: 0.92; }
+.mviz-readout { font-family: var(--sans); font-size: 0.78rem; color: var(--ink-soft); margin-left: auto; }
+.mviz-foot { font-size: 0.72rem; color: var(--ink-faint); margin: 8px 0 0; line-height: 1.6; }
+@media (max-width: 560px) { .mviz-readout { margin-left: 0; width: 100%; } .mviz-svg { min-width: 460px; } }
