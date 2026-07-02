@@ -37,6 +37,16 @@ fs.mkdirSync(PDF_DIR, { recursive: true });
 // 그림 해설용으로 잘라낸 그림 이미지 캐시 (poppler pdftoppm으로 페이지 영역 크롭)
 const CROP_DIR = path.join(PDF_DIR, "crops");
 fs.mkdirSync(CROP_DIR, { recursive: true });
+// 시작 시 30일 넘은 크롭 청소 — 보정 로직 버전(v*)이 바뀔 때마다 옛 키의 파일이 다시는 안 읽히므로
+// 그대로 두면 무한 증가한다. 지워져도 요청 시 poppler가 즉시 재생성하므로 안전.
+fs.promises.readdir(CROP_DIR).then(async (files) => {
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  for (const f of files) {
+    const p = path.join(CROP_DIR, f);
+    const st = await fs.promises.stat(p).catch(() => null);
+    if (st && st.mtimeMs < cutoff) fs.promises.rm(p, { force: true }).catch(() => {});
+  }
+}).catch(() => {});
 
 // ---------------------------------------------------------------------------
 // 저장소: Firebase 서비스 계정 키가 있으면 Firestore, 없으면 메모리 캐시 폴백
@@ -113,7 +123,8 @@ if (fs.existsSync(serviceAccountPath)) {
       await analyses.doc(hash).set({
         ...rest,
         analysisJson: JSON.stringify(analysis),
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        // 호출자가 createdAt을 넘기면 보존(섹션 재생성 등) — 없으면 지금 시각
+        createdAt: rest.createdAt ?? admin.firestore.FieldValue.serverTimestamp(),
       });
     },
     async delete(hash) {
@@ -175,7 +186,9 @@ if (!firestoreReady) {
       return mem.get(hash) || null;
     },
     async set(hash, record) {
-      mem.set(hash, { ...record, createdAt: new Date().toISOString() });
+      mem.set(hash, { ...record, createdAt: record.createdAt || new Date().toISOString() });
+      // 폴백 저장소 무한 증가 방지 — 가장 오래 전에 넣은 항목부터 제거
+      if (mem.size > 200) mem.delete(mem.keys().next().value);
     },
     async delete(hash) {
       mem.delete(hash);
@@ -591,14 +604,19 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
 
   if (aborted()) return; // 루프 종료와 거의 동시에 취소된 경우 저장하지 않음
 
-  await store.set(hash, {
-    hash,
-    title: analysis.title || fallbackTitle,
-    one_liner: analysis.one_liner || "",
-    venue: typeof analysis.venue === "string" ? analysis.venue.slice(0, 40) : null,
-    year: Number.isFinite(Number(analysis.year)) ? Number(analysis.year) : null,
-    analysis,
-  });
+  try {
+    await store.set(hash, {
+      hash,
+      title: analysis.title || fallbackTitle,
+      one_liner: analysis.one_liner || "",
+      venue: typeof analysis.venue === "string" ? analysis.venue.slice(0, 40) : null,
+      year: Number.isFinite(Number(analysis.year)) ? Number(analysis.year) : null,
+      analysis,
+    });
+  } catch (e) {
+    // 저장 실패(예: Firestore 1MB 문서 한도)로 완성된 분석을 버리지 않는다 — 화면엔 전달하고 로그만
+    console.error(`[저장 실패 — 결과는 화면에 전달] ${analysis.title || fallbackTitle}: ${e.message}`);
+  }
   console.log(`[분석 완료] ${analysis.title || fallbackTitle}`);
   sseSend(res, { type: "result", data: { cached: false, hash, ...analysis } });
   res.end();
@@ -691,16 +709,21 @@ app.post("/api/analyze", (req, res) => {
           error: "이 논문은 이미 분석이 진행 중입니다. 잠시 후 히스토리에서 확인하세요.",
         });
       }
-      const cached = await store.get(hash);
-      sseInit(res); // 여기부터는 SSE 스트림으로 진행 상황 전달
-      if (cached) {
-        sseSend(res, { type: "result", data: { cached: true, hash, ...cached.analysis } });
-        return res.end();
+      inFlight.add(hash); // 검사 직후 등록 — 아래 await 사이 동시 진입(중복 분석·사용량 이중 소모) 방지
+      try {
+        const cached = await store.get(hash);
+        sseInit(res); // 여기부터는 SSE 스트림으로 진행 상황 전달
+        if (cached) {
+          sseSend(res, { type: "result", data: { cached: true, hash, ...cached.analysis } });
+          return res.end();
+        }
+        // 클라이언트가 탭을 닫거나 "분석 취소"하면 연결이 끊긴다 → 에이전트 실행 중단(사용량 절약)
+        const ac = new AbortController();
+        abortOnDisconnect(res, ac, req.file.originalname);
+        await runAnalysisJob(res, hash, pageCount, req.file.originalname, ac);
+      } finally {
+        inFlight.delete(hash); // runAnalysisJob 내부 finally와 중복 삭제는 무해(Set)
       }
-      // 클라이언트가 탭을 닫거나 "분석 취소"하면 연결이 끊긴다 → 에이전트 실행 중단(사용량 절약)
-      const ac = new AbortController();
-      abortOnDisconnect(res, ac, req.file.originalname);
-      await runAnalysisJob(res, hash, pageCount, req.file.originalname, ac);
     } catch (e) {
       console.error("[/api/analyze 오류]", e);
       if (res.headersSent) {
@@ -727,16 +750,21 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
     if (hashBusy(hash)) {
       return res.status(409).json({ error: "이 논문은 이미 분석이 진행 중입니다." });
     }
-    const buffer = await fs.promises.readFile(pdfPath);
-    const doc = await PDFDocument.load(buffer, { updateMetadata: false });
-    const pageCount = doc.getPageCount();
-    // 기존 분석을 미리 지우지 않는다 — 재분석이 끝에서 store.set으로 덮어쓰므로,
-    // 재분석 중에도 기존 결과가 유지되고(채팅·열람 가능) 실패해도 기존 분석이 보존된다.
-    const prev = await store.get(hash);
-    sseInit(res);
-    const ac = new AbortController();
-    abortOnDisconnect(res, ac, (prev && prev.title) || "재분석");
-    await runAnalysisJob(res, hash, pageCount, (prev && prev.title) || "재분석", ac);
+    inFlight.add(hash); // 검사 직후 등록 — await 사이 동시 진입(TOCTOU) 방지
+    try {
+      const buffer = await fs.promises.readFile(pdfPath);
+      const doc = await PDFDocument.load(buffer, { updateMetadata: false });
+      const pageCount = doc.getPageCount();
+      // 기존 분석을 미리 지우지 않는다 — 재분석이 끝에서 store.set으로 덮어쓰므로,
+      // 재분석 중에도 기존 결과가 유지되고(채팅·열람 가능) 실패해도 기존 분석이 보존된다.
+      const prev = await store.get(hash);
+      sseInit(res);
+      const ac = new AbortController();
+      abortOnDisconnect(res, ac, (prev && prev.title) || "재분석");
+      await runAnalysisJob(res, hash, pageCount, (prev && prev.title) || "재분석", ac);
+    } finally {
+      inFlight.delete(hash);
+    }
   } catch (e) {
     console.error("[/api/reanalyze 오류]", e);
     if (res.headersSent) {
@@ -1000,7 +1028,8 @@ app.get("/api/figure/:hash", async (req, res) => {
           ["-png", "-singlefile", "-f", String(page), "-l", String(page), "-r", String(DPI),
            "-x", String(X), "-y", String(Y), "-W", String(W), "-H", String(H), pdfPath, outBase],
           { timeout: 20000 },
-          (err) => (err ? reject(err) : resolve())
+          // 실패·타임아웃 시 부분 생성된 PNG를 지운다 — 손상 이미지가 캐시로 영구 서빙되는 것 방지
+          (err) => (err ? fs.promises.rm(outPng, { force: true }).catch(() => {}).then(() => reject(err)) : resolve())
         );
       });
     }
@@ -1220,17 +1249,16 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
   if (hashBusy(hash)) {
     return res.status(409).json({ error: "이 논문은 이미 분석/재생성이 진행 중입니다." });
   }
-  const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
-  if (!fs.existsSync(pdfPath)) {
-    return res.status(404).json({ error: "저장된 원문 PDF가 없어 섹션을 다시 생성할 수 없습니다." });
-  }
-  const record = await store.get(hash);
-  if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
-
+  inFlight.add(inflightKey); // 검사 직후 등록 — await 사이 동시 진입(TOCTOU) 방지. 이후 종료는 finally가 담당
   const ac = new AbortController();
   abortOnDisconnect(res, ac, `섹션 재생성: ${spec.label}`);
-  inFlight.add(inflightKey);
   try {
+    const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
+    if (!fs.existsSync(pdfPath)) {
+      return res.status(404).json({ error: "저장된 원문 PDF가 없어 섹션을 다시 생성할 수 없습니다." });
+    }
+    const record = await store.get(hash); // try 안에서 조회 — 실패 시 500 응답(요청 영구 대기 방지)
+    if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
     const a = record.analysis || {};
     const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
     const pageCount = doc.getPageCount();
@@ -1279,6 +1307,10 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
       hash,
       title: merged.title || record.title,
       one_liner: merged.one_liner || record.one_liner,
+      // 사이드바 메타데이터(학회·연도) 보존 — 섹션 재생성이 지우지 않게
+      venue: record.venue ?? (typeof merged.venue === "string" ? merged.venue.slice(0, 40) : null),
+      year: record.year ?? (Number.isFinite(Number(merged.year)) ? Number(merged.year) : null),
+      createdAt: record.createdAt, // 분석 시각 유지 — 섹션 하나 고쳤다고 목록 순서가 바뀌지 않게
       analysis: merged,
     });
     res.json({ ok: true, section, analysis: { cached: false, hash, ...merged } });
@@ -1323,6 +1355,10 @@ app.get("/api/history/:hash", async (req, res) => {
 app.delete("/api/history/:hash", async (req, res) => {
   try {
     const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+    if (hashBusy(hash)) {
+      // 진행 중 분석의 원문 PDF를 지우면 분석이 깨지고, 완료 시 store.set으로 삭제가 되살아난다
+      return res.status(409).json({ error: "이 논문은 분석이 진행 중이라 지금은 삭제할 수 없습니다. 잠시 후 다시 시도하세요." });
+    }
     await store.delete(hash);
     // 폴더 배정도 서버에서 정리 — 어느 경로(다른 기기·직접 호출)로 지워도 stale 배정이 남지 않게
     try {

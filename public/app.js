@@ -66,9 +66,12 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 // ── 히스토리 검색 필터 (제목·요약 부분일치) ──
 let historyFilter = "";
 const historySearch = document.getElementById("history-search");
+let historySearchTimer = 0;
 historySearch.addEventListener("input", () => {
   historyFilter = historySearch.value.trim().toLowerCase();
-  renderHistory(); // 폴더 그룹 + 검색 필터를 함께 반영
+  // 목록 재구성(KaTeX 렌더 포함)이 키 입력마다 돌지 않게 잠깐 모아서 반영
+  clearTimeout(historySearchTimer);
+  historySearchTimer = setTimeout(renderHistory, 120);
 });
 
 // ── URL 딥링크 (#p=<hash>&tab=<tab>) — 북마크·뒤로가기로 논문·탭 복원 ──
@@ -360,6 +363,7 @@ function renderResult(data) {
   // 같은 논문을 다시 렌더(섹션 재생성·전체 재분석)하는 경우 PDF·채팅·메모는 그대로라
   // 다시 로드하지 않는다 — 무거운 PDF 재다운로드/스크롤 리셋·미저장 메모 유실 방지.
   const sameHash = !!prevHash && prevHash === currentHash;
+  if (!sameHash && chatAbort) chatAbort.abort(); // 이전 논문의 답변 생성 중단 — 서버 에이전트도 함께 멈춰 사용량 절약
   currentAnalysis = data; // 마크다운 내보내기·섹션 재생성에서 사용
   // 추천 질문은 객체({q,category,why}) 또는 옛 문자열 — 채팅 칩용으로 문자열만 추림
   currentSuggested = (Array.isArray(data.suggested_questions) ? data.suggested_questions : [])
@@ -912,10 +916,20 @@ let pdfRenderToken = 0; // 논문 전환 시 이전 렌더 무효화
 let pdfRenderSeq = 0; // 각 페이지 렌더 고유 마크 (줌 중 중복 캔버스 방지)
 const pdfPageEls = new Map(); // pageNum -> wrap div
 
+// PDF.js 문서 정리 — 워커가 쥔 이전 논문 데이터·폰트를 해제(논문 전환 시 메모리 누적 방지)
+function destroyPdfDoc(doc) {
+  if (!doc) return;
+  try {
+    const p = doc.destroy();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch {}
+}
+
 async function loadPdf(hash) {
   pdfMissing.classList.add("hidden");
   pdfScroll.classList.add("hidden");
   pdfAvailable = false;
+  destroyPdfDoc(pdfDoc); // 이전 논문 문서 해제
   pdfDoc = null;
   pdfPageEls.clear();
   pdfScroll.innerHTML = "";
@@ -928,13 +942,14 @@ async function loadPdf(hash) {
     if (typeof pdfjsLib === "undefined") throw new Error("pdfjs 미로딩");
 
     const doc = await pdfjsLib.getDocument(`${API_BASE}/api/pdf/${hash}`).promise;
-    if (token !== pdfRenderToken) return; // 그 사이 다른 논문으로 전환됨
+    if (token !== pdfRenderToken) { destroyPdfDoc(doc); return; } // 그 사이 다른 논문으로 전환됨
     pdfDoc = doc;
     pdfAvailable = true;
     pdfScroll.classList.remove("hidden");
 
     // 1페이지 크기로 폭에 맞춘 스케일 계산 + 모든 페이지 placeholder 생성(렌더는 지연)
     const first = await doc.getPage(1);
+    if (token !== pdfRenderToken) { destroyPdfDoc(doc); return; } // getPage 대기 중 전환 — 옛 placeholder가 새 목록에 섞이지 않게
     const baseVp = first.getViewport({ scale: 1 });
     pdfBaseW = baseVp.width;
     pdfBaseH = baseVp.height;
@@ -946,7 +961,16 @@ async function loadPdf(hash) {
 
     const lazy = new IntersectionObserver(
       (entries) => entries.forEach((e) => {
-        if (e.isIntersecting) renderPdfPage(Number(e.target.dataset.page), token);
+        const wrap = e.target;
+        if (e.isIntersecting) {
+          renderPdfPage(Number(wrap.dataset.page), token);
+        } else if (wrap.dataset.rendered) {
+          // 화면(±400px)을 벗어난 페이지의 캔버스 회수 — 긴 논문에서 페이지당 ~10MB씩
+          // 무한히 쌓이는 것 방지. 다시 들어오면 observer가 재렌더한다.
+          wrap.style.height = `${wrap.offsetHeight}px`; // 스크롤 위치 유지용 placeholder 높이
+          wrap.innerHTML = "";
+          delete wrap.dataset.rendered;
+        }
       }),
       { root: pdfScroll, rootMargin: "400px 0px" }
     );
@@ -960,7 +984,8 @@ async function loadPdf(hash) {
       lazy.observe(wrap);
     }
   } catch {
-    pdfMissing.classList.remove("hidden");
+    // 이 로드가 아직 최신일 때만 'PDF 없음' 표시 — 옛 로드의 실패가 새 논문 화면을 덮지 않게
+    if (token === pdfRenderToken) pdfMissing.classList.remove("hidden");
   }
 }
 
@@ -1250,9 +1275,10 @@ document.addEventListener("click", (e) => {
 
 // 사이드바 "새 논문 분석" → 워크스페이스 닫고 드롭존으로
 document.getElementById("sb-new").addEventListener("click", () => {
-  // 진행 중이던 분석/재생성을 중단(N 단축키로도 호출되므로 사용량 누수 방지)
+  // 진행 중이던 분석/재생성/채팅 답변을 중단(N 단축키로도 호출되므로 사용량 누수 방지)
   if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
   if (sectionRegenAbort) { sectionRegenAbort.abort(); sectionRegenAbort = null; }
+  if (chatAbort) chatAbort.abort();
   cancelBtn.classList.add("hidden");
   hideReanalyzeBanner();
   loadingEl.classList.add("hidden");
@@ -1455,6 +1481,10 @@ function setChatBusy(b) {
 async function askQuestion(q) {
   q = (q || "").trim();
   if (!q || !currentHash || chatBusy) return;
+  // 시작 시점의 논문·기록을 고정 — 답변 대기 중 다른 논문으로 전환해도
+  // 답변이 '원래 논문'의 기록에 남고, 새 논문의 화면·기록을 오염시키지 않는다.
+  const startedHash = currentHash;
+  const hist = chatHistory;
   chatMessages.querySelector(".chat-chips")?.remove(); // 첫 질문 후 추천 칩 제거
   chatMessages.querySelectorAll(".chat-note").forEach((el) => el.remove());
   refreshQuestionActions(); // 직전 질문의 액션 줄 먼저 제거(곧 새 질문이 마지막이 됨)
@@ -1466,10 +1496,11 @@ async function askQuestion(q) {
   chatAbort = new AbortController();
 
   try {
-    const res = await fetch(`${API_BASE}/api/ask/${currentHash}`, {
+    const res = await fetch(`${API_BASE}/api/ask/${startedHash}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q, history: chatHistory }),
+      // 서버는 최근 몇 개만 컨텍스트로 쓰므로 전체 기록을 매번 보내지 않는다
+      body: JSON.stringify({ question: q, history: hist.slice(-8) }),
       signal: chatAbort.signal,
     });
     if (!res.ok) {
@@ -1477,24 +1508,29 @@ async function askQuestion(q) {
       throw new Error((data && data.error) || `HTTP ${res.status}`);
     }
     const answer = await consumeChatStream(res, thinking); // 진행 단계 표시 → 최종 답변
-    thinking.remove();
-    appendChat("a", answer);
-    chatHistory.push({ q, a: answer });
+    thinking.remove(); // 논문이 바뀌어 DOM에서 이미 사라졌어도 무해
+    hist.push({ q, a: answer });
+    if (hist.length > 50) hist.splice(0, hist.length - 50); // 서버 저장 한도와 동일하게 유지
+    if (currentHash === startedHash) appendChat("a", answer); // 같은 논문을 보고 있을 때만 화면에 표시
   } catch (err) {
     thinking.remove();
-    if (err.name === "AbortError") {
-      const note = document.createElement("div");
-      note.className = "chat-note";
-      note.textContent = "⏹ 답변 생성을 멈췄어요.";
-      chatMessages.appendChild(note);
-    } else {
-      appendChat("a", "⚠️ " + err.message);
+    if (currentHash === startedHash) {
+      if (err.name === "AbortError") {
+        const note = document.createElement("div");
+        note.className = "chat-note";
+        note.textContent = "⏹ 답변 생성을 멈췄어요.";
+        chatMessages.appendChild(note);
+      } else {
+        appendChat("a", "⚠️ " + err.message);
+      }
     }
   } finally {
     chatAbort = null;
     setChatBusy(false);
-    refreshQuestionActions(); // 마지막 질문 아래에 수정·복사·다시 보내기 부착
-    chatInput.focus();
+    if (currentHash === startedHash) {
+      refreshQuestionActions(); // 마지막 질문 아래에 수정·복사·다시 보내기 부착
+      chatInput.focus();
+    }
   }
 }
 
@@ -2934,6 +2970,7 @@ async function openHistory(hash) {
   if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
   if (sectionRegenAbort) { sectionRegenAbort.abort(); sectionRegenAbort = null; } // 진행 중 섹션 재생성 중단
   cancelBtn.classList.add("hidden");
+  setActiveAnalysis(null); // 취소된 흐름의 '분석 중' 표시 정리 — 여기서 컨트롤러를 비웠으므로 그쪽 finally는 건너뜀
   hideReanalyzeBanner();
   loadingEl.classList.remove("hidden");
   document.getElementById("loading-text").textContent = "저장된 분석 결과를 불러오는 중…";
@@ -3270,8 +3307,15 @@ async function loadNotes(hash) {
     if (!r.ok) return;
     const d = await r.json();
     if (notesHashLoaded !== hash) return; // 그 사이 다른 논문으로 이동
-    notesState = { notes: d.notes || "", bookmarks: Array.isArray(d.bookmarks) ? d.bookmarks : [] };
-    document.getElementById("notes-text").value = notesState.notes;
+    // 로드가 끝나기 전에 사용자가 입력을 시작했으면 화면·상태 모두 입력이 우선
+    // (input 핸들러가 이미 notesState를 갱신·저장 예약했으므로 서버 값으로 되돌리지 않는다)
+    const ta = document.getElementById("notes-text");
+    const typing = document.activeElement === ta && ta.value !== "";
+    notesState = {
+      notes: typing ? ta.value : (d.notes || ""),
+      bookmarks: Array.isArray(d.bookmarks) ? d.bookmarks : [],
+    };
+    if (!typing) ta.value = notesState.notes;
     renderBookmarks();
   } catch {}
 }
@@ -3381,6 +3425,7 @@ async function regenSection(section) {
 // ---------- 키보드 단축키 (#8) ----------
 const TAB_ORDER = ["seminar", "background", "problem", "method", "results", "equations", "figures"];
 document.addEventListener("keydown", (e) => {
+  if (e.isComposing) return; // 한글 IME 조합 중 Esc(조합 취소)가 패널을 닫지 않게
   const help = document.getElementById("kbd-help");
   if (e.key === "Escape") {
     if (!help.classList.contains("hidden")) { help.classList.add("hidden"); return; }
