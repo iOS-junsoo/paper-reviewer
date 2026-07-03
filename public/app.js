@@ -1913,7 +1913,9 @@ function buildMethodViz(raw) {
     defs.appendChild(mk);
   });
   const gGroups = mvE("g"); const gEdges = mvE("g"); const gMods = mvE("g"); const gParticles = mvE("g");
-  svg.append(defs, gGroups, gEdges, gMods, gParticles);
+  // 라벨 전용 최상단 레이어 — 그룹·엣지 텍스트를 모듈 그래픽 위로 올려 가려지지 않게(박스·선은 아래 유지)
+  const gGrpLab = mvE("g"); const gEdgeLab = mvE("g");
+  svg.append(defs, gGroups, gEdges, gMods, gParticles, gGrpLab, gEdgeLab);
   stage.appendChild(svg);
 
   // ── 모듈 그리기 (primitive별) — 그래픽/라벨 서브그룹 분리(디밍 강도 다르게) ──
@@ -2034,7 +2036,7 @@ function buildMethodViz(raw) {
 
   // ── 그룹(점선 라운드 박스) — 멤버 모듈 bbox 합집합 ──
   function drawGroups() {
-    gGroups.textContent = "";
+    gGroups.textContent = ""; gGrpLab.textContent = "";
     (spec.groups || []).forEach((grp) => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       grp.members.forEach((id) => {
@@ -2046,7 +2048,7 @@ function buildMethodViz(raw) {
       if (!isFinite(x0)) return;
       gGroups.appendChild(mvE("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, rx: 10, fill: "none", stroke: "#b7a680", "stroke-width": "1.2", "stroke-dasharray": grp.style === "dashed" ? "6 4" : "" }));
       if (grp.label) {
-        gGroups.appendChild(mvT(x0 + 8, y0 - 5, grp.label, { fill: "#8c2f39", "font-size": "9", "font-weight": "700", "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3" }));
+        gGrpLab.appendChild(mvT(x0 + 8, y0 - 5, grp.label, { fill: "#8c2f39", "font-size": "9", "font-weight": "700", "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3" }));
         bb.add(x0, y0 - 16, x0 + mvTextW(grp.label, 9) + 10, y0);
       }
       bb.add(x0 - 2, y0 - 2, x1 + 2, y1 + 2);
@@ -2056,7 +2058,7 @@ function buildMethodViz(raw) {
   // ── 엣지: rank 인접은 직선/S-커브, 건너뛰기는 위 직교 우회, gradient 회귀는 아래 직교 우회 ──
   const altEdgeEls = []; // alternating 엣지 (rAF 토글)
   function drawEdges() {
-    gEdges.textContent = "";
+    gEdges.textContent = ""; gEdgeLab.textContent = "";
     const contentBottom = Math.max(...positions.map((p) => p.cy + 74));
     const contentTop = Math.min(...positions.map((p) => p.cy - 72));
     let gradIdx = 0, skipIdx = 0;
@@ -2133,7 +2135,7 @@ function buildMethodViz(raw) {
       if (e.kind === "alternating") altEdgeEls.push(path);
       if (e.label) {
         if (len >= 70) {
-          gEdges.appendChild(mvT(lx, ly, mvCutPx(e.label, 90, 8.5), {
+          gEdgeLab.appendChild(mvT(lx, ly, mvCutPx(e.label, 90, 8.5), {
             "text-anchor": "middle", fill: col, "font-size": "8.5", class: "mv-elabel",
             "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3", "stroke-linejoin": "round",
           }));
