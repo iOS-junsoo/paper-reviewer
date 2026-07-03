@@ -1847,7 +1847,14 @@ function buildMethodViz(raw) {
   const widths = spec.modules.map((m, i) => modW(m, i));
 
   // 직렬(모든 rank 1레인) + 길면 두 줄 serpentine — 가독성 하한 대응 (P2-4b)
-  const serp = maxLanes === 1 && R >= 6;
+  // 단, 되돌아가는 back-edge(gradient·역방향 forward)가 있으면 serpentine 금지:
+  // 줄바꿈 wrap을 back-edge가 그대로 되짚어 겹치므로, 한 줄로 펴서 아래 외곽으로 우회시킨다.
+  const hasBackEdge = spec.edges.some((e) => {
+    if (idxOf(e.from) < 0 || idxOf(e.to) < 0) return false;
+    if (e.kind === "gradient") return true;
+    return (e.kind === "forward" || e.kind === "alternating") && rank[idxOf(e.to)] - rank[idxOf(e.from)] < 0;
+  });
+  const serp = maxLanes === 1 && R >= 6 && !hasBackEdge;
   const GAP = 48, MARGIN = 30, LANE_V = 164, CY0 = 118, ROWH = 196;
   const positions = new Array(n);
   if (serp) {
