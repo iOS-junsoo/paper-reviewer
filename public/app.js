@@ -2063,7 +2063,8 @@ function buildMethodViz(raw) {
     const contentTop = Math.min(...positions.map((p) => p.cy - 72));
     let gradIdx = 0, skipIdx = 0;
     const pairSeen = new Map(); // 같은 (from,to) 다중 edge 세로 오프셋
-    const gateSeen = new Map(); // 같은 열·같은 쪽에 붙는 우회 세로선 분산(소스·타깃 게이트 공용)
+    const gateSeen = new Map(); // 게이트 X 분산 — 키: 열(cx)+방향 (같은 열 세로선 충돌 방지)
+    const jogSeen = new Map();   // jog Y·부착점 분산 — 키: 모듈(cy)+방향 (한 모듈에 모이는 것만 분산, 다른 레인 불간섭)
     spec.edges.forEach((e) => {
       const ti = idxOf(e.to); if (ti < 0) return;
       const b = positions[ti];
@@ -2091,14 +2092,17 @@ function buildMethodViz(raw) {
           // 회귀: 아래 외곽으로 직교 우회 — 세로선은 컬럼 바깥(게이트)으로 빼 모듈 관통·상호 겹침 금지
           const outY = contentBottom + 26 + gradIdx * 14; gradIdx++;
           const goLeft = b.cx <= a.cx;
-          // 같은 열·같은 쪽에 붙는 세로선을 순번만큼 벌린다(소스·타깃 게이트가 한 열 오른쪽에서 겹치던 문제)
-          const sKey = a.cx + (goLeft ? "L" : "R"), tKey = b.cx + (goLeft ? "R" : "L");
-          const sk = gateSeen.get(sKey) || 0; gateSeen.set(sKey, sk + 1);
-          const tk = gateSeen.get(tKey) || 0; gateSeen.set(tKey, tk + 1);
-          const sGate = a.cx + (goLeft ? -(a.halfW + 12 + sk * 13) : a.halfW + 12 + sk * 13);
-          const tGate = b.cx + (goLeft ? b.halfW + 12 + tk * 13 : -(b.halfW + 12 + tk * 13));
-          const sJog = a.cy + 78 + sk * 7, tJog = b.cy + 78 + tk * 7; // 레인 간극(74~92) 안
-          const sx = a.cx - 7 - sk * 6, tx = b.cx + 7 + tk * 6; // 부착점도 어긋나게(공선 겹침 방지)
+          // 게이트 X는 열(cx)별로, jog Y·부착점은 모듈(cy)별로 각각 순번만큼 벌린다
+          const sGk = a.cx + (goLeft ? "L" : "R"), tGk = b.cx + (goLeft ? "R" : "L");
+          const skG = gateSeen.get(sGk) || 0; gateSeen.set(sGk, skG + 1);
+          const tkG = gateSeen.get(tGk) || 0; gateSeen.set(tGk, tkG + 1);
+          const sJk = a.cy + (goLeft ? "L" : "R"), tJk = b.cy + (goLeft ? "R" : "L");
+          const skJ = jogSeen.get(sJk) || 0; jogSeen.set(sJk, skJ + 1);
+          const tkJ = jogSeen.get(tJk) || 0; jogSeen.set(tJk, tkJ + 1);
+          const sGate = a.cx + (goLeft ? -(a.halfW + 12 + skG * 13) : a.halfW + 12 + skG * 13);
+          const tGate = b.cx + (goLeft ? b.halfW + 12 + tkG * 13 : -(b.halfW + 12 + tkG * 13));
+          const sJog = a.cy + 78 + skJ * 7, tJog = b.cy + 78 + tkJ * 7; // 레인 간극(74~92) 안
+          const sx = a.cx - 7 - skJ * 6, tx = b.cx + 7 + tkJ * 6; // 부착점도 어긋나게(공선 겹침 방지)
           d = `M${sx} ${a.cy + 70} L${sx} ${sJog} L${sGate} ${sJog} L${sGate} ${outY} L${tGate} ${outY} L${tGate} ${tJog} L${tx} ${tJog} L${tx} ${b.cy + 74}`;
           lx = (sGate + tGate) / 2; ly = outY - 4; len = Math.abs(tGate - sGate);
           bb.add(Math.min(sGate, tGate, a.cx, b.cx) - 6, a.cy, Math.max(sGate, tGate, a.cx, b.cx) + 6, outY + 8);
@@ -2106,13 +2110,16 @@ function buildMethodViz(raw) {
           // rank 건너뛰기: 위 외곽으로 직교 우회 — 세로선은 컬럼 바깥(게이트)
           const outY = contentTop - 22 - skipIdx * 14; skipIdx++;
           const goLeft = b.cx <= a.cx;
-          const sKey = a.cx + (goLeft ? "L" : "R"), tKey = b.cx + (goLeft ? "R" : "L");
-          const sk = gateSeen.get(sKey) || 0; gateSeen.set(sKey, sk + 1);
-          const tk = gateSeen.get(tKey) || 0; gateSeen.set(tKey, tk + 1);
-          const sGate = a.cx + (goLeft ? -(a.halfW + 12 + sk * 13) : a.halfW + 12 + sk * 13);
-          const tGate = b.cx + (goLeft ? b.halfW + 12 + tk * 13 : -(b.halfW + 12 + tk * 13));
-          const sJog = a.cy - 76 - sk * 7, tJog = b.cy - 76 - tk * 7; // 레인 간극(−90~−72) 안
-          const sx = a.cx - 7 - sk * 6, tx = b.cx + 7 + tk * 6;
+          const sGk = a.cx + (goLeft ? "L" : "R"), tGk = b.cx + (goLeft ? "R" : "L");
+          const skG = gateSeen.get(sGk) || 0; gateSeen.set(sGk, skG + 1);
+          const tkG = gateSeen.get(tGk) || 0; gateSeen.set(tGk, tkG + 1);
+          const sJk = a.cy + (goLeft ? "L" : "R"), tJk = b.cy + (goLeft ? "R" : "L");
+          const skJ = jogSeen.get(sJk) || 0; jogSeen.set(sJk, skJ + 1);
+          const tkJ = jogSeen.get(tJk) || 0; jogSeen.set(tJk, tkJ + 1);
+          const sGate = a.cx + (goLeft ? -(a.halfW + 12 + skG * 13) : a.halfW + 12 + skG * 13);
+          const tGate = b.cx + (goLeft ? b.halfW + 12 + tkG * 13 : -(b.halfW + 12 + tkG * 13));
+          const sJog = a.cy - 76 - skJ * 7, tJog = b.cy - 76 - tkJ * 7; // 레인 간극(−90~−72) 안
+          const sx = a.cx - 7 - skJ * 6, tx = b.cx + 7 + tkJ * 6;
           d = `M${sx} ${a.cy - 64} L${sx} ${sJog} L${sGate} ${sJog} L${sGate} ${outY} L${tGate} ${outY} L${tGate} ${tJog} L${tx} ${tJog} L${tx} ${b.cy - 64}`;
           lx = (sGate + tGate) / 2; ly = outY - 4; len = Math.abs(tGate - sGate);
           bb.add(Math.min(sGate, tGate, a.cx, b.cx) - 6, outY - 14, Math.max(sGate, tGate, a.cx, b.cx) + 6, b.cy);
