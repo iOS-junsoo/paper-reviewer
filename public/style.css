@@ -2377,25 +2377,42 @@ footer {
 .mviz-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .mviz-badge { font-family: var(--sans); font-size: 0.72rem; font-weight: 700; color: #8c2f39; background: #f6e9e9; border-radius: 999px; padding: 3px 10px; }
 .mviz-ref { font-size: 0.78rem; color: var(--ink-faint); }
+/* 좌(파이프라인)/우(세부 시각화) 분할 — 비율·높이 모두 드래그로 조절 */
+.mviz-split { display: flex; align-items: stretch; height: 380px; min-height: 240px; }
 /* stage/detail은 크림 판(light plate) — SVG의 버건디·탄·잉크 하드코딩 색이 모든 테마에서 정상으로 보이게 */
-.mviz-stage { overflow-x: auto; background: #fbf7f0; border: 1px solid #e3dccd; border-radius: 12px; padding: 6px 4px; }
-.mviz-svg { display: block; width: 100%; min-width: 520px; height: auto; max-height: 330px; margin: 0 auto; }
-.mviz-stepbar { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.mviz-left { flex: 0 0 58%; min-width: 170px; overflow: auto; background: #fbf7f0; border: 1px solid #e3dccd; border-radius: 12px; padding: 4px; }
+.mviz-left .mviz-svg { display: block; height: 100%; width: auto; min-width: 96%; margin: 0 auto; }
+.mviz-divider { flex: none; width: 10px; cursor: col-resize; display: flex; align-items: center; justify-content: center; touch-action: none; }
+.mviz-divider::after { content: ""; width: 3px; height: 46px; border-radius: 2px; background: var(--line); transition: background 0.12s; }
+.mviz-divider:hover::after { background: var(--accent); }
+.mviz-right { flex: 1; min-width: 170px; overflow-y: auto; background: #fbf7f0; border: 1px solid #e3dccd; border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; }
+.mviz-hresize { height: 12px; cursor: row-resize; display: flex; align-items: center; justify-content: center; touch-action: none; margin: 2px 0; }
+.mviz-hresize::after { content: ""; width: 58px; height: 4px; border-radius: 2px; background: var(--line); transition: background 0.12s; }
+.mviz-hresize:hover::after { background: var(--accent); }
+.mviz-stepbar { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; flex: none; }
 .mviz-btn { font-family: var(--sans); font-size: 0.8rem; color: var(--ink-soft); background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; cursor: pointer; transition: border-color 0.12s, color 0.12s; }
 .mviz-btn:hover { border-color: var(--accent); color: var(--accent); }
-.mviz-pos { font-family: var(--sans); font-size: 0.8rem; color: var(--ink-faint); min-width: 52px; text-align: center; }
-.mviz-stepinfo { margin: 4px 0 9px; }
-.mviz-step-title { font-size: 0.98rem; font-weight: 700; color: var(--ink); margin: 0 0 5px; }
-.mviz-step-desc { font-size: 0.9rem; color: var(--ink-soft); line-height: 1.7; margin: 0; }
-.mviz-detail { background: #fbf7f0; border: 1px solid #e3dccd; border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.mviz-detail-svg { display: block; width: 100%; max-width: 380px; max-height: 128px; margin: 0 auto; height: auto; }
-.mviz-detail-cap { font-size: 0.8rem; color: var(--ink-faint); text-align: center; margin-top: 6px; }
-.mviz-ctrl { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 10px 0 4px; padding: 8px 12px; background: var(--paper-deep); border-radius: 10px; }
+.mviz-right .mviz-btn { border-color: #ddd2bd; color: #5c554b; }
+.mviz-pos { font-family: var(--sans); font-size: 0.8rem; color: #9b9285; min-width: 46px; text-align: center; }
+.mviz-stepinfo { flex: none; margin: 0 0 8px; }
+.mviz-step-title { font-size: 0.94rem; font-weight: 700; color: #211d19; margin: 0 0 4px; }
+.mviz-step-desc { font-size: 0.86rem; color: #5c554b; line-height: 1.65; margin: 0; }
+.mviz-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.mviz-detail-svg { display: block; width: 100%; max-width: 400px; max-height: 100%; margin: 0 auto; height: auto; }
+.mviz-detail-cap { font-size: 0.78rem; color: #9b9285; text-align: center; margin-top: 6px; flex: none; }
+.mviz-ctrl { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 0 4px; padding: 8px 12px; background: var(--paper-deep); border-radius: 10px; }
 .mviz-ctrl-lab { font-family: var(--sans); font-size: 0.82rem; font-weight: 600; color: var(--ink); cursor: help; }
 .mviz-ctrl input[type="range"] { flex: 1; min-width: 120px; max-width: 260px; accent-color: var(--accent); }
 .mviz-ctrl-val { font-family: var(--sans); font-size: 0.82rem; font-weight: 700; color: var(--accent); min-width: 46px; }
 .mviz-sim { background: var(--accent); color: #fff; border: none; }
 .mviz-sim:hover { color: #fff; opacity: 0.92; }
 .mviz-readout { font-family: var(--sans); font-size: 0.78rem; color: var(--ink-soft); margin-left: auto; }
-.mviz-foot { font-size: 0.72rem; color: var(--ink-faint); margin: 8px 0 0; line-height: 1.6; }
-@media (max-width: 560px) { .mviz-readout { margin-left: 0; width: 100%; } .mviz-svg { min-width: 460px; } }
+.mviz-foot { font-size: 0.72rem; color: var(--ink-faint); margin: 6px 0 0; line-height: 1.6; }
+@media (max-width: 640px) {
+  .mviz-split { flex-direction: column; }
+  .mviz-left { flex: 0 0 52%; min-height: 150px; }
+  .mviz-left .mviz-svg { height: 100%; }
+  .mviz-divider { display: none; }
+  .mviz-right { flex: 1; }
+  .mviz-readout { margin-left: 0; width: 100%; }
+}

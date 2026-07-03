@@ -1816,7 +1816,7 @@ function buildMethodViz(raw) {
   wrap.appendChild(header);
 
   const scroller = document.createElement("div");
-  scroller.className = "mviz-stage";
+  scroller.className = "mviz-stage mviz-left";
   const svg = mvE("svg", { viewBox: `0 0 ${W} ${H}`, class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
   const defs = mvE("defs");
   ["#6b6258", "#8c2f39"].forEach((c, k) => {
@@ -1827,7 +1827,6 @@ function buildMethodViz(raw) {
   const gEdges = mvE("g"); const gMods = mvE("g"); const gParticles = mvE("g");
   svg.append(defs, gEdges, gMods, gParticles);
   scroller.appendChild(svg);
-  wrap.appendChild(scroller);
 
   // ── 모듈 그리기 (primitive별) — 그래픽/라벨 서브그룹 분리(디밍 강도 다르게) ──
   function drawModule(m, i) {
@@ -2128,7 +2127,63 @@ function buildMethodViz(raw) {
   foot.className = "mviz-foot";
   foot.textContent = spec.sim.disclaimer || "내부 시각화 값은 논문의 정성적 패턴을 반영한 예시이며 실제 학습 수치가 아닙니다.";
 
-  wrap.append(stepBar, stepInfo, detailWrap, ctrlBar, foot);
+  // ── 좌우 분할: 왼쪽 = 파이프라인, 오른쪽 = 스테퍼·단계 설명·세부 시각화 ──
+  // 가로 비율(디바이더 드래그)과 전체 높이(하단 핸들 드래그)를 사용자가 조절, localStorage에 저장
+  const split = document.createElement("div");
+  split.className = "mviz-split";
+  const divider = document.createElement("div");
+  divider.className = "mviz-divider";
+  divider.title = "드래그해서 좌우 비율 조절";
+  const rightPane = document.createElement("div");
+  rightPane.className = "mviz-right";
+  rightPane.append(stepBar, stepInfo, detailWrap);
+  split.append(scroller, divider, rightPane);
+
+  let splitRatio = 0.58, splitH = 380;
+  try {
+    const r = Number(localStorage.getItem("mvizSplit"));
+    if (r >= 0.25 && r <= 0.75) splitRatio = r;
+    const h = Number(localStorage.getItem("mvizHeight"));
+    if (h >= 240 && h <= 760) splitH = h;
+  } catch {}
+  const applySplit = () => { scroller.style.flex = `0 0 calc(${(splitRatio * 100).toFixed(1)}% - 5px)`; };
+  const applyHeight = () => { split.style.height = `${Math.round(splitH)}px`; };
+  applySplit(); applyHeight();
+
+  divider.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { divider.setPointerCapture(e.pointerId); } catch {}
+    const onMove = (ev) => {
+      const r = split.getBoundingClientRect();
+      if (r.width > 0) { splitRatio = mvClamp((ev.clientX - r.left) / r.width, 0.25, 0.75); applySplit(); }
+    };
+    const onUp = () => {
+      divider.removeEventListener("pointermove", onMove);
+      divider.removeEventListener("pointerup", onUp);
+      try { localStorage.setItem("mvizSplit", splitRatio.toFixed(3)); } catch {}
+    };
+    divider.addEventListener("pointermove", onMove);
+    divider.addEventListener("pointerup", onUp);
+  });
+
+  const hHandle = document.createElement("div");
+  hHandle.className = "mviz-hresize";
+  hHandle.title = "드래그해서 시각화 높이 조절";
+  hHandle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    try { hHandle.setPointerCapture(e.pointerId); } catch {}
+    const y0 = e.clientY, h0 = splitH;
+    const onMove = (ev) => { splitH = mvClamp(h0 + (ev.clientY - y0), 240, 760); applyHeight(); };
+    const onUp = () => {
+      hHandle.removeEventListener("pointermove", onMove);
+      hHandle.removeEventListener("pointerup", onUp);
+      try { localStorage.setItem("mvizHeight", String(Math.round(splitH))); } catch {}
+    };
+    hHandle.addEventListener("pointermove", onMove);
+    hHandle.addEventListener("pointerup", onUp);
+  });
+
+  wrap.append(split, hHandle, ctrlBar, foot);
 
   // ── 순전파 입자: 모듈 중심을 잇는 폴리라인 경로(두 줄 serpentine 포함) ──
   function startParticles() {
