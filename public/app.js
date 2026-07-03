@@ -1653,7 +1653,10 @@ function renderMethod(data) {
 /* ==========================================================================
    연구 방법론: 인터랙티브 2.5D 파이프라인 (method_visualization)
    모델이 준 구조 스펙을 렌더러가 SVG 파이프라인 + 스테퍼 + 컨트롤 슬라이더 +
-   정성 시뮬레이션 + 상태 바인딩 detail_viz 패널로 그린다. (method_viz_prompt v3)
+   정성 시뮬레이션 + 상태 바인딩 detail_viz 패널로 그린다. (method_viz_prompt v3.1)
+   v3.1: 프리미티브별 bbox 누적 배치(겹침 제거) · 7개↑ 두 줄 serpentine ·
+   이름 2줄 랩핑+말줄임 · 엣지 라벨 헤일로/짧으면 숨김 · control.direction
+   (keep_top/remove_top — 프루닝 비율 방향) · activation_bars groups · 디밍 완화
    ========================================================================== */
 let activeMethodViz = null; // 현재 애니메이션/타이머 컨트롤러 (논문 전환 시 destroy)
 const MVNS = "http://www.w3.org/2000/svg";
@@ -1667,6 +1670,25 @@ function mvSlab(x, y, w, h, fill, stroke, rx) {
   g.appendChild(mvE("path", { d: `M${x} ${y} L${x + d} ${y - d} L${x + w + d} ${y - d} L${x + w} ${y} Z`, fill: stroke, opacity: "0.35" }));
   g.appendChild(mvE("rect", { x, y, width: w, height: h, rx: rx || 4, fill, stroke, "stroke-width": "1" }));
   return g;
+}
+// 라벨 폭 계산(CJK=2칸) + 2줄 랩핑, 넘치면 말줄임 — 단어 중간이 뚝 끊긴 "깨진 화면" 방지
+const MV_WIDE = /[ᄀ-ᇿ⺀-꓏가-힣豈-﫿！-｠]/;
+function mvUnits(s) { let u = 0; for (const ch of String(s || "")) u += MV_WIDE.test(ch) ? 2 : 1; return u; }
+function mvCut(s, units) { let u = 0, out = ""; for (const ch of String(s || "")) { const w = MV_WIDE.test(ch) ? 2 : 1; if (u + w > units) break; u += w; out += ch; } return out; }
+function mvWrapLabel(text, budget) {
+  text = String(text == null ? "" : text).trim();
+  if (!text) return [];
+  if (mvUnits(text) <= budget) return [text];
+  let l1 = "", rest = "";
+  const words = text.split(/\s+/);
+  if (words.length > 1) {
+    for (const w of words) { const cand = l1 ? l1 + " " + w : w; if (mvUnits(cand) <= budget) l1 = cand; else break; }
+    if (!l1) l1 = mvCut(text, budget);
+    rest = text.slice(l1.length).trim();
+  } else { l1 = mvCut(text, budget); rest = text.slice(l1.length).trim(); }
+  if (!rest) return [l1];
+  if (mvUnits(rest) <= budget) return [l1, rest];
+  return [l1, mvCut(rest, Math.max(1, budget - 1)) + "…"];
 }
 
 function validateMethodViz(raw) {
@@ -1712,6 +1734,8 @@ function validateMethodViz(raw) {
     def = mvClamp(def, min, max);
     if (!Number.isFinite(step) || step <= 0) step = Math.max(1, Math.round((max - min) / 20));
     control.min = min; control.max = max; control.default = def; control.step = step;
+    // 방향: 값이 '상위 유지 비율'(η)인지 '상위 제거 비율'(프루닝 α)인지 — 리드아웃·임계선이 따름
+    if (control.direction !== "remove_top") control.direction = "keep_top";
     if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
   }
   const sim = raw.sim && typeof raw.sim === "object" ? raw.sim : {};
@@ -1734,10 +1758,19 @@ function buildMethodViz(raw) {
   };
   const resetScores = () => { S.scores = Array.from({ length: C }, () => 0.35 + Math.random() * 0.3); S.iter = 0; S.flips = 0; };
   resetScores();
+  const dirRemove = () => !!(spec.control && spec.control.direction === "remove_top");
+  // 살아남는(활성) 개수 — remove_top이면 (1−α), keep_top이면 η 비율
+  const keepCount = () => {
+    const frac = S.eta / 100;
+    return mvClamp(Math.round(C * (dirRemove() ? 1 - frac : frac)), 0, C);
+  };
   const maskOf = () => {
-    const keep = mvClamp(Math.round(C * (S.eta / 100)), 0, C);
-    const order = S.scores.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).slice(0, keep).map((x) => x[1]);
-    const m = new Array(C).fill(0); order.forEach((i) => (m[i] = 1)); return m;
+    const keep = keepCount();
+    const order = S.scores.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).map((x) => x[1]);
+    const m = new Array(C).fill(0);
+    // keep_top: 점수 상위 keep개 생존 / remove_top: 점수 상위(제거 대상)를 뺀 하위 keep개 생존
+    (dirRemove() ? order.slice(C - keep) : order.slice(0, keep)).forEach((i) => (m[i] = 1));
+    return m;
   };
   const simStep = () => {
     const before = maskOf();
@@ -1748,6 +1781,31 @@ function buildMethodViz(raw) {
     S.iter++;
   };
 
+  // ── 레이아웃: 프리미티브별 실제 폭 → 누적 x + 고정 gap (겹침 구조적 제거) ──
+  const modW = (m) =>
+    m.primitive === "iso_stack" ? m.primitive_spec.layers.length * 20 + 14
+      : m.primitive === "io_cube" ? 64
+        : m.primitive === "card_stack" ? 62
+          : m.primitive === "dual_dist_box" ? 76 : 80;
+  const n = spec.modules.length;
+  const twoRows = n >= 7; // 7개 이상은 한 줄이 물리적으로 무리 → serpentine 두 줄
+  const GAP = 54, MARGIN = 34, CY0 = 118, ROWH = 214;
+  const splitAt = twoRows ? Math.ceil(n / 2) : n;
+  const rowMods = [spec.modules.slice(0, splitAt), spec.modules.slice(splitAt)];
+  const rowWidth = rowMods.map((list) => list.reduce((a, m) => a + modW(m), 0) + GAP * Math.max(0, list.length - 1));
+  const W = Math.max(rowWidth[0] || 0, rowWidth[1] || 0, 320) + MARGIN * 2;
+  const H = twoRows ? CY0 + ROWH + 130 : 240;
+  const positions = [];
+  {
+    let x = MARGIN;
+    rowMods[0].forEach((m) => { const w = modW(m); positions.push({ cx: x + w / 2, cy: CY0, halfW: w / 2, row: 0 }); x += w + GAP; });
+    if (twoRows) {
+      let xr = W - MARGIN; // 두 번째 줄은 오른쪽→왼쪽 (serpentine)
+      rowMods[1].forEach((m) => { const w = modW(m); positions.push({ cx: xr - w / 2, cy: CY0 + ROWH, halfW: w / 2, row: 1 }); xr -= w + GAP; });
+    }
+  }
+  const idxOf = (id) => spec.modules.findIndex((m) => m.id === id);
+
   // ── 골격 DOM ──
   const wrap = document.createElement("div");
   wrap.className = "mviz";
@@ -1757,80 +1815,90 @@ function buildMethodViz(raw) {
     (spec.section_ref ? `<span class="mviz-ref">${escapeHtmlAttr(spec.section_ref)}</span>` : "");
   wrap.appendChild(header);
 
-  // 파이프라인 SVG (가로 스크롤 가능)
-  const SLOT = 150, BW = 92, cy = 118, H = 236;
-  const width = spec.modules.length * SLOT + 40;
   const scroller = document.createElement("div");
   scroller.className = "mviz-stage";
-  const svg = mvE("svg", { viewBox: `0 0 ${width} ${H}`, class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
+  const svg = mvE("svg", { viewBox: `0 0 ${W} ${H}`, class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
+  const defs = mvE("defs");
+  ["#6b6258", "#8c2f39"].forEach((c, k) => {
+    const mk = mvE("marker", { id: `mviz-arrow${k}`, viewBox: "0 0 8 8", refX: "6", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" });
+    mk.appendChild(mvE("path", { d: "M0 0 L8 4 L0 8 Z", fill: c }));
+    defs.appendChild(mk);
+  });
   const gEdges = mvE("g"); const gMods = mvE("g"); const gParticles = mvE("g");
-  svg.append(gEdges, gMods, gParticles);
+  svg.append(defs, gEdges, gMods, gParticles);
   scroller.appendChild(svg);
   wrap.appendChild(scroller);
 
-  const centerX = (i) => 20 + i * SLOT + SLOT / 2 - 15;
-  const idxOf = (id) => spec.modules.findIndex((m) => m.id === id);
-
-  // ── 모듈 그리기 (primitive별) ──
+  // ── 모듈 그리기 (primitive별) — 그래픽/라벨 서브그룹 분리(디밍 강도 다르게) ──
   function drawModule(m, i) {
-    const cx = centerX(i);
-    const g = mvE("g", { "data-mod": m.id, class: "mviz-mod", transform: `translate(${cx},0)` });
+    const pos = positions[i];
+    const cy = 118; // 그룹 내부 기준 좌표 (transform으로 행 위치 반영)
+    const g = mvE("g", { "data-mod": m.id, "data-hw": pos.halfW, class: "mviz-mod", transform: `translate(${pos.cx},${pos.cy - 118})` });
+    const gfx = mvE("g"); const lab = mvE("g");
+    g.append(gfx, lab);
+    g.__gfx = gfx; g.__lab = lab;
     const affected = spec.control && spec.control.affects.includes(m.id);
-    const mask = maskOf();
-    const TAN = "#e7dcc3", TAN_S = "#c9b892", PURPLE = "#7c5cbf", GRAY = "#d8cfbc", INK = "#211d19", FAINT = "#9b9285";
+    const TAN = "#e7dcc3", TAN_S = "#c9b892", PURPLE = "#7c5cbf", INK = "#211d19", FAINT = "#9b9285";
     if (m.primitive === "io_cube") {
       const glyph = (m.primitive_spec.glyph || "none");
-      g.appendChild(mvSlab(-26, cy - 26, 52, 52, "#fff", "#c9b892", 8));
+      gfx.appendChild(mvSlab(-26, cy - 26, 52, 52, "#fff", "#c9b892", 8));
       if (glyph === "face") {
-        g.append(mvE("circle", { cx: -8, cy: cy - 6, r: 3, fill: INK }), mvE("circle", { cx: 8, cy: cy - 6, r: 3, fill: INK }),
+        gfx.append(mvE("circle", { cx: -8, cy: cy - 6, r: 3, fill: INK }), mvE("circle", { cx: 8, cy: cy - 6, r: 3, fill: INK }),
           mvE("path", { d: `M-10 ${cy + 8} Q0 ${cy + 16} 10 ${cy + 8}`, stroke: INK, fill: "none", "stroke-width": "2" }));
       } else if (glyph === "text") {
-        [-8, 0, 8].forEach((dy, k) => g.appendChild(mvE("rect", { x: -16, y: cy - 8 + k * 8, width: 32 - k * 6, height: 3, rx: 1.5, fill: FAINT })));
-      } else g.appendChild(mvT(0, cy + 4, "▦", { "text-anchor": "middle", fill: FAINT, "font-size": "18" }));
+        [-8, 0, 8].forEach((dy, k) => gfx.appendChild(mvE("rect", { x: -16, y: cy - 8 + k * 8, width: 32 - k * 6, height: 3, rx: 1.5, fill: FAINT })));
+      } else gfx.appendChild(mvT(0, cy + 4, "▦", { "text-anchor": "middle", fill: FAINT, "font-size": "18" }));
     } else if (m.primitive === "iso_stack") {
       const layers = m.primitive_spec.layers;
       const frozen = !!m.primitive_spec.frozen;
       const totalW = layers.length * 20 - 6;
       let lx = -totalW / 2;
+      const aliveFrac = keepCount() / C;
       layers.forEach((L) => {
         const h = L.h * 0.62, top = cy + 22 - h;
         const slab = mvSlab(lx, top, 15, h, frozen ? "#eee9de" : TAN, frozen ? "#c8c0b0" : TAN_S, 3);
-        // 채널 슬래브 선 (affects면 마스크된 비율만 실선, 나머지 점선)
         const nLines = Math.min(L.ch, 6);
         for (let c = 0; c < nLines; c++) {
           const yy = top + 5 + (c * (h - 10)) / Math.max(1, nLines - 1);
-          const off = affected && c / nLines > S.eta / 100;
+          const off = affected && (c + 1) / nLines > aliveFrac; // 살아남는 비율만 실선
           slab.appendChild(mvE("line", { x1: lx + 3, y1: yy, x2: lx + 12, y2: yy, stroke: off ? "#c9b892" : TAN_S, "stroke-width": off ? "1" : "1.6", "stroke-dasharray": off ? "2 2" : "", opacity: off ? "0.5" : "1" }));
         }
-        g.appendChild(slab);
+        gfx.appendChild(slab);
         lx += 20;
       });
-      if (frozen) g.appendChild(mvT(0, cy - 40, "🔒 frozen", { "text-anchor": "middle", fill: FAINT, "font-size": "9" }));
+      if (frozen) lab.appendChild(mvT(0, cy - 46, "🔒 frozen", { "text-anchor": "middle", fill: FAINT, "font-size": "9" }));
     } else if (m.primitive === "card_stack") {
       const col = m.primitive_spec.color === "tan" ? TAN : PURPLE;
       for (let k = 3; k >= 0; k--) {
-        g.appendChild(mvE("rect", { x: -20 + k * 4, y: cy - 24 + k * 4, width: 40, height: 46, rx: 5, fill: k === 0 ? col : "#fff", stroke: col, "stroke-width": "1.4", opacity: k === 0 ? "0.92" : "0.5" }));
+        gfx.appendChild(mvE("rect", { x: -20 + k * 4, y: cy - 24 + k * 4, width: 40, height: 46, rx: 5, fill: k === 0 ? col : "#fff", stroke: col, "stroke-width": "1.4", opacity: k === 0 ? "0.92" : "0.5" }));
       }
-      g.appendChild(mvT(0, cy + 4, m.primitive_spec.label || "r", { "text-anchor": "middle", fill: "#fff", "font-size": "11", "font-weight": "600" }));
+      gfx.appendChild(mvT(0, cy + 4, mvCut(m.primitive_spec.label || "r", 9), { "text-anchor": "middle", fill: "#fff", "font-size": "10.5", "font-weight": "600" }));
     } else if (m.primitive === "dual_dist_box") {
-      g.appendChild(mvSlab(-30, cy - 24, 60, 50, "#fff", "#c9b892", 7));
+      gfx.appendChild(mvSlab(-32, cy - 24, 64, 50, "#fff", "#c9b892", 7));
       const labels = Array.isArray(m.primitive_spec.labels) ? m.primitive_spec.labels : [];
-      [["#8c2f39", -14], ["#7c5cbf", 12]].forEach(([col, ox], di) => {
+      [["#8c2f39", -14], ["#7c5cbf", 12]].forEach(([col, ox]) => {
         let d = `M${ox - 12} ${cy + 12}`;
         for (let t = 0; t <= 12; t++) { const x = ox - 12 + t * 2; const yy = cy + 12 - 26 * Math.exp(-Math.pow((t - 6) / 3, 2)); d += ` L${x} ${yy}`; }
-        g.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6" }));
+        gfx.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6" }));
       });
-      if (labels.length) g.appendChild(mvT(0, cy + 22, labels.slice(0, 2).join(" · "), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
+      if (labels.length) gfx.appendChild(mvT(0, cy + 22, mvCut(labels.slice(0, 2).join("·"), 13), { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
     } else { // op_box
-      g.appendChild(mvSlab(-32, cy - 22, 64, 46, "#fff", "#8c2f39", 7));
+      gfx.appendChild(mvSlab(-36, cy - 22, 72, 46, "#fff", "#8c2f39", 7));
       let sub = m.sub || "";
       if (m.primitive_spec.dynamic_sub && spec.control) sub = `${spec.control.symbol || spec.control.param}=${S.eta}${spec.control.unit || ""}`;
-      g.appendChild(mvT(0, cy - 2, (m.name || "").slice(0, 12), { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" }));
-      if (sub) g.appendChild(mvT(0, cy + 12, sub.slice(0, 16), { "text-anchor": "middle", fill: "#8c2f39", "font-size": "9" }));
+      gfx.appendChild(mvT(0, cy - 2, mvCut(m.name || "", 13), { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" }));
+      if (sub) gfx.appendChild(mvT(0, cy + 12, mvCut(sub, 14), { "text-anchor": "middle", fill: "#8c2f39", "font-size": "9" }));
     }
-    // 이름 라벨
-    g.appendChild(mvT(0, cy + 44, (m.name || m.id).slice(0, 16), { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" }));
-    if (m.sub && m.primitive !== "op_box") g.appendChild(mvT(0, cy + 56, m.sub.slice(0, 18), { "text-anchor": "middle", fill: FAINT, "font-size": "8.5" }));
+    // 이름 라벨: 폭 예산 안에서 2줄 랩핑, 넘치면 말줄임 (name_short가 있으면 그것 우선)
+    const budget = Math.max(Math.round((pos.halfW * 2 + 34) / 5.4), 16);
+    const rawName = m.name || m.id;
+    const nameText = (mvUnits(rawName) > budget * 2 && m.name_short) ? m.name_short : rawName;
+    const lines = mvWrapLabel(nameText, budget);
+    lines.forEach((ln, k) => lab.appendChild(mvT(0, cy + 44 + k * 11, ln, { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" })));
+    if (m.sub && m.primitive !== "op_box") {
+      const sub = mvUnits(m.sub) > budget ? mvCut(m.sub, Math.max(1, budget - 1)) + "…" : m.sub;
+      lab.appendChild(mvT(0, cy + 44 + lines.length * 11 + 1, sub, { "text-anchor": "middle", fill: FAINT, "font-size": "8.5" }));
+    }
     return g;
   }
 
@@ -1841,44 +1909,68 @@ function buildMethodViz(raw) {
     applyHighlight();
   }
 
-  // ── 엣지 ──
+  // ── 엣지: bbox 기반 라우팅 (같은 줄 직선/우회 아치, 줄 건너 S-커브, 되먹임 아치) ──
+  function edgeGeom(e) {
+    const ti = idxOf(e.to);
+    if (ti < 0) return null;
+    const b = positions[ti];
+    if (e.from === "input" || idxOf(e.from) < 0) {
+      const x2 = b.cx - b.halfW - 6;
+      return { d: `M${x2 - 30} ${b.cy} L${x2} ${b.cy}`, lx: x2 - 15, ly: b.cy - 9, len: 30, arrow: true };
+    }
+    const fi = idxOf(e.from);
+    const a = positions[fi];
+    if (a.row === b.row) {
+      const sign = b.cx > a.cx ? 1 : -1;
+      const x1 = a.cx + sign * (a.halfW + 5), x2 = b.cx - sign * (b.halfW + 5);
+      const between = positions.some((p, k) => k !== fi && k !== ti && p.row === a.row &&
+        Math.min(a.cx, b.cx) < p.cx && p.cx < Math.max(a.cx, b.cx));
+      if (!between) {
+        return { d: `M${x1} ${a.cy} L${x2} ${a.cy}`, lx: (x1 + x2) / 2, ly: a.cy - 9, len: Math.abs(x2 - x1), arrow: true };
+      }
+      // 중간에 모듈이 있으면 우회 아치 — 순방향은 위로, 되먹임은 아래로
+      const up = ti > fi;
+      const yA = a.cy + (up ? -64 : 70), yy = a.cy + (up ? -86 : 92);
+      return {
+        d: `M${a.cx} ${yA} C${a.cx} ${yy} ${b.cx} ${yy} ${b.cx} ${b.cy + (up ? -64 : 70)}`,
+        lx: (a.cx + b.cx) / 2, ly: yy + (up ? -3 : 10), len: Math.abs(b.cx - a.cx), arrow: true,
+      };
+    }
+    // 줄 건너기: 아래(또는 위)로 나가 S-커브로 진입
+    const down = b.cy > a.cy;
+    const y1 = a.cy + (down ? 70 : -64), y2 = b.cy + (down ? -64 : 70);
+    return {
+      d: `M${a.cx} ${y1} C${a.cx} ${y1 + (down ? 56 : -56)} ${b.cx} ${y2 + (down ? -56 : 56)} ${b.cx} ${y2}`,
+      lx: (a.cx + b.cx) / 2, ly: (y1 + y2) / 2, len: Math.hypot(b.cx - a.cx, y2 - y1), arrow: true,
+    };
+  }
   function drawEdges() {
     gEdges.textContent = "";
-    if (!document.getElementById("mviz-arrow")) {
-      const defs = mvE("defs");
-      ["#6b6258", "#8c2f39"].forEach((c, k) => {
-        const mk = mvE("marker", { id: `mviz-arrow${k}`, viewBox: "0 0 8 8", refX: "6", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" });
-        mk.appendChild(mvE("path", { d: "M0 0 L8 4 L0 8 Z", fill: c }));
-        defs.appendChild(mk);
-      });
-      svg.insertBefore(defs, gEdges);
-    }
     spec.edges.forEach((e) => {
-      const fi = e.from === "input" ? -1 : idxOf(e.from);
-      const ti = idxOf(e.to);
-      if (ti < 0) return;
-      const x1 = fi < 0 ? 10 : centerX(fi) + 34;
-      const x2 = centerX(ti) - 34;
+      const geo = edgeGeom(e);
+      if (!geo) return;
       const col = e.kind === "gradient" ? "#8c2f39" : e.kind === "frozen" ? "#c2b8a2" : "#6b6258";
       const dash = e.kind === "forward" ? "" : e.kind === "gradient" ? "5 4" : "3 4";
       const mk = e.kind === "gradient" ? "url(#mviz-arrow1)" : "url(#mviz-arrow0)";
-      let d;
-      if (ti > fi) { d = `M${x1} ${cy} L${x2} ${cy}`; }
-      else { // 되먹임(gradient loss→score 등) — 아래로 아치
-        const xa = centerX(fi) + 34, xb = centerX(ti) - 34;
-        d = `M${centerX(fi)} ${cy + 30} C${xa} ${cy + 70} ${xb} ${cy + 70} ${centerX(ti)} ${cy + 30}`;
-      }
-      gEdges.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": ti > fi || fi < 0 ? mk : "" }));
-      if (e.label) {
-        const mx = (x1 + x2) / 2, my = ti > fi ? cy - 8 : cy + 66;
-        gEdges.appendChild(mvT(mx, my, e.label.slice(0, 16), { "text-anchor": "middle", fill: col, "font-size": "8.5" }));
+      gEdges.appendChild(mvE("path", { d: geo.d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": geo.arrow ? mk : "" }));
+      // 라벨: 짧은 엣지에선 숨기고(겹침 방지), 흰 헤일로로 다른 요소 위에서도 읽히게
+      if (e.label && geo.len >= 70) {
+        gEdges.appendChild(mvT(geo.lx, geo.ly, mvCut(e.label, 14), {
+          "text-anchor": "middle", fill: col, "font-size": "8.5",
+          "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3", "stroke-linejoin": "round",
+        }));
       }
     });
   }
 
   function applyHighlight() {
     const active = spec.steps[S.stepIdx] && spec.steps[S.stepIdx].module;
-    S.mods.forEach((g, id) => g.setAttribute("opacity", !active || id === active ? "1" : "0.32"));
+    S.mods.forEach((g, id) => {
+      const on = !active || id === active;
+      // 그래픽만 강하게 디밍, 이름은 덜 디밍 — 모듈이 많아도 맥락 유지
+      if (g.__gfx) g.__gfx.setAttribute("opacity", on ? "1" : "0.5");
+      if (g.__lab) g.__lab.setAttribute("opacity", on ? "1" : "0.75");
+    });
   }
 
   // ── 스테퍼 + desc + detail 패널 ──
@@ -1888,7 +1980,7 @@ function buildMethodViz(raw) {
   stepInfo.className = "mviz-stepinfo";
   const detailWrap = document.createElement("div");
   detailWrap.className = "mviz-detail";
-  const detailSvg = mvE("svg", { viewBox: "0 0 320 132", class: "mviz-detail-svg", preserveAspectRatio: "xMidYMid meet" });
+  const detailSvg = mvE("svg", { viewBox: "0 0 320 136", class: "mviz-detail-svg", preserveAspectRatio: "xMidYMid meet" });
   const detailCap = document.createElement("div");
   detailCap.className = "mviz-detail-cap";
   detailWrap.append(detailSvg, detailCap);
@@ -1904,27 +1996,43 @@ function buildMethodViz(raw) {
       if (type === "pixel_grid") {
         for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
           const dcx = 3.5, dcy = 3.5, dist = Math.hypot(r - dcx, c - dcy) / 5;
-          g.appendChild(mvE("rect", { x: 120 + c * 12, y: 12 + r * 12, width: 11, height: 11, fill: ACC, opacity: (1 - dist).toFixed(2) }));
+          g.appendChild(mvE("rect", { x: 112 + c * 12, y: 12 + r * 12, width: 11, height: 11, fill: ACC, opacity: (1 - dist).toFixed(2) }));
         }
       } else if (type === "activation_bars") {
+        // groups: {n, label} — 층 구분선+라벨로 "g묶음 × 막대" 구조가 보이게
+        const gn = dv.groups && Number(dv.groups.n) >= 2 ? mvClamp(Math.round(Number(dv.groups.n)), 2, 12) : 0;
+        const per = gn ? Math.max(1, Math.round(12 / gn)) : 0;
+        const K = gn ? gn * per : 12;
+        const bw = 296 / K;
         const rv = (k) => { const x = Math.sin(k * 91.7 + S.stepIdx * 13.1) * 43758.5; return x - Math.floor(x); };
-        for (let k = 0; k < 12; k++) { const h = 12 + rv(k) * 92; g.appendChild(mvE("rect", { x: 20 + k * 24, y: 116 - h, width: 16, height: h, rx: 2, fill: TAN, stroke: "#b7a680" })); }
+        for (let k = 0; k < K; k++) { const h = 12 + rv(k) * 86; g.appendChild(mvE("rect", { x: 12 + k * bw + 1, y: 110 - h, width: Math.max(2, bw - 2), height: h, rx: 2, fill: TAN, stroke: "#b7a680" })); }
+        if (gn) {
+          for (let gi = 1; gi < gn; gi++) g.appendChild(mvE("line", { x1: 12 + gi * per * bw, y1: 14, x2: 12 + gi * per * bw, y2: 112, stroke: FAINT, "stroke-dasharray": "3 3", opacity: "0.6" }));
+          for (let gi = 0; gi < gn; gi++) g.appendChild(mvT(12 + (gi + 0.5) * per * bw, 126, `${dv.groups.label || ""}${gi + 1}`, { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
+        }
       } else if (type === "histogram") {
         const bins = new Array(10).fill(0); S.scores.forEach((v) => bins[mvClamp(Math.floor(v * 10), 0, 9)]++);
         const mx = Math.max(1, ...bins);
         bins.forEach((b, k) => { const h = (b / mx) * 96; g.appendChild(mvE("rect", { x: 24 + k * 28, y: 116 - h, width: 22, height: h, rx: 2, fill: "#7c5cbf" })); });
       } else if (type === "sorted_threshold") {
         const sorted = S.scores.slice().sort((a, b) => b - a);
-        const keep = Math.round(C * (S.eta / 100));
-        const bw = Math.max(3, 300 / C);
-        sorted.forEach((v, k) => { const h = v * 96; g.appendChild(mvE("rect", { x: 12 + k * bw, y: 116 - h, width: bw - 1, height: h, fill: k < keep ? ACC : "#d8cfbc" })); });
-        const tx = 12 + keep * bw;
+        const keep = keepCount(), removeN = C - keep;
+        const bw = Math.max(3, 296 / C);
+        // 생존 채널만 강조색 — remove_top이면 임계선 '왼쪽(상위 점수)'이 제거 대상
+        sorted.forEach((v, k) => {
+          const survive = dirRemove() ? k >= removeN : k < keep;
+          g.appendChild(mvE("rect", { x: 12 + k * bw, y: 116 - v * 96, width: bw - 1, height: v * 96, fill: survive ? ACC : "#d8cfbc", opacity: survive ? "1" : "0.75" }));
+        });
+        const boundary = dirRemove() ? removeN : keep;
+        const tx = 12 + boundary * bw;
+        const sym = (spec.control && (spec.control.symbol || spec.control.param)) || "η";
+        const unit = (spec.control && spec.control.unit) || "";
         g.append(mvE("line", { x1: tx, y1: 8, x2: tx, y2: 116, stroke: ACC, "stroke-width": "1.5", "stroke-dasharray": "4 3" }),
-          mvT(mvClamp(tx + 3, 12, 250), 16, `η=${S.eta}%`, { fill: ACC, "font-size": "10", "font-weight": "600" }));
+          mvT(mvClamp(tx + 3, 12, 236), 16, `${sym}=${S.eta}${unit} ${dirRemove() ? "제거" : "유지"}`, { fill: ACC, "font-size": "10", "font-weight": "600", "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3" }));
       } else if (type === "slab_mask") {
         const mask = maskOf();
         const bw = Math.max(8, 300 / C);
-        mask.forEach((mk, k) => g.appendChild(mvE("rect", { x: 12 + k * bw, y: 40, width: bw - 3, height: 52, rx: 2, fill: mk ? TAN : "#fff", stroke: mk ? "#b7a680" : "#d8cfbc", "stroke-dasharray": mk ? "" : "3 2", opacity: mk ? "1" : "0.6" })));
+        mask.forEach((mk, k) => g.appendChild(mvE("rect", { x: 12 + k * bw, y: 40, width: bw - 3, height: 52, rx: 2, fill: mk ? "#e7dcc3" : "#fff", stroke: mk ? "#b7a680" : "#d8cfbc", "stroke-dasharray": mk ? "" : "3 2", opacity: mk ? "1" : "0.6" })));
       } else if (type === "convergence_curve") {
         let d = "M12 108"; for (let t = 0; t <= 40; t++) { const x = 12 + t * 7.4; const yy = 108 - 92 * (1 - Math.exp(-t / 10)); d += ` L${x} ${yy}`; }
         g.appendChild(mvE("path", { d, stroke: ACC, fill: "none", "stroke-width": "2" }));
@@ -1932,7 +2040,7 @@ function buildMethodViz(raw) {
         g.appendChild(mvE("circle", { cx: px, cy: py, r: 4, fill: ACC }));
         g.appendChild(mvT(px + 6, py - 4, `iter ${S.iter}`, { fill: FAINT, "font-size": "9" }));
       } else if (type === "summary_rows") {
-        const keep = Math.round(C * (S.eta / 100));
+        const keep = keepCount();
         [["활성 채널", `${keep} / ${C}`], ["학습 반복", `${S.iter}회`], ["마스크 변동", `${S.flips}`]].forEach((row, k) => {
           g.append(mvT(20, 36 + k * 30, row[0], { fill: FAINT, "font-size": "12" }), mvT(300, 36 + k * 30, row[1], { fill: INK, "font-size": "13", "font-weight": "700", "text-anchor": "end" }));
         });
@@ -1942,12 +2050,12 @@ function buildMethodViz(raw) {
         const box = (x, label, sub, col) => {
           const gg = mvE("g");
           gg.appendChild(mvE("rect", { x, y: 44, width: 96, height: 44, rx: 6, fill: "#fff", stroke: col }));
-          gg.appendChild(mvT(x + 48, 62, (label || "").slice(0, 14), { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" }));
-          if (sub) gg.appendChild(mvT(x + 48, 76, sub.slice(0, 16), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
+          gg.appendChild(mvT(x + 48, 62, mvCut(label || "", 17), { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" }));
+          if (sub) gg.appendChild(mvT(x + 48, 76, mvCut(sub, 19), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
           return gg;
         };
         g.append(box(6, prev ? prev.name : "입력", prev ? prev.data_state : "", "#c9b892"),
-          mvT(160, 40, (mod.name || "").slice(0, 18), { "text-anchor": "middle", fill: ACC, "font-size": "9" }),
+          mvT(160, 40, mvCut(mod.name || "", 20), { "text-anchor": "middle", fill: ACC, "font-size": "9" }),
           mvE("path", { d: "M104 66 L120 66", stroke: ACC, "stroke-width": "1.5", "marker-end": "url(#mviz-arrow1)" }),
           mvE("path", { d: "M200 66 L216 66", stroke: ACC, "stroke-width": "1.5", "marker-end": "url(#mviz-arrow1)" }),
           box(218, mod.name || "출력", mod.data_state || "", "#8c2f39"));
@@ -1971,7 +2079,7 @@ function buildMethodViz(raw) {
     applyHighlight(); renderStepInfo(); drawDetail();
     // 현재 단계 모듈이 보이게 스크롤
     const active = spec.steps[S.stepIdx].module, gi = idxOf(active);
-    if (gi >= 0) scroller.scrollTo({ left: Math.max(0, centerX(gi) - scroller.clientWidth / 2), behavior: S.reduce ? "auto" : "smooth" });
+    if (gi >= 0) scroller.scrollTo({ left: Math.max(0, positions[gi].cx - scroller.clientWidth / 2), behavior: S.reduce ? "auto" : "smooth" });
   }
 
   // 스테퍼 버튼
@@ -2012,8 +2120,7 @@ function buildMethodViz(raw) {
   simB.classList.add("mviz-sim"); resetB.classList.add("mviz-reset");
   ctrlBar.append(simB, resetB, readout);
   function updateReadout() {
-    const keep = Math.round(C * (S.eta / 100));
-    readout.textContent = `활성 ${keep}/${C} · 반복 ${S.iter} · 변동 ${S.flips}`;
+    readout.textContent = `활성 ${keepCount()}/${C} · 반복 ${S.iter} · 변동 ${S.flips}`;
   }
 
   // disclaimer 각주
@@ -2023,10 +2130,21 @@ function buildMethodViz(raw) {
 
   wrap.append(stepBar, stepInfo, detailWrap, ctrlBar, foot);
 
-  // ── 순전파 입자 애니메이션 (reduce-motion 시 생략) ──
+  // ── 순전파 입자: 모듈 중심을 잇는 폴리라인 경로(두 줄 serpentine 포함) ──
   function startParticles() {
-    if (S.reduce || spec.modules.length < 2) return;
-    const x0 = centerX(0), x1 = centerX(spec.modules.length - 1);
+    if (S.reduce || positions.length < 2) return;
+    const pts = positions.map((p) => ({ x: p.cx, y: p.cy }));
+    const segs = [];
+    let total = 0;
+    for (let k = 1; k < pts.length; k++) {
+      const L = Math.hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y);
+      segs.push({ a: pts[k - 1], b: pts[k], L }); total += L;
+    }
+    const at = (t) => {
+      let d = t * total;
+      for (const s of segs) { if (d <= s.L) { const r = s.L ? d / s.L : 0; return { x: s.a.x + (s.b.x - s.a.x) * r, y: s.a.y + (s.b.y - s.a.y) * r }; } d -= s.L; }
+      return pts[pts.length - 1];
+    };
     const dots = Array.from({ length: 4 }, (_, k) => {
       const c = mvE("circle", { r: 3, fill: "#8c2f39", opacity: "0" }); gParticles.appendChild(c);
       return { c, t: k / 4 };
@@ -2035,10 +2153,10 @@ function buildMethodViz(raw) {
     const tick = (now) => {
       const dt = (now - last) / 1000; last = now;
       dots.forEach((d) => {
-        d.t += dt / 9; if (d.t > 1.15) d.t -= 1.15;
-        const p = d.t; const x = x0 + (x1 - x0) * Math.min(1, p);
-        d.c.setAttribute("cx", x); d.c.setAttribute("cy", cy);
-        d.c.setAttribute("opacity", p > 1 ? "0" : (p < 0.05 ? (p / 0.05).toFixed(2) : (p > 0.9 ? ((1 - p) / 0.1).toFixed(2) : "0.85")));
+        d.t += dt / 10; if (d.t > 1.15) d.t -= 1.15;
+        const p = Math.min(1, d.t); const pos = at(p);
+        d.c.setAttribute("cx", pos.x); d.c.setAttribute("cy", pos.y);
+        d.c.setAttribute("opacity", d.t > 1 ? "0" : (p < 0.05 ? (p / 0.05).toFixed(2) : (p > 0.92 ? ((1 - p) / 0.08).toFixed(2) : "0.85")));
       });
       S.raf = requestAnimationFrame(tick);
     };
@@ -2046,7 +2164,7 @@ function buildMethodViz(raw) {
   }
 
   // 초기 렌더
-  drawEdges(); refreshMods(); drawEdges(); // edges 두 번째는 defs 보장
+  drawEdges(); refreshMods();
   goStep(0); updateReadout(); startParticles();
 
   // 컨트롤러 (논문 전환 시 정리)
