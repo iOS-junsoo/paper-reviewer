@@ -1813,7 +1813,7 @@ function buildMethodViz(raw) {
   const idxOf = (id) => spec.modules.findIndex((m) => m.id === id);
   const rank = new Array(n).fill(0);
   {
-    const re = spec.edges.filter((e) => (e.kind === "forward" || e.kind === "alternating") && e.from !== "input");
+    const re = spec.edges.filter((e) => (e.kind === "forward" || e.kind === "alternating") && idxOf(e.from) >= 0);
     for (let it = 0; it < n + 1; it++) {
       let changed = false;
       re.forEach((e) => {
@@ -1871,7 +1871,7 @@ function buildMethodViz(raw) {
         const m = spec.modules[i];
         if (m.lane_hint) return HINT[m.lane_hint] * 1000 + i;
         // barycenter: 부모(lane 배정 완료된 rank<r)의 평균 lane
-        const parents = spec.edges.filter((e) => e.to === m.id && e.from !== "input" && idxOf(e.from) >= 0 && rank[idxOf(e.from)] < r).map((e) => laneOf[idxOf(e.from)]);
+        const parents = spec.edges.filter((e) => e.to === m.id && idxOf(e.from) >= 0 && rank[idxOf(e.from)] < r).map((e) => laneOf[idxOf(e.from)]);
         return (parents.length ? parents.reduce((a, b) => a + b, 0) / parents.length : 1) * 1000 + i;
       };
       list.slice().sort((a, b) => key(a) - key(b)).forEach((i, li) => { laneOf[i] = li; });
@@ -2061,7 +2061,7 @@ function buildMethodViz(raw) {
       const dash = e.kind === "forward" || e.kind === "alternating" ? "" : e.kind === "gradient" ? "5 4" : "3 4";
       const mk = e.kind === "gradient" ? "url(#mviz-arrow1)" : "url(#mviz-arrow0)";
       let d, lx, ly, len;
-      if (e.from === "input" || idxOf(e.from) < 0) {
+      if (idxOf(e.from) < 0) {
         const x2 = b.cx - b.halfW - 6;
         d = `M${x2 - 30} ${b.cy} L${x2} ${b.cy}`; lx = x2 - 15; ly = b.cy - 9; len = 30;
         bb.add(x2 - 34, b.cy - 14, x2, b.cy + 4);
@@ -2078,19 +2078,27 @@ function buildMethodViz(raw) {
           lx = (a.cx + b.cx) / 2; ly = (y1 + y2) / 2; len = Math.hypot(b.cx - a.cx, y2 - y1);
           bb.add(Math.min(a.cx, b.cx) - 6, Math.min(y1, y2) - 6, Math.max(a.cx, b.cx) + 6, Math.max(y1, y2) + 6);
         } else if (e.kind === "gradient" && dr <= 0) {
-          // 회귀: 파이프라인 아래 외곽으로 직교 우회 (모듈 관통 금지)
+          // 회귀: 아래 외곽으로 직교 우회 — 세로선은 컬럼 바깥(게이트)으로 빼 모듈 관통·상호 겹침 금지
           const outY = contentBottom + 26 + gradIdx * 14; gradIdx++;
-          const x1 = a.cx + off, x2 = b.cx - off;
-          d = `M${x1} ${a.cy + 70} L${x1} ${outY} L${x2} ${outY} L${x2} ${b.cy + 74}`;
-          lx = (x1 + x2) / 2; ly = outY - 4; len = Math.abs(x2 - x1);
-          bb.add(Math.min(x1, x2) - 6, a.cy, Math.max(x1, x2) + 6, outY + 8);
+          const goLeft = b.cx <= a.cx;
+          const sGate = a.cx + (goLeft ? -(a.halfW + 12) : a.halfW + 12);
+          const tGate = b.cx + (goLeft ? b.halfW + 12 : -(b.halfW + 12));
+          const sJog = a.cy + 83, tJog = b.cy + 83; // 레인 간극(74~92) 안
+          const sx = a.cx - 7, tx = b.cx + 7; // 한 모듈에 back-edge 여럿 붙어도 부착점 어긋나게(공선 겹침 방지)
+          d = `M${sx} ${a.cy + 70} L${sx} ${sJog} L${sGate} ${sJog} L${sGate} ${outY} L${tGate} ${outY} L${tGate} ${tJog} L${tx} ${tJog} L${tx} ${b.cy + 74}`;
+          lx = (sGate + tGate) / 2; ly = outY - 4; len = Math.abs(tGate - sGate);
+          bb.add(Math.min(sGate, tGate, a.cx, b.cx) - 6, a.cy, Math.max(sGate, tGate, a.cx, b.cx) + 6, outY + 8);
         } else if (Math.abs(dr) > 1) {
-          // rank 건너뛰기: 위 외곽 직교 우회
+          // rank 건너뛰기: 위 외곽으로 직교 우회 — 세로선은 컬럼 바깥(게이트)
           const outY = contentTop - 22 - skipIdx * 14; skipIdx++;
-          const x1 = a.cx + off, x2 = b.cx - off;
-          d = `M${x1} ${a.cy - 64} L${x1} ${outY} L${x2} ${outY} L${x2} ${b.cy - 64}`;
-          lx = (x1 + x2) / 2; ly = outY - 4; len = Math.abs(x2 - x1);
-          bb.add(Math.min(x1, x2) - 6, outY - 14, Math.max(x1, x2) + 6, b.cy);
+          const goLeft = b.cx <= a.cx;
+          const sGate = a.cx + (goLeft ? -(a.halfW + 12) : a.halfW + 12);
+          const tGate = b.cx + (goLeft ? b.halfW + 12 : -(b.halfW + 12));
+          const sJog = a.cy - 81, tJog = b.cy - 81; // 레인 간극(−90~−72) 안
+          const sx = a.cx - 7, tx = b.cx + 7;
+          d = `M${sx} ${a.cy - 64} L${sx} ${sJog} L${sGate} ${sJog} L${sGate} ${outY} L${tGate} ${outY} L${tGate} ${tJog} L${tx} ${tJog} L${tx} ${b.cy - 64}`;
+          lx = (sGate + tGate) / 2; ly = outY - 4; len = Math.abs(tGate - sGate);
+          bb.add(Math.min(sGate, tGate, a.cx, b.cx) - 6, outY - 14, Math.max(sGate, tGate, a.cx, b.cx) + 6, b.cy);
         } else {
           // 인접 rank: 수평 or 세로차 S-커브 (+같은 쌍 다중 edge는 세로 오프셋 분리)
           const x1 = a.cx + a.halfW + 5, x2 = b.cx - b.halfW - 5;
