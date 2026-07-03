@@ -1789,12 +1789,12 @@ function buildMethodViz(raw) {
           : m.primitive === "dual_dist_box" ? 76 : 80;
   const n = spec.modules.length;
   const twoRows = n >= 7; // 7개 이상은 한 줄이 물리적으로 무리 → serpentine 두 줄
-  const GAP = 54, MARGIN = 34, CY0 = 118, ROWH = 214;
+  const GAP = 48, MARGIN = 30, CY0 = 118, ROWH = 196;
   const splitAt = twoRows ? Math.ceil(n / 2) : n;
   const rowMods = [spec.modules.slice(0, splitAt), spec.modules.slice(splitAt)];
   const rowWidth = rowMods.map((list) => list.reduce((a, m) => a + modW(m), 0) + GAP * Math.max(0, list.length - 1));
   const W = Math.max(rowWidth[0] || 0, rowWidth[1] || 0, 320) + MARGIN * 2;
-  const H = twoRows ? CY0 + ROWH + 130 : 240;
+  const H = twoRows ? CY0 + ROWH + 124 : 240;
   const positions = [];
   {
     let x = MARGIN;
