@@ -2061,7 +2061,7 @@ function buildMethodViz(raw) {
     const contentTop = Math.min(...positions.map((p) => p.cy - 72));
     let gradIdx = 0, skipIdx = 0;
     const pairSeen = new Map(); // 같은 (from,to) 다중 edge 세로 오프셋
-    const tgtSeen = new Map(), srcSeen = new Map(); // 같은 모듈에 붙는 back-edge 진입/진출부 분산
+    const gateSeen = new Map(); // 같은 열·같은 쪽에 붙는 우회 세로선 분산(소스·타깃 게이트 공용)
     spec.edges.forEach((e) => {
       const ti = idxOf(e.to); if (ti < 0) return;
       const b = positions[ti];
@@ -2089,9 +2089,10 @@ function buildMethodViz(raw) {
           // 회귀: 아래 외곽으로 직교 우회 — 세로선은 컬럼 바깥(게이트)으로 빼 모듈 관통·상호 겹침 금지
           const outY = contentBottom + 26 + gradIdx * 14; gradIdx++;
           const goLeft = b.cx <= a.cx;
-          // 같은 모듈에 여러 back-edge가 붙을 때 진출(소스)·진입(타깃)부를 인덱스만큼 벌린다
-          const sk = srcSeen.get(a.cx) || 0; srcSeen.set(a.cx, sk + 1);
-          const tk = tgtSeen.get(b.cx) || 0; tgtSeen.set(b.cx, tk + 1);
+          // 같은 열·같은 쪽에 붙는 세로선을 순번만큼 벌린다(소스·타깃 게이트가 한 열 오른쪽에서 겹치던 문제)
+          const sKey = a.cx + (goLeft ? "L" : "R"), tKey = b.cx + (goLeft ? "R" : "L");
+          const sk = gateSeen.get(sKey) || 0; gateSeen.set(sKey, sk + 1);
+          const tk = gateSeen.get(tKey) || 0; gateSeen.set(tKey, tk + 1);
           const sGate = a.cx + (goLeft ? -(a.halfW + 12 + sk * 13) : a.halfW + 12 + sk * 13);
           const tGate = b.cx + (goLeft ? b.halfW + 12 + tk * 13 : -(b.halfW + 12 + tk * 13));
           const sJog = a.cy + 78 + sk * 7, tJog = b.cy + 78 + tk * 7; // 레인 간극(74~92) 안
@@ -2103,8 +2104,9 @@ function buildMethodViz(raw) {
           // rank 건너뛰기: 위 외곽으로 직교 우회 — 세로선은 컬럼 바깥(게이트)
           const outY = contentTop - 22 - skipIdx * 14; skipIdx++;
           const goLeft = b.cx <= a.cx;
-          const sk = srcSeen.get(a.cx) || 0; srcSeen.set(a.cx, sk + 1);
-          const tk = tgtSeen.get(b.cx) || 0; tgtSeen.set(b.cx, tk + 1);
+          const sKey = a.cx + (goLeft ? "L" : "R"), tKey = b.cx + (goLeft ? "R" : "L");
+          const sk = gateSeen.get(sKey) || 0; gateSeen.set(sKey, sk + 1);
+          const tk = gateSeen.get(tKey) || 0; gateSeen.set(tKey, tk + 1);
           const sGate = a.cx + (goLeft ? -(a.halfW + 12 + sk * 13) : a.halfW + 12 + sk * 13);
           const tGate = b.cx + (goLeft ? b.halfW + 12 + tk * 13 : -(b.halfW + 12 + tk * 13));
           const sJog = a.cy - 76 - sk * 7, tJog = b.cy - 76 - tk * 7; // 레인 간극(−90~−72) 안
@@ -2114,10 +2116,14 @@ function buildMethodViz(raw) {
           bb.add(Math.min(sGate, tGate, a.cx, b.cx) - 6, outY - 14, Math.max(sGate, tGate, a.cx, b.cx) + 6, b.cy);
         } else {
           // 인접 rank: 수평 or 세로차 S-커브 (+같은 쌍 다중 edge는 세로 오프셋 분리)
-          const x1 = a.cx + a.halfW + 5, x2 = b.cx - b.halfW - 5;
+          // 방향 인식 — serpentine 아래줄처럼 타깃이 왼쪽이면 소스 왼쪽→타깃 오른쪽(마주 보는 변)에서 잇는다
+          const leftward = b.cx < a.cx;
+          const x1 = a.cx + (leftward ? -(a.halfW + 5) : a.halfW + 5);
+          const x2 = b.cx + (leftward ? b.halfW + 5 : -(b.halfW + 5));
           const y1 = a.cy + off, y2 = b.cy + off;
           if (Math.abs(y1 - y2) < 4) { d = `M${x1} ${y1} L${x2} ${y2}`; }
-          else { const mx = (x1 + x2) / 2; d = `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`; }
+          // 제어점을 가운데 몰지 않고 분산 → 수직으로 길게 붙지 않는 대각 S(우회 세로선과 나란히 겹침 완화)
+          else { const c1 = x1 + (x2 - x1) * 0.28, c2 = x1 + (x2 - x1) * 0.72; d = `M${x1} ${y1} C${c1} ${y1} ${c2} ${y2} ${x2} ${y2}`; }
           lx = (x1 + x2) / 2; ly = Math.min(y1, y2) - 8 + (off ? off + 16 : 0); len = Math.hypot(x2 - x1, y2 - y1);
           bb.add(Math.min(x1, x2) - 4, Math.min(y1, y2) - 16, Math.max(x1, x2) + 4, Math.max(y1, y2) + 6);
         }
