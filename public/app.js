@@ -1653,10 +1653,11 @@ function renderMethod(data) {
 /* ==========================================================================
    연구 방법론: 인터랙티브 2.5D 파이프라인 (method_visualization)
    모델이 준 구조 스펙을 렌더러가 SVG 파이프라인 + 스테퍼 + 컨트롤 슬라이더 +
-   정성 시뮬레이션 + 상태 바인딩 detail_viz 패널로 그린다. (method_viz_prompt v3.1)
-   v3.1: 프리미티브별 bbox 누적 배치(겹침 제거) · 7개↑ 두 줄 serpentine ·
-   이름 2줄 랩핑+말줄임 · 엣지 라벨 헤일로/짧으면 숨김 · control.direction
-   (keep_top/remove_top — 프루닝 비율 방향) · activation_bars groups · 디밍 완화
+   정성 시뮬레이션 + 상태 바인딩 detail_viz 패널로 그린다. (method_viz_prompt v3.2)
+   v3.2: edges 기반 rank/lane 위상 배치(병렬 분기·합류가 실제 2D로) · groups 점선 묶음 ·
+   alternating 스위치 엣지 · switch_box/queue_bank 프리미티브 · fit-to-view(스크롤 금지,
+   콘텐츠 bbox=viewBox) · 텍스트 실측 랩핑 · 스키마 주도 리드아웃(sim.readouts) ·
+   단일 rAF(입자+스위치, 백그라운드 탭 자동 정지)
    ========================================================================== */
 let activeMethodViz = null; // 현재 애니메이션/타이머 컨트롤러 (논문 전환 시 destroy)
 const MVNS = "http://www.w3.org/2000/svg";
@@ -1671,29 +1672,46 @@ function mvSlab(x, y, w, h, fill, stroke, rx) {
   g.appendChild(mvE("rect", { x, y, width: w, height: h, rx: rx || 4, fill, stroke, "stroke-width": "1" }));
   return g;
 }
-// 라벨 폭 계산(CJK=2칸) + 2줄 랩핑, 넘치면 말줄임 — 단어 중간이 뚝 끊긴 "깨진 화면" 방지
-const MV_WIDE = /[ᄀ-ᇿ⺀-꓏가-힣豈-﫿！-｠]/;
+// ── 텍스트 실측(canvas measureText, 헤드리스 폴백은 CJK 2칸 근사) + 랩핑 ──
+const MV_WIDE = /[ᄀ-ᇿ⺀-꓏가-힣豈-﫿！-｠]/;
 function mvUnits(s) { let u = 0; for (const ch of String(s || "")) u += MV_WIDE.test(ch) ? 2 : 1; return u; }
-function mvCut(s, units) { let u = 0, out = ""; for (const ch of String(s || "")) { const w = MV_WIDE.test(ch) ? 2 : 1; if (u + w > units) break; u += w; out += ch; } return out; }
-function mvWrapLabel(text, budget) {
+let mvMeasureCtx = null;
+function mvTextW(s, size) {
+  try {
+    if (!mvMeasureCtx) mvMeasureCtx = document.createElement("canvas").getContext("2d");
+    mvMeasureCtx.font = `${size}px sans-serif`;
+    const w = mvMeasureCtx.measureText(String(s || "")).width;
+    if (Number.isFinite(w) && w > 0) return w;
+  } catch {}
+  return mvUnits(s) * size * 0.56;
+}
+function mvCutPx(s, maxW, size) {
+  s = String(s || "");
+  if (mvTextW(s, size) <= maxW) return s;
+  let out = "";
+  for (const ch of s) { if (mvTextW(out + ch + "…", size) > maxW) break; out += ch; }
+  return out + "…";
+}
+// 어절 경계 우선 2줄 랩핑, 2줄 초과분은 말줄임. {lines, truncated} 반환
+function mvWrapPx(text, maxW, size) {
   text = String(text == null ? "" : text).trim();
-  if (!text) return [];
-  if (mvUnits(text) <= budget) return [text];
-  let l1 = "", rest = "";
+  if (!text) return { lines: [], truncated: false };
+  if (mvTextW(text, size) <= maxW) return { lines: [text], truncated: false };
+  let l1 = "";
   const words = text.split(/\s+/);
   if (words.length > 1) {
-    for (const w of words) { const cand = l1 ? l1 + " " + w : w; if (mvUnits(cand) <= budget) l1 = cand; else break; }
-    if (!l1) l1 = mvCut(text, budget);
-    rest = text.slice(l1.length).trim();
-  } else { l1 = mvCut(text, budget); rest = text.slice(l1.length).trim(); }
-  if (!rest) return [l1];
-  if (mvUnits(rest) <= budget) return [l1, rest];
-  return [l1, mvCut(rest, Math.max(1, budget - 1)) + "…"];
+    for (const w of words) { const cand = l1 ? l1 + " " + w : w; if (mvTextW(cand, size) <= maxW) l1 = cand; else break; }
+  }
+  if (!l1) { for (const ch of text) { if (mvTextW(l1 + ch, size) > maxW) break; l1 += ch; } }
+  const rest = text.slice(l1.length).trim();
+  if (!rest) return { lines: [l1], truncated: false };
+  if (mvTextW(rest, size) <= maxW) return { lines: [l1, rest], truncated: false };
+  return { lines: [l1, mvCutPx(rest, maxW, size)], truncated: true };
 }
 
 function validateMethodViz(raw) {
   if (!raw || typeof raw !== "object") return null;
-  const PRIM = new Set(["io_cube", "iso_stack", "card_stack", "op_box", "dual_dist_box"]);
+  const PRIM = new Set(["io_cube", "iso_stack", "card_stack", "op_box", "dual_dist_box", "switch_box", "queue_bank"]);
   const DVIZ = new Set(["pixel_grid", "activation_bars", "histogram", "sorted_threshold", "slab_mask", "convergence_curve", "transform", "summary_rows"]);
   const seen = new Set();
   let modules = (Array.isArray(raw.modules) ? raw.modules : [])
@@ -1702,6 +1720,7 @@ function validateMethodViz(raw) {
   modules.forEach((m) => {
     if (!PRIM.has(m.primitive)) m.primitive = "op_box";
     m.primitive_spec = m.primitive_spec && typeof m.primitive_spec === "object" ? m.primitive_spec : {};
+    if (!["top", "middle", "bottom"].includes(m.lane_hint)) m.lane_hint = null;
     if (m.primitive === "iso_stack") {
       let ls = (Array.isArray(m.primitive_spec.layers) ? m.primitive_spec.layers : [])
         .filter((l) => l && Number.isFinite(Number(l.ch)))
@@ -1713,7 +1732,11 @@ function validateMethodViz(raw) {
   const ids = new Set(modules.map((m) => m.id));
   const edges = (Array.isArray(raw.edges) ? raw.edges : [])
     .filter((e) => e && (ids.has(e.from) || e.from === "input") && ids.has(e.to))
-    .map((e) => ({ from: e.from, to: e.to, kind: ["forward", "gradient", "frozen"].includes(e.kind) ? e.kind : "forward", label: e.label || "" }));
+    .map((e) => ({ from: e.from, to: e.to, kind: ["forward", "gradient", "frozen", "alternating"].includes(e.kind) ? e.kind : "forward", label: e.label || "" }));
+  const groups = (Array.isArray(raw.groups) ? raw.groups : [])
+    .filter((g) => g && typeof g === "object")
+    .map((g) => ({ id: g.id || "", label: g.label || "", members: (Array.isArray(g.members) ? g.members : []).filter((id) => ids.has(id)), style: g.style === "solid" ? "solid" : "dashed" }))
+    .filter((g) => g.members.length);
   let steps = (Array.isArray(raw.steps) ? raw.steps : []).filter((s) => s && ids.has(s.module));
   if (steps.length < 2) {
     steps = modules.map((m) => ({ module: m.id, title: m.name || m.id, desc: m.role || "", detail_viz: { type: "transform", binds: ["example"], caption: m.data_state || "" } }));
@@ -1734,12 +1757,13 @@ function validateMethodViz(raw) {
     def = mvClamp(def, min, max);
     if (!Number.isFinite(step) || step <= 0) step = Math.max(1, Math.round((max - min) / 20));
     control.min = min; control.max = max; control.default = def; control.step = step;
-    // 방향: 값이 '상위 유지 비율'(η)인지 '상위 제거 비율'(프루닝 α)인지 — 리드아웃·임계선이 따름
-    if (control.direction !== "remove_top") control.direction = "keep_top";
+    // direction은 '마스크/선택' 의미일 때만 스펙이 명시 — 없으면 마스크 관련 UI(활성 리드아웃 등) 생략
+    if (!["keep_top", "remove_top"].includes(control.direction)) control.direction = null;
     if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
   }
   const sim = raw.sim && typeof raw.sim === "object" ? raw.sim : {};
-  return { ...raw, modules, edges, steps, control, sim };
+  sim.readouts = (Array.isArray(sim.readouts) ? sim.readouts : null);
+  return { ...raw, modules, edges, groups, steps, control, sim };
 }
 
 function buildMethodViz(raw) {
@@ -1747,19 +1771,20 @@ function buildMethodViz(raw) {
   if (!spec) return null;
 
   // ── 상태 ──
-  const cardMod = spec.modules.find((m) => m.primitive === "card_stack");
+  const cardMod = spec.modules.find((m) => m.primitive === "card_stack" || m.primitive === "queue_bank");
   const C = cardMod ? mvClamp(Number(cardMod.primitive_spec.count) || 16, 8, 24) : 16;
+  const hasDirection = !!(spec.control && spec.control.direction);
   const S = {
     spec, stepIdx: 0,
     eta: spec.control ? spec.control.default : 50,
-    iter: 0, C, scores: [], flips: 0,
+    iter: 0, C, scores: [], flips: 0, pulse: 0,
     reduce: window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-    raf: 0, playTimer: 0, mods: new Map(),
+    raf: 0, playTimer: 0, ro: null, mods: new Map(),
   };
   const resetScores = () => { S.scores = Array.from({ length: C }, () => 0.35 + Math.random() * 0.3); S.iter = 0; S.flips = 0; };
   resetScores();
-  const dirRemove = () => !!(spec.control && spec.control.direction === "remove_top");
-  // 살아남는(활성) 개수 — remove_top이면 (1−α), keep_top이면 η 비율
+  const dirRemove = () => spec.control && spec.control.direction === "remove_top";
+  // 살아남는(활성) 개수 — remove_top이면 (1−α), keep_top(또는 방향 미지정 마스크 시각화)이면 η
   const keepCount = () => {
     const frac = S.eta / 100;
     return mvClamp(Math.round(C * (dirRemove() ? 1 - frac : frac)), 0, C);
@@ -1768,10 +1793,10 @@ function buildMethodViz(raw) {
     const keep = keepCount();
     const order = S.scores.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).map((x) => x[1]);
     const m = new Array(C).fill(0);
-    // keep_top: 점수 상위 keep개 생존 / remove_top: 점수 상위(제거 대상)를 뺀 하위 keep개 생존
     (dirRemove() ? order.slice(C - keep) : order.slice(0, keep)).forEach((i) => (m[i] = 1));
     return m;
   };
+  const simMetric = () => 0.55 * Math.exp(-S.iter / 7) + 0.07; // 정성 지표(감소 경향) — 예시값
   const simStep = () => {
     const before = maskOf();
     const noise = 0.16 / (1 + S.iter * 0.6);
@@ -1779,32 +1804,88 @@ function buildMethodViz(raw) {
     const after = maskOf();
     S.flips = before.reduce((a, _, i) => a + (before[i] !== after[i] ? 1 : 0), 0);
     S.iter++;
+    S.pulse = 10; // queue_bank 카드 밀려들어오는 펄스 프레임
   };
 
-  // ── 레이아웃: 프리미티브별 실제 폭 → 누적 x + 고정 gap (겹침 구조적 제거) ──
-  const modW = (m) =>
-    m.primitive === "iso_stack" ? m.primitive_spec.layers.length * 20 + 14
-      : m.primitive === "io_cube" ? 64
-        : m.primitive === "card_stack" ? 62
-          : m.primitive === "dual_dist_box" ? 76 : 80;
+  /* ── P1. 위상 배치: forward(+alternating) edge로 rank(깊이) → x, 같은 rank는 lane → y ──
+     gradient/frozen은 rank에서 제외(역방향·우회). 전부 직렬이면 기존과 같은 한 줄이 나온다. */
   const n = spec.modules.length;
-  const twoRows = n >= 7; // 7개 이상은 한 줄이 물리적으로 무리 → serpentine 두 줄
-  const GAP = 48, MARGIN = 30, CY0 = 118, ROWH = 196;
-  const splitAt = twoRows ? Math.ceil(n / 2) : n;
-  const rowMods = [spec.modules.slice(0, splitAt), spec.modules.slice(splitAt)];
-  const rowWidth = rowMods.map((list) => list.reduce((a, m) => a + modW(m), 0) + GAP * Math.max(0, list.length - 1));
-  const W = Math.max(rowWidth[0] || 0, rowWidth[1] || 0, 320) + MARGIN * 2;
-  const H = twoRows ? CY0 + ROWH + 124 : 240;
-  const positions = [];
+  const idxOf = (id) => spec.modules.findIndex((m) => m.id === id);
+  const rank = new Array(n).fill(0);
   {
-    let x = MARGIN;
-    rowMods[0].forEach((m) => { const w = modW(m); positions.push({ cx: x + w / 2, cy: CY0, halfW: w / 2, row: 0 }); x += w + GAP; });
-    if (twoRows) {
-      let xr = W - MARGIN; // 두 번째 줄은 오른쪽→왼쪽 (serpentine)
-      rowMods[1].forEach((m) => { const w = modW(m); positions.push({ cx: xr - w / 2, cy: CY0 + ROWH, halfW: w / 2, row: 1 }); xr -= w + GAP; });
+    const re = spec.edges.filter((e) => (e.kind === "forward" || e.kind === "alternating") && e.from !== "input");
+    for (let it = 0; it < n + 1; it++) {
+      let changed = false;
+      re.forEach((e) => {
+        const f = idxOf(e.from), t = idxOf(e.to);
+        if (f >= 0 && t >= 0 && rank[f] + 1 > rank[t] && rank[t] <= n) { rank[t] = rank[f] + 1; changed = true; }
+      });
+      if (!changed) break;
     }
   }
-  const idxOf = (id) => spec.modules.findIndex((m) => m.id === id);
+  const R = Math.max(...rank) + 1;
+  const byRank = Array.from({ length: R }, () => []);
+  spec.modules.forEach((m, i) => byRank[rank[i]].push(i));
+  const maxLanes = Math.max(...byRank.map((l) => l.length));
+
+  // 프리미티브별 실제 폭(가변) — op/switch는 이름 실측(110~190px)
+  const HINT = { top: 0, middle: 1, bottom: 2 };
+  const boxMeta = new Map(); // i -> {w, boxW(op류 내부박스), nameLines, nameTrunc}
+  const modW = (m, i) => {
+    if (m.primitive === "iso_stack") return m.primitive_spec.layers.length * 20 + 14;
+    if (m.primitive === "io_cube") return 64;
+    if (m.primitive === "card_stack") return 62;
+    if (m.primitive === "queue_bank") return 30 + Math.min(Number(m.primitive_spec.count) || 6, 10) * 10;
+    if (m.primitive === "dual_dist_box") return 76;
+    // op_box / switch_box: 이름 실측 폭 기반 (min 110, max 190)
+    const wrap = mvWrapPx(m.name || m.id, 166, 10);
+    const wMax = Math.max(...wrap.lines.map((l) => mvTextW(l, 10)), 60);
+    const w = mvClamp(Math.ceil(wMax) + 24, 110, 190);
+    boxMeta.set(i, { boxW: w, nameLines: wrap.lines, nameTrunc: wrap.truncated });
+    return w;
+  };
+  const widths = spec.modules.map((m, i) => modW(m, i));
+
+  // 직렬(모든 rank 1레인) + 길면 두 줄 serpentine — 가독성 하한 대응 (P2-4b)
+  const serp = maxLanes === 1 && R >= 6;
+  const GAP = 48, MARGIN = 30, LANE_V = 164, CY0 = 118, ROWH = 196;
+  const positions = new Array(n);
+  if (serp) {
+    const split = Math.ceil(R / 2);
+    const rowRanks = [Array.from({ length: split }, (_, r) => r), Array.from({ length: R - split }, (_, k) => split + k)];
+    const rowW = rowRanks.map((rs) => rs.reduce((a, r) => a + (byRank[r][0] != null ? widths[byRank[r][0]] : 0), 0) + GAP * Math.max(0, rs.length - 1));
+    const W = Math.max(rowW[0], rowW[1] || 0) + MARGIN * 2;
+    let x = MARGIN;
+    rowRanks[0].forEach((r) => { const i = byRank[r][0]; positions[i] = { cx: x + widths[i] / 2, cy: CY0, halfW: widths[i] / 2, row: 0 }; x += widths[i] + GAP; });
+    let xr = W - MARGIN;
+    rowRanks[1].forEach((r) => { const i = byRank[r][0]; positions[i] = { cx: xr - widths[i] / 2, cy: CY0 + ROWH, halfW: widths[i] / 2, row: 1 }; xr -= widths[i] + GAP; });
+  } else {
+    // rank → 컬럼 x (컬럼 폭 = 그 rank 최대 모듈 폭), lane → y (lane_hint > 부모 barycenter > 원래 순서)
+    const colW = byRank.map((list) => Math.max(...list.map((i) => widths[i]), 60));
+    const colX = []; let x = MARGIN;
+    for (let r = 0; r < R; r++) { colX[r] = x; x += colW[r] + GAP; }
+    const laneOf = new Array(n).fill(0);
+    for (let r = 0; r < R; r++) {
+      const list = byRank[r];
+      const key = (i) => {
+        const m = spec.modules[i];
+        if (m.lane_hint) return HINT[m.lane_hint] * 1000 + i;
+        // barycenter: 부모(lane 배정 완료된 rank<r)의 평균 lane
+        const parents = spec.edges.filter((e) => e.to === m.id && e.from !== "input" && idxOf(e.from) >= 0 && rank[idxOf(e.from)] < r).map((e) => laneOf[idxOf(e.from)]);
+        return (parents.length ? parents.reduce((a, b) => a + b, 0) / parents.length : 1) * 1000 + i;
+      };
+      list.slice().sort((a, b) => key(a) - key(b)).forEach((i, li) => { laneOf[i] = li; });
+      list.forEach((i) => {
+        const k = list.length;
+        positions[i] = { cx: colX[rank[i]] + colW[rank[i]] / 2, cy: CY0 + (laneOf[i] - (k - 1) / 2) * LANE_V + (maxLanes > 1 ? ((maxLanes - 1) * LANE_V) / 2 : 0), halfW: widths[i] / 2, row: 0 };
+      });
+    }
+  }
+
+  // 콘텐츠 bbox 추적(P2) — 모듈·라벨·엣지·그룹·외곽 우회 경로 전부 포함
+  const bb = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity,
+    add(x0, y0, x1, y1) { this.x0 = Math.min(this.x0, x0); this.y0 = Math.min(this.y0, y0); this.x1 = Math.max(this.x1, x1); this.y1 = Math.max(this.y1, y1); } };
+  positions.forEach((p) => bb.add(p.cx - p.halfW - 8, p.cy - 72, p.cx + p.halfW + 8, p.cy + 74));
 
   // ── 골격 DOM ──
   const wrap = document.createElement("div");
@@ -1815,29 +1896,32 @@ function buildMethodViz(raw) {
     (spec.section_ref ? `<span class="mviz-ref">${escapeHtmlAttr(spec.section_ref)}</span>` : "");
   wrap.appendChild(header);
 
-  const scroller = document.createElement("div");
-  scroller.className = "mviz-stage mviz-left";
-  const svg = mvE("svg", { viewBox: `0 0 ${W} ${H}`, class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
+  const stage = document.createElement("div");
+  stage.className = "mviz-stage mviz-left";
+  const svg = mvE("svg", { class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
   const defs = mvE("defs");
   ["#6b6258", "#8c2f39"].forEach((c, k) => {
     const mk = mvE("marker", { id: `mviz-arrow${k}`, viewBox: "0 0 8 8", refX: "6", refY: "4", markerWidth: "6", markerHeight: "6", orient: "auto" });
     mk.appendChild(mvE("path", { d: "M0 0 L8 4 L0 8 Z", fill: c }));
     defs.appendChild(mk);
   });
-  const gEdges = mvE("g"); const gMods = mvE("g"); const gParticles = mvE("g");
-  svg.append(defs, gEdges, gMods, gParticles);
-  scroller.appendChild(svg);
+  const gGroups = mvE("g"); const gEdges = mvE("g"); const gMods = mvE("g"); const gParticles = mvE("g");
+  svg.append(defs, gGroups, gEdges, gMods, gParticles);
+  stage.appendChild(svg);
 
   // ── 모듈 그리기 (primitive별) — 그래픽/라벨 서브그룹 분리(디밍 강도 다르게) ──
+  const altSwitches = []; // switch_box 레버 참조 (alternating 토글 애니메이션)
+  const queueEls = []; // queue_bank 카드 그룹 (sim 펄스)
   function drawModule(m, i) {
     const pos = positions[i];
-    const cy = 118; // 그룹 내부 기준 좌표 (transform으로 행 위치 반영)
+    const cy = 118;
     const g = mvE("g", { "data-mod": m.id, "data-hw": pos.halfW, class: "mviz-mod", transform: `translate(${pos.cx},${pos.cy - 118})` });
     const gfx = mvE("g"); const lab = mvE("g");
     g.append(gfx, lab);
     g.__gfx = gfx; g.__lab = lab;
     const affected = spec.control && spec.control.affects.includes(m.id);
     const TAN = "#e7dcc3", TAN_S = "#c9b892", PURPLE = "#7c5cbf", INK = "#211d19", FAINT = "#9b9285";
+    let labelBelow = true;
     if (m.primitive === "io_cube") {
       const glyph = (m.primitive_spec.glyph || "none");
       gfx.appendChild(mvSlab(-26, cy - 26, 52, 52, "#fff", "#c9b892", 8));
@@ -1845,7 +1929,7 @@ function buildMethodViz(raw) {
         gfx.append(mvE("circle", { cx: -8, cy: cy - 6, r: 3, fill: INK }), mvE("circle", { cx: 8, cy: cy - 6, r: 3, fill: INK }),
           mvE("path", { d: `M-10 ${cy + 8} Q0 ${cy + 16} 10 ${cy + 8}`, stroke: INK, fill: "none", "stroke-width": "2" }));
       } else if (glyph === "text") {
-        [-8, 0, 8].forEach((dy, k) => gfx.appendChild(mvE("rect", { x: -16, y: cy - 8 + k * 8, width: 32 - k * 6, height: 3, rx: 1.5, fill: FAINT })));
+        [0, 1, 2].forEach((k) => gfx.appendChild(mvE("rect", { x: -16, y: cy - 8 + k * 8, width: 32 - k * 6, height: 3, rx: 1.5, fill: FAINT })));
       } else gfx.appendChild(mvT(0, cy + 4, "▦", { "text-anchor": "middle", fill: FAINT, "font-size": "18" }));
     } else if (m.primitive === "iso_stack") {
       const layers = m.primitive_spec.layers;
@@ -1859,19 +1943,29 @@ function buildMethodViz(raw) {
         const nLines = Math.min(L.ch, 6);
         for (let c = 0; c < nLines; c++) {
           const yy = top + 5 + (c * (h - 10)) / Math.max(1, nLines - 1);
-          const off = affected && (c + 1) / nLines > aliveFrac; // 살아남는 비율만 실선
+          const off = affected && hasDirection && (c + 1) / nLines > aliveFrac;
           slab.appendChild(mvE("line", { x1: lx + 3, y1: yy, x2: lx + 12, y2: yy, stroke: off ? "#c9b892" : TAN_S, "stroke-width": off ? "1" : "1.6", "stroke-dasharray": off ? "2 2" : "", opacity: off ? "0.5" : "1" }));
         }
         gfx.appendChild(slab);
         lx += 20;
       });
-      if (frozen) lab.appendChild(mvT(0, cy - 46, "🔒 frozen", { "text-anchor": "middle", fill: FAINT, "font-size": "9" }));
+      lab.appendChild(mvT(0, cy - 46, frozen ? "🔒 frozen" : "🔥 학습", { "text-anchor": "middle", fill: frozen ? FAINT : "#8c2f39", "font-size": "9", class: "mv-sub" }));
     } else if (m.primitive === "card_stack") {
       const col = m.primitive_spec.color === "tan" ? TAN : PURPLE;
       for (let k = 3; k >= 0; k--) {
         gfx.appendChild(mvE("rect", { x: -20 + k * 4, y: cy - 24 + k * 4, width: 40, height: 46, rx: 5, fill: k === 0 ? col : "#fff", stroke: col, "stroke-width": "1.4", opacity: k === 0 ? "0.92" : "0.5" }));
       }
-      gfx.appendChild(mvT(0, cy + 4, mvCut(m.primitive_spec.label || "r", 9), { "text-anchor": "middle", fill: "#fff", "font-size": "10.5", "font-weight": "600" }));
+      gfx.appendChild(mvT(0, cy + 4, mvCutPx(m.primitive_spec.label || "r", 36, 10), { "text-anchor": "middle", fill: "#fff", "font-size": "10.5", "font-weight": "600" }));
+    } else if (m.primitive === "queue_bank") {
+      // 가로로 눕힌 카드 열 (큐 뱅크 Q_v/Q_t). grow=true면 sim 반복 시 새 카드가 밀려 들어옴
+      const cnt = Math.min(Number(m.primitive_spec.count) || 6, 10);
+      const qg = mvE("g");
+      for (let k = cnt - 1; k >= 0; k--) {
+        qg.appendChild(mvE("rect", { x: -pos.halfW + 12 + k * 10, y: cy - 16, width: 13, height: 32, rx: 3, fill: k === 0 ? PURPLE : "#fff", stroke: PURPLE, "stroke-width": "1.2", opacity: k === 0 ? "0.92" : String(0.75 - k * 0.04) }));
+      }
+      gfx.appendChild(qg);
+      if (m.primitive_spec.grow) queueEls.push({ g: qg, baseX: 0 });
+      gfx.appendChild(mvT(pos.halfW - 6, cy + 5, m.primitive_spec.label || "Q", { "text-anchor": "end", fill: PURPLE, "font-size": "10", "font-weight": "700" }));
     } else if (m.primitive === "dual_dist_box") {
       gfx.appendChild(mvSlab(-32, cy - 24, 64, 50, "#fff", "#c9b892", 7));
       const labels = Array.isArray(m.primitive_spec.labels) ? m.primitive_spec.labels : [];
@@ -1880,23 +1974,46 @@ function buildMethodViz(raw) {
         for (let t = 0; t <= 12; t++) { const x = ox - 12 + t * 2; const yy = cy + 12 - 26 * Math.exp(-Math.pow((t - 6) / 3, 2)); d += ` L${x} ${yy}`; }
         gfx.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6" }));
       });
-      if (labels.length) gfx.appendChild(mvT(0, cy + 22, mvCut(labels.slice(0, 2).join("·"), 13), { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
-    } else { // op_box
-      gfx.appendChild(mvSlab(-36, cy - 22, 72, 46, "#fff", "#8c2f39", 7));
+      if (labels.length) gfx.appendChild(mvT(0, cy + 22, mvCutPx(labels.slice(0, 2).join("·"), 58, 7.5), { "text-anchor": "middle", fill: FAINT, "font-size": "7.5", class: "mv-sub" }));
+    } else { // op_box / switch_box — 이름 실측 폭 가변 박스, 이름은 박스 안(2줄 랩핑)
+      labelBelow = false;
+      const meta = boxMeta.get(i) || { boxW: 110, nameLines: [m.name || m.id], nameTrunc: false };
+      const bw = meta.boxW, two = meta.nameLines.length > 1;
+      const bh = two ? 54 : 46;
+      const isSwitch = m.primitive === "switch_box";
+      gfx.appendChild(mvSlab(-bw / 2, cy - bh / 2, bw, bh, "#fff", "#8c2f39", 7));
+      meta.nameLines.forEach((ln, k) => {
+        const t = mvT(isSwitch ? 8 : 0, cy - (two ? 8 : 2) + k * 11 - (isSwitch && !two ? 0 : 0), ln, { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" });
+        if (meta.nameTrunc) { const ti = mvE("title"); ti.textContent = m.name || ""; t.appendChild(ti); } // 말줄임 시 hover로 전체
+        gfx.appendChild(t);
+      });
       let sub = m.sub || "";
       if (m.primitive_spec.dynamic_sub && spec.control) sub = `${spec.control.symbol || spec.control.param}=${S.eta}${spec.control.unit || ""}`;
-      gfx.appendChild(mvT(0, cy - 2, mvCut(m.name || "", 13), { "text-anchor": "middle", fill: INK, "font-size": "10", "font-weight": "600" }));
-      if (sub) gfx.appendChild(mvT(0, cy + 12, mvCut(sub, 14), { "text-anchor": "middle", fill: "#8c2f39", "font-size": "9" }));
+      if (sub) gfx.appendChild(mvT(isSwitch ? 8 : 0, cy + (two ? 18 : 12), mvCutPx(sub, bw - 18, 9), { "text-anchor": "middle", fill: "#8c2f39", "font-size": "9", class: "mv-sub" }));
+      if (isSwitch) {
+        // 스위치 레버: alternating 출력 edge가 있으면 rAF에서 각도 토글
+        const pivotX = -bw / 2 + 13;
+        gfx.appendChild(mvE("circle", { cx: pivotX, cy: cy, r: 3.2, fill: "#8c2f39" }));
+        const arm = mvE("line", { x1: pivotX, y1: cy, x2: pivotX + 11, y2: cy - 8, stroke: "#8c2f39", "stroke-width": "2.4", "stroke-linecap": "round" });
+        gfx.appendChild(arm);
+        if (spec.edges.some((e) => e.from === m.id && e.kind === "alternating")) altSwitches.push({ arm, pivotX, cy });
+      }
     }
-    // 이름 라벨: 폭 예산 안에서 2줄 랩핑, 넘치면 말줄임 (name_short가 있으면 그것 우선)
-    const budget = Math.max(Math.round((pos.halfW * 2 + 34) / 5.4), 16);
-    const rawName = m.name || m.id;
-    const nameText = (mvUnits(rawName) > budget * 2 && m.name_short) ? m.name_short : rawName;
-    const lines = mvWrapLabel(nameText, budget);
-    lines.forEach((ln, k) => lab.appendChild(mvT(0, cy + 44 + k * 11, ln, { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" })));
-    if (m.sub && m.primitive !== "op_box") {
-      const sub = mvUnits(m.sub) > budget ? mvCut(m.sub, Math.max(1, budget - 1)) + "…" : m.sub;
-      lab.appendChild(mvT(0, cy + 44 + lines.length * 11 + 1, sub, { "text-anchor": "middle", fill: FAINT, "font-size": "8.5" }));
+    // 이름 라벨(박스형 제외): 실측 2줄 랩핑 → 말줄임(+hover 전체), name_short 있으면 축소용으로 대체
+    if (labelBelow) {
+      const budget = Math.max(pos.halfW * 2 + 34, 96);
+      const rawName = m.name || m.id;
+      const wrap = mvWrapPx(rawName, budget, 9.5);
+      const useShort = wrap.truncated && m.name_short;
+      const finalWrap = useShort ? mvWrapPx(m.name_short, budget, 9.5) : wrap;
+      finalWrap.lines.forEach((ln, k) => {
+        const t = mvT(0, cy + 44 + k * 11, ln, { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" });
+        if (finalWrap.truncated || useShort) { const ti = mvE("title"); ti.textContent = rawName; t.appendChild(ti); }
+        lab.appendChild(t);
+      });
+      if (m.sub) {
+        lab.appendChild(mvT(0, cy + 44 + finalWrap.lines.length * 11 + 1, mvCutPx(m.sub, budget, 8.5), { "text-anchor": "middle", fill: FAINT, "font-size": "8.5", class: "mv-sub" }));
+      }
     }
     return g;
   }
@@ -1908,56 +2025,92 @@ function buildMethodViz(raw) {
     applyHighlight();
   }
 
-  // ── 엣지: bbox 기반 라우팅 (같은 줄 직선/우회 아치, 줄 건너 S-커브, 되먹임 아치) ──
-  function edgeGeom(e) {
-    const ti = idxOf(e.to);
-    if (ti < 0) return null;
-    const b = positions[ti];
-    if (e.from === "input" || idxOf(e.from) < 0) {
-      const x2 = b.cx - b.halfW - 6;
-      return { d: `M${x2 - 30} ${b.cy} L${x2} ${b.cy}`, lx: x2 - 15, ly: b.cy - 9, len: 30, arrow: true };
-    }
-    const fi = idxOf(e.from);
-    const a = positions[fi];
-    if (a.row === b.row) {
-      const sign = b.cx > a.cx ? 1 : -1;
-      const x1 = a.cx + sign * (a.halfW + 5), x2 = b.cx - sign * (b.halfW + 5);
-      const between = positions.some((p, k) => k !== fi && k !== ti && p.row === a.row &&
-        Math.min(a.cx, b.cx) < p.cx && p.cx < Math.max(a.cx, b.cx));
-      if (!between) {
-        return { d: `M${x1} ${a.cy} L${x2} ${a.cy}`, lx: (x1 + x2) / 2, ly: a.cy - 9, len: Math.abs(x2 - x1), arrow: true };
+  // ── 그룹(점선 라운드 박스) — 멤버 모듈 bbox 합집합 ──
+  function drawGroups() {
+    gGroups.textContent = "";
+    (spec.groups || []).forEach((grp) => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      grp.members.forEach((id) => {
+        const i = idxOf(id); if (i < 0) return;
+        const p = positions[i];
+        x0 = Math.min(x0, p.cx - p.halfW - 12); y0 = Math.min(y0, p.cy - 66);
+        x1 = Math.max(x1, p.cx + p.halfW + 12); y1 = Math.max(y1, p.cy + 68);
+      });
+      if (!isFinite(x0)) return;
+      gGroups.appendChild(mvE("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, rx: 10, fill: "none", stroke: "#b7a680", "stroke-width": "1.2", "stroke-dasharray": grp.style === "dashed" ? "6 4" : "" }));
+      if (grp.label) {
+        gGroups.appendChild(mvT(x0 + 8, y0 - 5, grp.label, { fill: "#8c2f39", "font-size": "9", "font-weight": "700", "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3" }));
+        bb.add(x0, y0 - 16, x0 + mvTextW(grp.label, 9) + 10, y0);
       }
-      // 중간에 모듈이 있으면 우회 아치 — 순방향은 위로, 되먹임은 아래로
-      const up = ti > fi;
-      const yA = a.cy + (up ? -64 : 70), yy = a.cy + (up ? -86 : 92);
-      return {
-        d: `M${a.cx} ${yA} C${a.cx} ${yy} ${b.cx} ${yy} ${b.cx} ${b.cy + (up ? -64 : 70)}`,
-        lx: (a.cx + b.cx) / 2, ly: yy + (up ? -3 : 10), len: Math.abs(b.cx - a.cx), arrow: true,
-      };
-    }
-    // 줄 건너기: 아래(또는 위)로 나가 S-커브로 진입
-    const down = b.cy > a.cy;
-    const y1 = a.cy + (down ? 70 : -64), y2 = b.cy + (down ? -64 : 70);
-    return {
-      d: `M${a.cx} ${y1} C${a.cx} ${y1 + (down ? 56 : -56)} ${b.cx} ${y2 + (down ? -56 : 56)} ${b.cx} ${y2}`,
-      lx: (a.cx + b.cx) / 2, ly: (y1 + y2) / 2, len: Math.hypot(b.cx - a.cx, y2 - y1), arrow: true,
-    };
+      bb.add(x0 - 2, y0 - 2, x1 + 2, y1 + 2);
+    });
   }
+
+  // ── 엣지: rank 인접은 직선/S-커브, 건너뛰기는 위 직교 우회, gradient 회귀는 아래 직교 우회 ──
+  const altEdgeEls = []; // alternating 엣지 (rAF 토글)
   function drawEdges() {
     gEdges.textContent = "";
+    const contentBottom = Math.max(...positions.map((p) => p.cy + 74));
+    const contentTop = Math.min(...positions.map((p) => p.cy - 72));
+    let gradIdx = 0, skipIdx = 0;
+    const pairSeen = new Map(); // 같은 (from,to) 다중 edge 세로 오프셋
     spec.edges.forEach((e) => {
-      const geo = edgeGeom(e);
-      if (!geo) return;
+      const ti = idxOf(e.to); if (ti < 0) return;
+      const b = positions[ti];
       const col = e.kind === "gradient" ? "#8c2f39" : e.kind === "frozen" ? "#c2b8a2" : "#6b6258";
-      const dash = e.kind === "forward" ? "" : e.kind === "gradient" ? "5 4" : "3 4";
+      const dash = e.kind === "forward" || e.kind === "alternating" ? "" : e.kind === "gradient" ? "5 4" : "3 4";
       const mk = e.kind === "gradient" ? "url(#mviz-arrow1)" : "url(#mviz-arrow0)";
-      gEdges.appendChild(mvE("path", { d: geo.d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": geo.arrow ? mk : "" }));
-      // 라벨: 짧은 엣지에선 숨기고(겹침 방지), 흰 헤일로로 다른 요소 위에서도 읽히게
-      if (e.label && geo.len >= 70) {
-        gEdges.appendChild(mvT(geo.lx, geo.ly, mvCut(e.label, 14), {
-          "text-anchor": "middle", fill: col, "font-size": "8.5",
-          "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3", "stroke-linejoin": "round",
-        }));
+      let d, lx, ly, len;
+      if (e.from === "input" || idxOf(e.from) < 0) {
+        const x2 = b.cx - b.halfW - 6;
+        d = `M${x2 - 30} ${b.cy} L${x2} ${b.cy}`; lx = x2 - 15; ly = b.cy - 9; len = 30;
+        bb.add(x2 - 34, b.cy - 14, x2, b.cy + 4);
+      } else {
+        const fi = idxOf(e.from);
+        const a = positions[fi];
+        const key = e.from + ">" + e.to;
+        const off = (pairSeen.get(key) || 0) * 9; pairSeen.set(key, (pairSeen.get(key) || 0) + 1);
+        const dr = rank[ti] - rank[fi];
+        if (a.row !== b.row) { // serpentine 줄 건너 S-커브
+          const down = b.cy > a.cy;
+          const y1 = a.cy + (down ? 70 : -64), y2 = b.cy + (down ? -64 : 70);
+          d = `M${a.cx} ${y1} C${a.cx} ${y1 + (down ? 56 : -56)} ${b.cx} ${y2 + (down ? -56 : 56)} ${b.cx} ${y2}`;
+          lx = (a.cx + b.cx) / 2; ly = (y1 + y2) / 2; len = Math.hypot(b.cx - a.cx, y2 - y1);
+          bb.add(Math.min(a.cx, b.cx) - 6, Math.min(y1, y2) - 6, Math.max(a.cx, b.cx) + 6, Math.max(y1, y2) + 6);
+        } else if (e.kind === "gradient" && dr <= 0) {
+          // 회귀: 파이프라인 아래 외곽으로 직교 우회 (모듈 관통 금지)
+          const outY = contentBottom + 26 + gradIdx * 14; gradIdx++;
+          const x1 = a.cx + off, x2 = b.cx - off;
+          d = `M${x1} ${a.cy + 70} L${x1} ${outY} L${x2} ${outY} L${x2} ${b.cy + 74}`;
+          lx = (x1 + x2) / 2; ly = outY - 4; len = Math.abs(x2 - x1);
+          bb.add(Math.min(x1, x2) - 6, a.cy, Math.max(x1, x2) + 6, outY + 8);
+        } else if (Math.abs(dr) > 1) {
+          // rank 건너뛰기: 위 외곽 직교 우회
+          const outY = contentTop - 22 - skipIdx * 14; skipIdx++;
+          const x1 = a.cx + off, x2 = b.cx - off;
+          d = `M${x1} ${a.cy - 64} L${x1} ${outY} L${x2} ${outY} L${x2} ${b.cy - 64}`;
+          lx = (x1 + x2) / 2; ly = outY - 4; len = Math.abs(x2 - x1);
+          bb.add(Math.min(x1, x2) - 6, outY - 14, Math.max(x1, x2) + 6, b.cy);
+        } else {
+          // 인접 rank: 수평 or 세로차 S-커브 (+같은 쌍 다중 edge는 세로 오프셋 분리)
+          const x1 = a.cx + a.halfW + 5, x2 = b.cx - b.halfW - 5;
+          const y1 = a.cy + off, y2 = b.cy + off;
+          if (Math.abs(y1 - y2) < 4) { d = `M${x1} ${y1} L${x2} ${y2}`; }
+          else { const mx = (x1 + x2) / 2; d = `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`; }
+          lx = (x1 + x2) / 2; ly = Math.min(y1, y2) - 8 + (off ? off + 16 : 0); len = Math.hypot(x2 - x1, y2 - y1);
+          bb.add(Math.min(x1, x2) - 4, Math.min(y1, y2) - 16, Math.max(x1, x2) + 4, Math.max(y1, y2) + 6);
+        }
+      }
+      const path = mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": mk, "data-kind": e.kind });
+      gEdges.appendChild(path);
+      if (e.kind === "alternating") altEdgeEls.push(path);
+      if (e.label) {
+        if (len >= 70) {
+          gEdges.appendChild(mvT(lx, ly, mvCutPx(e.label, 90, 8.5), {
+            "text-anchor": "middle", fill: col, "font-size": "8.5", class: "mv-elabel",
+            "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3", "stroke-linejoin": "round",
+          }));
+        } else { const ti2 = mvE("title"); ti2.textContent = e.label; path.appendChild(ti2); } // 짧은 엣지는 hover로
       }
     });
   }
@@ -1966,7 +2119,6 @@ function buildMethodViz(raw) {
     const active = spec.steps[S.stepIdx] && spec.steps[S.stepIdx].module;
     S.mods.forEach((g, id) => {
       const on = !active || id === active;
-      // 그래픽만 강하게 디밍, 이름은 덜 디밍 — 모듈이 많아도 맥락 유지
       if (g.__gfx) g.__gfx.setAttribute("opacity", on ? "1" : "0.5");
       if (g.__lab) g.__lab.setAttribute("opacity", on ? "1" : "0.75");
     });
@@ -1994,11 +2146,10 @@ function buildMethodViz(raw) {
     try {
       if (type === "pixel_grid") {
         for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
-          const dcx = 3.5, dcy = 3.5, dist = Math.hypot(r - dcx, c - dcy) / 5;
+          const dist = Math.hypot(r - 3.5, c - 3.5) / 5;
           g.appendChild(mvE("rect", { x: 112 + c * 12, y: 12 + r * 12, width: 11, height: 11, fill: ACC, opacity: (1 - dist).toFixed(2) }));
         }
       } else if (type === "activation_bars") {
-        // groups: {n, label} — 층 구분선+라벨로 "g묶음 × 막대" 구조가 보이게
         const gn = dv.groups && Number(dv.groups.n) >= 2 ? mvClamp(Math.round(Number(dv.groups.n)), 2, 12) : 0;
         const per = gn ? Math.max(1, Math.round(12 / gn)) : 0;
         const K = gn ? gn * per : 12;
@@ -2017,7 +2168,6 @@ function buildMethodViz(raw) {
         const sorted = S.scores.slice().sort((a, b) => b - a);
         const keep = keepCount(), removeN = C - keep;
         const bw = Math.max(3, 296 / C);
-        // 생존 채널만 강조색 — remove_top이면 임계선 '왼쪽(상위 점수)'이 제거 대상
         sorted.forEach((v, k) => {
           const survive = dirRemove() ? k >= removeN : k < keep;
           g.appendChild(mvE("rect", { x: 12 + k * bw, y: 116 - v * 96, width: bw - 1, height: v * 96, fill: survive ? ACC : "#d8cfbc", opacity: survive ? "1" : "0.75" }));
@@ -2031,7 +2181,7 @@ function buildMethodViz(raw) {
       } else if (type === "slab_mask") {
         const mask = maskOf();
         const bw = Math.max(8, 300 / C);
-        mask.forEach((mk, k) => g.appendChild(mvE("rect", { x: 12 + k * bw, y: 40, width: bw - 3, height: 52, rx: 2, fill: mk ? "#e7dcc3" : "#fff", stroke: mk ? "#b7a680" : "#d8cfbc", "stroke-dasharray": mk ? "" : "3 2", opacity: mk ? "1" : "0.6" })));
+        mask.forEach((mk2, k) => g.appendChild(mvE("rect", { x: 12 + k * bw, y: 40, width: bw - 3, height: 52, rx: 2, fill: mk2 ? "#e7dcc3" : "#fff", stroke: mk2 ? "#b7a680" : "#d8cfbc", "stroke-dasharray": mk2 ? "" : "3 2", opacity: mk2 ? "1" : "0.6" })));
       } else if (type === "convergence_curve") {
         let d = "M12 108"; for (let t = 0; t <= 40; t++) { const x = 12 + t * 7.4; const yy = 108 - 92 * (1 - Math.exp(-t / 10)); d += ` L${x} ${yy}`; }
         g.appendChild(mvE("path", { d, stroke: ACC, fill: "none", "stroke-width": "2" }));
@@ -2039,8 +2189,12 @@ function buildMethodViz(raw) {
         g.appendChild(mvE("circle", { cx: px, cy: py, r: 4, fill: ACC }));
         g.appendChild(mvT(px + 6, py - 4, `iter ${S.iter}`, { fill: FAINT, "font-size": "9" }));
       } else if (type === "summary_rows") {
-        const keep = keepCount();
-        [["활성 채널", `${keep} / ${C}`], ["학습 반복", `${S.iter}회`], ["마스크 변동", `${S.flips}`]].forEach((row, k) => {
+        const rows = [];
+        if (hasDirection) rows.push(["활성 채널", `${keepCount()} / ${C}`]);
+        rows.push(["학습 반복", `${S.iter}회`]);
+        if (hasDirection) rows.push(["마스크 변동", `${S.flips}`]);
+        else rows.push(["정성 지표", `${simMetric().toFixed(2)} (예시)`]);
+        rows.forEach((row, k) => {
           g.append(mvT(20, 36 + k * 30, row[0], { fill: FAINT, "font-size": "12" }), mvT(300, 36 + k * 30, row[1], { fill: INK, "font-size": "13", "font-weight": "700", "text-anchor": "end" }));
         });
       } else { // transform
@@ -2049,12 +2203,12 @@ function buildMethodViz(raw) {
         const box = (x, label, sub, col) => {
           const gg = mvE("g");
           gg.appendChild(mvE("rect", { x, y: 44, width: 96, height: 44, rx: 6, fill: "#fff", stroke: col }));
-          gg.appendChild(mvT(x + 48, 62, mvCut(label || "", 17), { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" }));
-          if (sub) gg.appendChild(mvT(x + 48, 76, mvCut(sub, 19), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
+          gg.appendChild(mvT(x + 48, 62, mvCutPx(label || "", 88, 9.5), { "text-anchor": "middle", fill: INK, "font-size": "9.5", "font-weight": "600" }));
+          if (sub) gg.appendChild(mvT(x + 48, 76, mvCutPx(sub, 88, 8), { "text-anchor": "middle", fill: FAINT, "font-size": "8" }));
           return gg;
         };
         g.append(box(6, prev ? prev.name : "입력", prev ? prev.data_state : "", "#c9b892"),
-          mvT(160, 40, mvCut(mod.name || "", 20), { "text-anchor": "middle", fill: ACC, "font-size": "9" }),
+          mvT(160, 40, mvCutPx(mod.name || "", 110, 9), { "text-anchor": "middle", fill: ACC, "font-size": "9" }),
           mvE("path", { d: "M104 66 L120 66", stroke: ACC, "stroke-width": "1.5", "marker-end": "url(#mviz-arrow1)" }),
           mvE("path", { d: "M200 66 L216 66", stroke: ACC, "stroke-width": "1.5", "marker-end": "url(#mviz-arrow1)" }),
           box(218, mod.name || "출력", mod.data_state || "", "#8c2f39"));
@@ -2076,9 +2230,7 @@ function buildMethodViz(raw) {
     S.stepIdx = mvClamp(i, 0, spec.steps.length - 1);
     posEl.textContent = `${S.stepIdx + 1} / ${spec.steps.length}`;
     applyHighlight(); renderStepInfo(); drawDetail();
-    // 현재 단계 모듈이 보이게 스크롤
-    const active = spec.steps[S.stepIdx].module, gi = idxOf(active);
-    if (gi >= 0) scroller.scrollTo({ left: Math.max(0, positions[gi].cx - scroller.clientWidth / 2), behavior: S.reduce ? "auto" : "smooth" });
+    // fit-to-view라 전체가 항상 보임 — 스크롤 이동 불필요
   }
 
   // 스테퍼 버튼
@@ -2095,7 +2247,7 @@ function buildMethodViz(raw) {
     }, 2200);
   }
 
-  // ── 컨트롤 바 (control + sim) ──
+  // ── 컨트롤 바 (control + sim + 스키마 주도 리드아웃) ──
   const ctrlBar = document.createElement("div");
   ctrlBar.className = "mviz-ctrl";
   if (spec.control) {
@@ -2113,14 +2265,45 @@ function buildMethodViz(raw) {
     lab.title = c.semantics || "";
     ctrlBar.append(lab, slider, val);
   }
-  const readout = document.createElement("span"); readout.className = "mviz-readout";
+  // 리드아웃: 스펙(sim.readouts) 정의가 있으면 그것만, 없으면 기본(마스크 의미가 있을 때만 '활성')
+  const readout = document.createElement("span"); readout.className = "mviz-readouts";
+  const readoutItems = (() => {
+    if (spec.sim.readouts && spec.sim.readouts.length) {
+      return spec.sim.readouts
+        .filter((r) => r && typeof r === "object" && r.label)
+        .slice(0, 4)
+        .map((r) => ({ label: String(r.label), source: String(r.source || "iter"), format: r.format ? String(r.format) : null }));
+    }
+    const items = [];
+    if (hasDirection) items.push({ label: "활성", source: "keep_frac" });
+    items.push({ label: "학습 반복", source: "iter" });
+    if (hasDirection) items.push({ label: "마스크 변동", source: "flips" });
+    return items;
+  })();
+  const readoutValue = (r) => {
+    switch (r.source) {
+      case "keep_frac": return `${keepCount()}/${C}`;
+      case "flips": return String(S.flips);
+      case "sim_metric": {
+        const v = simMetric();
+        return r.format ? r.format.replace(/0\.0+/, v.toFixed((r.format.match(/0\.(0+)/) || [, "00"])[1].length)) : v.toFixed(2);
+      }
+      default: return String(S.iter); // iter
+    }
+  };
+  function updateReadout() {
+    readout.innerHTML = "";
+    readoutItems.forEach((r) => {
+      const s = document.createElement("span");
+      s.className = "mviz-ro";
+      s.innerHTML = `<b>${escapeHtmlAttr(r.label)}</b> ${escapeHtmlAttr(readoutValue(r))}`;
+      readout.appendChild(s);
+    });
+  }
   const simB = mvBtn("↻ 학습 1회 반복", "정성 시뮬레이션 한 스텝", () => { simStep(); refreshMods(); drawDetail(); updateReadout(); });
   const resetB = mvBtn("초기화", "시뮬레이션 리셋", () => { resetScores(); refreshMods(); drawDetail(); updateReadout(); });
   simB.classList.add("mviz-sim"); resetB.classList.add("mviz-reset");
   ctrlBar.append(simB, resetB, readout);
-  function updateReadout() {
-    readout.textContent = `활성 ${keepCount()}/${C} · 반복 ${S.iter} · 변동 ${S.flips}`;
-  }
 
   // disclaimer 각주
   const foot = document.createElement("p");
@@ -2128,7 +2311,6 @@ function buildMethodViz(raw) {
   foot.textContent = spec.sim.disclaimer || "내부 시각화 값은 논문의 정성적 패턴을 반영한 예시이며 실제 학습 수치가 아닙니다.";
 
   // ── 좌우 분할: 왼쪽 = 파이프라인, 오른쪽 = 스테퍼·단계 설명·세부 시각화 ──
-  // 가로 비율(디바이더 드래그)과 전체 높이(하단 핸들 드래그)를 사용자가 조절, localStorage에 저장
   const split = document.createElement("div");
   split.className = "mviz-split";
   const divider = document.createElement("div");
@@ -2137,7 +2319,7 @@ function buildMethodViz(raw) {
   const rightPane = document.createElement("div");
   rightPane.className = "mviz-right";
   rightPane.append(stepBar, stepInfo, detailWrap);
-  split.append(scroller, divider, rightPane);
+  split.append(stage, divider, rightPane);
 
   let splitRatio = 0.58, splitH = 380;
   try {
@@ -2146,7 +2328,7 @@ function buildMethodViz(raw) {
     const h = Number(localStorage.getItem("mvizHeight"));
     if (h >= 240 && h <= 760) splitH = h;
   } catch {}
-  const applySplit = () => { scroller.style.flex = `0 0 calc(${(splitRatio * 100).toFixed(1)}% - 5px)`; };
+  const applySplit = () => { stage.style.flex = `0 0 calc(${(splitRatio * 100).toFixed(1)}% - 5px)`; };
   const applyHeight = () => { split.style.height = `${Math.round(splitH)}px`; };
   applySplit(); applyHeight();
 
@@ -2185,9 +2367,35 @@ function buildMethodViz(raw) {
 
   wrap.append(split, hHandle, ctrlBar, foot);
 
-  // ── 순전파 입자: 모듈 중심을 잇는 폴리라인 경로(두 줄 serpentine 포함) ──
-  function startParticles() {
-    if (S.reduce || positions.length < 2) return;
+  // ── 초기 렌더 → 콘텐츠 bbox 기반 viewBox (fit-to-view: 스크롤 없이 전체 표시) ──
+  drawGroups(); drawEdges(); refreshMods();
+  {
+    const pad = 24;
+    const vb = [bb.x0 - pad, bb.y0 - pad, (bb.x1 - bb.x0) + pad * 2, (bb.y1 - bb.y0) + pad * 2];
+    svg.setAttribute("viewBox", vb.map((v) => Math.round(v)).join(" "));
+    svg.__vbW = vb[2]; svg.__vbH = vb[3];
+  }
+  goStep(0); updateReadout();
+
+  // 축소 배율이 낮으면 부제·엣지 라벨 숨김(가독성 하한) — ResizeObserver로 반응, viewBox는 불변
+  const updateCompact = () => {
+    try {
+      const r = stage.getBoundingClientRect();
+      if (!r.width || !svg.__vbW) return;
+      const scale = Math.min(r.width / svg.__vbW, (r.height || 1) / svg.__vbH);
+      svg.classList.toggle("mviz-compact", scale < 0.62);
+    } catch {}
+  };
+  updateCompact();
+  if (typeof ResizeObserver !== "undefined") {
+    S.ro = new ResizeObserver(updateCompact);
+    try { S.ro.observe(stage); } catch {}
+  }
+
+  // ── 단일 rAF: 순전파 입자 + alternating 토글 + 스위치 레버 + 큐 펄스 (백그라운드 탭은 rAF가 자동 정지) ──
+  function startAnim() {
+    const needAlt = altEdgeEls.length > 0 || altSwitches.length > 0;
+    if (S.reduce || (positions.length < 2 && !needAlt)) return;
     const pts = positions.map((p) => ({ x: p.cx, y: p.cy }));
     const segs = [];
     let total = 0;
@@ -2205,29 +2413,49 @@ function buildMethodViz(raw) {
       return { c, t: k / 4 };
     });
     let last = performance.now();
+    let altPhase = -1;
     const tick = (now) => {
       const dt = (now - last) / 1000; last = now;
+      // 입자
       dots.forEach((d) => {
         d.t += dt / 10; if (d.t > 1.15) d.t -= 1.15;
         const p = Math.min(1, d.t); const pos = at(p);
         d.c.setAttribute("cx", pos.x); d.c.setAttribute("cy", pos.y);
         d.c.setAttribute("opacity", d.t > 1 ? "0" : (p < 0.05 ? (p / 0.05).toFixed(2) : (p > 0.92 ? ((1 - p) / 0.08).toFixed(2) : "0.85")));
       });
+      // alternating: 1초 간격으로 두 갈래 중 활성 쪽만 진하게
+      const phase = Math.floor(now / 1000) % 2;
+      if (phase !== altPhase) {
+        altPhase = phase;
+        altEdgeEls.forEach((el, i) => {
+          const on = i % 2 === phase;
+          el.setAttribute("opacity", on ? "1" : "0.28");
+          el.setAttribute("stroke-width", on ? "2.1" : "1.4");
+        });
+        altSwitches.forEach((sw) => {
+          sw.arm.setAttribute("y2", phase === 0 ? sw.cy - 8 : sw.cy + 8);
+        });
+      }
+      // queue_bank 카드 밀림 펄스
+      if (S.pulse > 0) {
+        S.pulse--;
+        const dx = -(S.pulse) * 0.9;
+        queueEls.forEach((q) => q.g.setAttribute("transform", `translate(${dx},0)`));
+        if (S.pulse === 0) queueEls.forEach((q) => q.g.setAttribute("transform", ""));
+      }
       S.raf = requestAnimationFrame(tick);
     };
     S.raf = requestAnimationFrame(tick);
   }
-
-  // 초기 렌더
-  drawEdges(); refreshMods();
-  goStep(0); updateReadout(); startParticles();
+  startAnim();
 
   // 컨트롤러 (논문 전환 시 정리)
   activeMethodViz = {
     destroy() {
       if (S.raf) cancelAnimationFrame(S.raf);
       if (S.playTimer) clearInterval(S.playTimer);
-      S.raf = 0; S.playTimer = 0;
+      if (S.ro) { try { S.ro.disconnect(); } catch {} }
+      S.raf = 0; S.playTimer = 0; S.ro = null;
     },
   };
   return wrap;

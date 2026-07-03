@@ -252,27 +252,32 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
         "name": "모듈 이름 — ==라틴 18자·한글 10자 이내== (렌더 폭이 좁아 넘치면 잘림)",
         "name_short": "name이 상한을 넘으면 필수 — 8자 내외 축약 표기 (예: 'Dense f(θ)')",
         "sub": "12자 내외 부제 (예: '가중치 동결')",
-        "primitive": "io_cube | iso_stack | card_stack | op_box | dual_dist_box (아래 프리미티브 사전 참고)",
+        "primitive": "io_cube | iso_stack | card_stack | op_box | dual_dist_box | switch_box | queue_bank (아래 프리미티브 사전 참고)",
+        "lane_hint": "선택: top | middle | bottom — 같은 깊이(rank)에 모듈이 여러 개일 때 세로 배치 힌트 (병렬 3갈래 입력 등). 자동 배치가 논문 그림과 다를 때만",
         "primitive_spec": {
-          "설명": "primitive별 필수 필드. io_cube:{glyph:'face|text|none'} / iso_stack:{layers:[{ch:4,h:118},...] (ch 4~8, h 50~130), frozen:true|false} / card_stack:{count:6,label:'r₁ … r_C',color:'purple|tan'} / op_box:{dynamic_sub:true|false} / dual_dist_box:{labels:['집단 A','집단 B']}"
+          "설명": "primitive별 필수 필드. io_cube:{glyph:'face|text|none'} / iso_stack:{layers:[{ch:4,h:118},...] (ch 4~8, h 50~130), frozen:true|false} / card_stack:{count:6,label:'r₁ … r_C',color:'purple|tan'} / op_box:{dynamic_sub:true|false} / dual_dist_box:{labels:['집단 A','집단 B']} / switch_box:{} (Alternating 같은 라우팅 — alternating edge 2개와 짝) / queue_bank:{count:8,label:'Q_t',grow:true} (가로 카드 열 큐 — grow=true면 sim 반복 시 카드가 밀려 들어옴)"
         },
         "role": "이 모듈이 하는 일 한 문장",
         "data_state": "통과 후 데이터의 형태 한 문장 (실제 채널 수 등은 여기에 텍스트로 병기)"
       }
     ],
     "edges": [
-      { "from": "모듈 id 또는 'input'", "to": "모듈 id", "kind": "forward(실선) | gradient(버건디 점선, 역방향 허용) | frozen(회색 점선)", "label": "선택, ==한글 6자 내외== (예: '∂ℓ/∂r')" }
+      { "from": "모듈 id 또는 'input'", "to": "모듈 id", "kind": "forward(실선) | gradient(버건디 점선, 역방향 허용) | frozen(회색 점선) | alternating(스위치처럼 같은 출발점에서 두 목적지로 번갈아 흐르는 쌍 — 반드시 2개 한 쌍)", "label": "선택, ==한글 6자 내외== (예: '∂ℓ/∂r')" }
+    ],
+    "groups": [
+      { "id": "bias_align", "label": "Bias Alignment", "members": ["묶을 모듈 id들"], "style": "dashed" }
     ],
     "control": {
       "설명": "조작 파라미터 정확히 1개. 조작 시 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T > 학습률은 피함).",
       "param": "eta", "symbol": "η", "label": "sparsity η",
       "min": 10, "max": 90, "default": 50, "step": 5, "unit": "%",
-      "direction": "★필수 판단: keep_top(값이 '상위 유지' 비율 — FST의 η처럼 클수록 많이 남음) | remove_top(값이 '상위 제거' 비율 — 프루닝 ratio α처럼 클수록 많이 제거). 리드아웃(활성 수)과 임계선 방향이 이 값을 따르므로 틀리면 화면 전체가 반대로 나온다",
+      "direction": "control이 '마스크/상위 선택' 의미일 때만: keep_top(상위 유지 비율 — η처럼 클수록 많이 남음) | remove_top(상위 제거 비율 — 프루닝 α처럼 클수록 많이 제거). 리드아웃(활성 수)·임계선 방향이 이 값을 따른다. ==마스크 의미가 아니면(손실 가중치 λ 등) 이 필드를 생략==하라 — 생략 시 '활성 n/m' 리드아웃이 생기지 않는다",
       "affects": ["조작 시 화면이 변하는 모듈 id 목록"],
       "semantics": "이 값이 무엇을 하는지 (예: '상위 η% 점수 채널만 유지' / '점수 상위 α%를 제거')"
     },
     "sim": {
       "설명": "'학습 반복' 버튼의 정성적 시뮬레이션 정의 (실제 gradient 아님, 수치는 예시)",
+      "readouts": "선택: 하단에 표시할 리드아웃 정의 [{label:'학습 반복',source:'iter'},{label:'반사실 쌍 거리',source:'sim_metric',format:'0.00 (예시)'}] — source: iter|flips|keep_frac|sim_metric. 생략 시 기본(direction 있으면 활성/반복/변동, 없으면 반복만)",
       "state": "시뮬레이션 상태 (예: '채널별 점수 배열 r')",
       "update_rule": "반복마다 상태가 어떻게 변하는지 정성 규칙",
       "qualitative_trends": ["반복에 따라 나타나는 경향 2~3개"],
@@ -366,14 +371,15 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
   [작성 전] 논문/기법의 유명 해설 자료를 WebSearch로 1~2회 찾아 통용되는 시각적 관례를 참고하세요.
   [사전 판정] paper_type(architecture=새 구조 자체 / method=기존 망 위 기법)을 근거와 함께 정하고, 재구성할 방법 그림 1개와 관통 예시(데이터셋 실제 샘플 하나)를 정합니다. 예시 하나가 모든 모듈·단계를 관통해야 합니다(모듈마다 다른 예시 금지).
   [modules] ==5~7개==(덜 중요한 모듈은 통합 — 7개를 넘기면 화면이 좁아져 두 줄로 꺾인다), 배열 순서 = 데이터 흐름. name은 ==라틴 18자·한글 10자 이내==(넘으면 name_short 필수 — 잘린 이름은 깨진 화면으로 보인다). 각 모듈의 primitive를 성격에 맞게 고르되 ==같은 primitive를 3개 이상 반복 금지==:
-    · io_cube: 입력/출력 데이터(이미지·텍스트). · iso_stack: CNN/백본(채널 슬래브 2.5D 스택; layers는 실제 백본을 비례 축소 — 공간↓=h감소·채널↑=ch증가, ch 4~8·h 50~130, 실제 채널 수는 data_state에 텍스트 병기). · card_stack: 벡터/점수 집합(중요도 r 등). · op_box: 연산·선택(마스크·게이트·라우터; dynamic_sub=control 따라 부제 갱신). · dual_dist_box: 두 집단/두 분포 비교하는 손실·지표.
+    · io_cube: 입력/출력 데이터(이미지·텍스트). · iso_stack: CNN/백본(채널 슬래브 2.5D 스택; layers는 실제 백본을 비례 축소 — 공간↓=h감소·채널↑=ch증가, ch 4~8·h 50~130, 실제 채널 수는 data_state에 텍스트 병기). · card_stack: 벡터/점수 집합(중요도 r 등). · op_box: 연산·선택(마스크·게이트·라우터; dynamic_sub=control 따라 부제 갱신). · dual_dist_box: 두 집단/두 분포 비교하는 손실·지표. · switch_box: Alternating 같은 라우팅 모듈(나가는 alternating edge 쌍과 함께). · queue_bank: Q_v/Q_t 같은 큐 뱅크(가로 카드 열; grow=true면 반복 시 카드 유입 애니메이션).
+  [배치] 렌더러가 ==forward/alternating edge로 깊이(rank)를 계산해 x를, 같은 깊이의 병렬 모듈은 세로 lane으로== 배치한다 — 병렬 입력 3갈래·분기·합류가 실제 2D 위상으로 나온다. edges가 위상을 정확히 담는 것이 가장 중요하며, 자동 배치가 논문 그림과 다르면 lane_hint(top/middle/bottom)로 교정하라. 논문 그림의 점선 묶음 영역은 groups로 표현(members에 모듈 id).
   [edges] 모듈 간 연결. kind: forward(실선) / gradient(버건디 점선, 역방향 허용) / frozen(회색 점선). label은 ==한글 6자 내외==(길면 렌더러가 숨김). ==위→아래 일렬 금지==: 병렬은 modules 순서+edges 분기로, 합류는 op_box(⊕), 스킵/잔차는 별도 forward edge, 동결 경로는 frozen edge, 반복은 왕복 edge로 위상을 옮기세요.
-  [control] 조작 파라미터 ==정확히 1개==. 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T; 학습률류는 피함). min/max/default는 ==논문 실험 설정 범위==에서. ==direction을 반드시 판단==: 값이 '상위 유지 비율'(sparsity η, top-k 유지)이면 keep_top, '제거 비율'(pruning ratio α)이면 remove_top — 틀리면 활성 수·임계선이 정반대로 표시된다. affects의 모든 모듈은 실제로 화면이 변해야 하고, affects 대상 단계에는 반드시 control을 binds에 넣은 detail_viz(sorted_threshold/slab_mask)를 두세요.
+  [control] 조작 파라미터 ==정확히 1개==. 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T; 학습률류는 피함). min/max/default는 ==논문 실험 설정 범위==에서. ==direction 판단==: 마스크/상위 선택 의미면 keep_top('상위 유지' 비율) 또는 remove_top('상위 제거' 비율 — 프루닝 α) — 틀리면 활성 수·임계선이 정반대다. ==마스크 의미가 아니면(손실 가중치 λ·온도 T 등) direction을 생략==(활성 리드아웃이 생기지 않음). 필요하면 sim.readouts로 그 논문에 맞는 리드아웃(예: '반사실 쌍 거리')을 정의하라. affects의 모든 모듈은 실제로 화면이 변해야 하고, affects 대상 단계에는 반드시 control을 binds에 넣은 detail_viz(sorted_threshold/slab_mask)를 두세요.
   [sim] '학습 반복' 버튼용 정성 시뮬레이션(실제 gradient 아님). state·update_rule·qualitative_trends·disclaimer를 채웁니다.
   [steps] 5~8개, 각 단계는 정확히 하나의 module에 매핑(module은 modules의 id와 일치). desc는 "무엇을+왜" 2~3문장 + 관통 예시가 이 모듈에서 어떤 형태로 변하는지 언급. detail_viz는 ==반드시 상태에 바인딩(binds)==되며 ==같은 type 2개 이상 반복 금지==(histogram 남발 금지). 데이터가 "샘플→활성→점수→마스크→서브넷→지표"로 변해가는 흐름이 type 선택에 드러나게:
     · pixel_grid(입력 격자, binds:[example], 입력 1회) · activation_bars(레이어별 채널 활성, binds:[example], 캡션 '(예시)'; 실제 구조가 'g묶음 × 항목'이면 groups:{n,label}로 묶음 구분 표시, 축약 시 캡션에 명시) · histogram(상태 배열 분포, binds:[sim.state]) · sorted_threshold(정렬+control 임계선, binds:[sim.state,control]) · slab_mask(슬래브 마스크 소멸, binds:[sim.state,control], iso_stack과 짝) · convergence_curve(정성 수렴 곡선+현재 위치, binds:[sim.iter], 캡션 '예시 곡선') · transform(형태 변화만; reshape/⊕ 등의 기본값, binds:[example]) · summary_rows(최종 요약, binds:[sim.state,control,sim.iter], 마지막 단계).
   [수치 정직성] 값은 논문에서 읽은 실제 수치만. 없으면 정성적 패턴 반영 예시값을 쓰되 caption/desc에 '(예시)' 명시. ==지어낸 수치를 실제처럼 쓰기 금지==.
-  [검증 대비] 렌더러가 검사합니다(실패 항목은 부분 강등): modules 5~7·id 고유, steps.module이 modules에 존재, control.affects가 modules에 존재+연동 정의, iso_stack layers 범위, detail_viz type이 사전에 존재+필수 binds 충족, edges from/to가 modules에 존재. 통과를 목표로 정확히 작성하세요.
+  [검증 대비] 렌더러가 검사합니다(실패 항목은 부분 강등): modules 5~7·id 고유, steps.module이 modules에 존재, control.affects가 modules에 존재+연동 정의, iso_stack layers 범위, detail_viz type 사전+필수 binds, edges from/to·groups.members가 modules에 존재, alternating은 같은 출발점 2개 한 쌍. 통과를 목표로 정확히 작성하세요.
 - equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
 - experiments: 실험·결과 섹션 (전용 탭). ==논문의 Experiments(실험) 절을 보고, 실험을 논문에 나온 번호·순서대로 정리==하세요. 구성:
   · 맨 위 takeaway: 전체 실험이 입증한 핵심 결론 한 줄.
