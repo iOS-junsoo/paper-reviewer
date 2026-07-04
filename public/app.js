@@ -1712,7 +1712,7 @@ function mvWrapPx(text, maxW, size) {
 function validateMethodViz(raw) {
   if (!raw || typeof raw !== "object") return null;
   const PRIM = new Set(["io_cube", "iso_stack", "card_stack", "op_box", "dual_dist_box", "switch_box", "queue_bank"]);
-  const DVIZ = new Set(["pixel_grid", "activation_bars", "histogram", "sorted_threshold", "slab_mask", "convergence_curve", "transform", "summary_rows"]);
+  const DVIZ = new Set(["pixel_grid", "activation_bars", "histogram", "sorted_threshold", "slab_mask", "convergence_curve", "transform", "summary_rows", "dual_dist"]);
   const seen = new Set();
   let modules = (Array.isArray(raw.modules) ? raw.modules : [])
     .filter((m) => m && typeof m === "object" && m.id && !seen.has(m.id) && seen.add(m.id));
@@ -1732,7 +1732,8 @@ function validateMethodViz(raw) {
   const ids = new Set(modules.map((m) => m.id));
   const edges = (Array.isArray(raw.edges) ? raw.edges : [])
     .filter((e) => e && (ids.has(e.from) || e.from === "input") && ids.has(e.to))
-    .map((e) => ({ from: e.from, to: e.to, kind: ["forward", "gradient", "frozen", "alternating"].includes(e.kind) ? e.kind : "forward", label: e.label || "" }));
+    .map((e) => ({ from: e.from, to: e.to, kind: ["forward", "gradient", "frozen", "alternating"].includes(e.kind) ? e.kind : "forward", label: e.label || "",
+      badge: (e.badge && typeof e.badge === "object" && e.badge.text != null) ? { text: String(e.badge.text).slice(0, 8) } : null }));
   const groups = (Array.isArray(raw.groups) ? raw.groups : [])
     .filter((g) => g && typeof g === "object")
     .map((g) => ({ id: g.id || "", label: g.label || "", members: (Array.isArray(g.members) ? g.members : []).filter((id) => ids.has(id)), style: g.style === "solid" ? "solid" : "dashed" }))
@@ -1759,7 +1760,22 @@ function validateMethodViz(raw) {
     control.min = min; control.max = max; control.default = def; control.step = step;
     // direction은 '마스크/선택' 의미일 때만 스펙이 명시 — 없으면 마스크 관련 UI(활성 리드아웃 등) 생략
     if (!["keep_top", "remove_top"].includes(control.direction)) control.direction = null;
-    if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
+    // P1: control.mode (mask/coeff/text). 하위호환: mode 부재 → direction 있으면 mask, 없으면 text.
+    let cmode = control.mode;
+    if (cmode == null) cmode = control.direction ? "mask" : "text";        // 부재 → 하위호환
+    else if (!["mask", "coeff", "text"].includes(cmode)) control = null;    // ④ mode 값 3종 밖 → control 제거
+    if (control) {
+      control.mode = cmode;
+      if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
+      else {
+        const primOf = (id) => { const m = modules.find((x) => x.id === id); return m ? m.primitive : null; };
+        // 검증 4규칙 (AC-7): 위반 시 control만 제거(정적) — 전체 폴백 아님
+        if (cmode === "mask" && !control.direction) control = null;                       // ① mask인데 direction 없음
+        else if (cmode === "mask" && !control.affects.some((id) => ["iso_stack", "op_box"].includes(primOf(id)))) control = null; // ② mask인데 마스크 대상 없음
+        else if (cmode === "coeff" && !(control.affects.some((id) => ["dual_dist_box", "queue_bank"].includes(primOf(id)))
+          || steps.some((s) => ["convergence_curve", "dual_dist"].includes(s.detail_viz.type)))) control = null; // ③ coeff인데 반응 대상 없음
+      }
+    }
   }
   const sim = raw.sim && typeof raw.sim === "object" ? raw.sim : {};
   sim.readouts = (Array.isArray(sim.readouts) ? sim.readouts : null);
@@ -1774,6 +1790,7 @@ function buildMethodViz(raw) {
   const cardMod = spec.modules.find((m) => m.primitive === "card_stack" || m.primitive === "queue_bank");
   const C = cardMod ? mvClamp(Number(cardMod.primitive_spec.count) || 16, 8, 24) : 16;
   const hasDirection = !!(spec.control && spec.control.direction);
+  const ctrlMode = spec.control ? spec.control.mode : null; // "mask" | "coeff" | "text" | null
   const S = {
     spec, stepIdx: 0,
     eta: spec.control ? spec.control.default : 50,
@@ -1784,6 +1801,15 @@ function buildMethodViz(raw) {
   const resetScores = () => { S.scores = Array.from({ length: C }, () => 0.35 + Math.random() * 0.3); S.iter = 0; S.flips = 0; };
   resetScores();
   const dirRemove = () => spec.control && spec.control.direction === "remove_top";
+  // P1(coeff): 슬라이더 값 → 정규화 계수 c∈[0,1]
+  const coeffC = () => {
+    if (ctrlMode !== "coeff" || !spec.control) return 0.5;
+    const { min, max } = spec.control;
+    return mvClamp((S.eta - min) / ((max - min) || 1), 0, 1);
+  };
+  // gap 단일 소스(P2 AC-4): (반복, 계수)의 순수 함수 — 미니 분포·detail 패널이 같은 값을 읽는다.
+  // 슬라이더(c)든 반복(iter)이든 바뀌면 즉시 반영. 1(초기) → 0(수렴).
+  const gapValue = () => Math.pow(1 - 0.10 * (0.3 + 1.4 * coeffC()), S.iter);
   // 살아남는(활성) 개수 — remove_top이면 (1−α), keep_top(또는 방향 미지정 마스크 시각화)이면 η
   const keepCount = () => {
     const frac = S.eta / 100;
@@ -1796,7 +1822,8 @@ function buildMethodViz(raw) {
     (dirRemove() ? order.slice(C - keep) : order.slice(0, keep)).forEach((i) => (m[i] = 1));
     return m;
   };
-  const simMetric = () => 0.55 * Math.exp(-S.iter / 7) + 0.07; // 정성 지표(감소 경향) — 예시값
+  // 정성 지표(감소 경향) — coeff 모드면 gap(계수 c 반영), 아니면 기존 공식 그대로(하위호환)
+  const simMetric = () => ctrlMode === "coeff" ? 0.07 + 0.55 * gapValue() : 0.55 * Math.exp(-S.iter / 7) + 0.07;
   const simStep = () => {
     const before = maskOf();
     const noise = 0.16 / (1 + S.iter * 0.6);
@@ -1978,7 +2005,9 @@ function buildMethodViz(raw) {
     } else if (m.primitive === "dual_dist_box") {
       gfx.appendChild(mvSlab(-32, cy - 24, 64, 50, "#fff", "#c9b892", 7));
       const labels = Array.isArray(m.primitive_spec.labels) ? m.primitive_spec.labels : [];
-      [["#8c2f39", -14], ["#7c5cbf", 12]].forEach(([col, ox]) => {
+      // P2: coeff 모드면 두 분포 간격이 gap(단일 소스)을 반영 — detail 패널 dual_dist와 같은 값. 비coeff는 기존 정적 곡선(AC-1 불변).
+      const ddSep = ctrlMode === "coeff" ? [["#8c2f39", -(5 + gapValue() * 11)], ["#7c5cbf", 5 + gapValue() * 11]] : [["#8c2f39", -14], ["#7c5cbf", 12]];
+      ddSep.forEach(([col, ox]) => {
         let d = `M${ox - 12} ${cy + 12}`;
         for (let t = 0; t <= 12; t++) { const x = ox - 12 + t * 2; const yy = cy + 12 - 26 * Math.exp(-Math.pow((t - 6) / 3, 2)); d += ` L${x} ${yy}`; }
         gfx.appendChild(mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6" }));
@@ -2057,6 +2086,7 @@ function buildMethodViz(raw) {
 
   // ── 엣지: rank 인접은 직선/S-커브, 건너뛰기는 위 직교 우회, gradient 회귀는 아래 직교 우회 ──
   const altEdgeEls = []; // alternating 엣지 (rAF 토글)
+  const textBadges = []; // P3: text 모드에서 슬라이더로 N값 갱신되는 loop_badge (pill+text 참조)
   function drawEdges() {
     gEdges.textContent = ""; gEdgeLab.textContent = "";
     const contentBottom = Math.max(...positions.map((p) => p.cy + 74));
@@ -2148,6 +2178,27 @@ function buildMethodViz(raw) {
           }));
         } else { const ti2 = mvE("title"); ti2.textContent = e.label; path.appendChild(ti2); } // 짧은 엣지는 hover로
       }
+      // P3-a: loop_badge — 엣지 중점 아래 알약 배지. text 모드이고 affects에 이 엣지 모듈이 있으면 N=슬라이더 값
+      if (e.badge && e.badge.text) {
+        const affected = ctrlMode === "text" && spec.control && (spec.control.affects.includes(e.to) || spec.control.affects.includes(e.from));
+        const suffix = String(e.badge.text).replace(/[\d.]+/g, "").trim() || "×";
+        const btxt = affected ? `${S.eta}${suffix}` : String(e.badge.text);
+        const by = ly + (e.label && len >= 70 ? 15 : 2); // 라벨 있으면 그 아래로 분리
+        const bw = mvTextW(btxt, 8.5) + 12;
+        const pill = mvE("rect", { x: lx - bw / 2, y: by - 8, width: bw, height: 15, rx: 7.5, fill: "#fbf7f0", stroke: "#8c2f39", "stroke-width": "1" });
+        const ptxt = mvT(lx, by + 3.2, btxt, { "text-anchor": "middle", fill: "#8c2f39", "font-size": "8.5", "font-weight": "600" });
+        gEdgeLab.append(pill, ptxt);
+        bb.add(lx - bw / 2 - 2, by - 10, lx + bw / 2 + 2, by + 8); // fit-to-view가 배지를 자르지 않게(AC-5)
+        if (affected) textBadges.push({ pill, ptxt, suffix, cx: lx });
+      }
+    });
+  }
+  // text 모드: 슬라이더 조작 시 배지 N값만 갱신(파이프라인 그래픽 불변 — AC-3)
+  function updateBadges() {
+    textBadges.forEach((b) => {
+      const t = `${S.eta}${b.suffix}`; b.ptxt.textContent = t;
+      const w = mvTextW(t, 8.5) + 12;
+      b.pill.setAttribute("x", b.cx - w / 2); b.pill.setAttribute("width", w);
     });
   }
 
@@ -2186,15 +2237,25 @@ function buildMethodViz(raw) {
           g.appendChild(mvE("rect", { x: 112 + c * 12, y: 12 + r * 12, width: 11, height: 11, fill: ACC, opacity: (1 - dist).toFixed(2) }));
         }
       } else if (type === "activation_bars") {
-        const gn = dv.groups && Number(dv.groups.n) >= 2 ? mvClamp(Math.round(Number(dv.groups.n)), 2, 12) : 0;
-        const per = gn ? Math.max(1, Math.round(12 / gn)) : 0;
-        const K = gn ? gn * per : 12;
+        // P3-b: groups 배열 [{label,count}] (신) 또는 {n,label}(구, 하위호환). 막대 총수 = count 합계.
+        let grp = Array.isArray(dv.groups) ? dv.groups : (dv.spec && Array.isArray(dv.spec.groups) ? dv.spec.groups : null);
+        if (!grp && dv.groups && Number(dv.groups.n) >= 2) {
+          const nn = mvClamp(Math.round(Number(dv.groups.n)), 2, 12), pr = Math.max(1, Math.round(12 / nn));
+          grp = Array.from({ length: nn }, (_, i) => ({ label: `${dv.groups.label || ""}${i + 1}`, count: pr }));
+        }
+        grp = grp && grp.length ? grp.map((x) => ({ label: String(x.label || ""), count: mvClamp(Math.round(Number(x.count) || 1), 1, 20) })).slice(0, 8) : null;
+        const K = grp ? grp.reduce((a, x) => a + x.count, 0) : 12;
         const bw = 296 / K;
         const rv = (k) => { const x = Math.sin(k * 91.7 + S.stepIdx * 13.1) * 43758.5; return x - Math.floor(x); };
         for (let k = 0; k < K; k++) { const h = 12 + rv(k) * 86; g.appendChild(mvE("rect", { x: 12 + k * bw + 1, y: 110 - h, width: Math.max(2, bw - 2), height: h, rx: 2, fill: TAN, stroke: "#b7a680" })); }
-        if (gn) {
-          for (let gi = 1; gi < gn; gi++) g.appendChild(mvE("line", { x1: 12 + gi * per * bw, y1: 14, x2: 12 + gi * per * bw, y2: 112, stroke: FAINT, "stroke-dasharray": "3 3", opacity: "0.6" }));
-          for (let gi = 0; gi < gn; gi++) g.appendChild(mvT(12 + (gi + 0.5) * per * bw, 126, `${dv.groups.label || ""}${gi + 1}`, { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
+        if (grp) {
+          let acc = 0;
+          grp.forEach((gg, gi) => {
+            const x0 = 12 + acc * bw, x1 = 12 + (acc + gg.count) * bw;
+            if (gi > 0) g.appendChild(mvE("line", { x1: x0, y1: 14, x2: x0, y2: 112, stroke: FAINT, "stroke-dasharray": "3 3", opacity: "0.6" }));
+            g.appendChild(mvT((x0 + x1) / 2, 126, mvCutPx(gg.label, x1 - x0 - 2, 7.5), { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
+            acc += gg.count;
+          });
         }
       } else if (type === "histogram") {
         const bins = new Array(10).fill(0); S.scores.forEach((v) => bins[mvClamp(Math.floor(v * 10), 0, 9)]++);
@@ -2219,9 +2280,11 @@ function buildMethodViz(raw) {
         const bw = Math.max(8, 300 / C);
         mask.forEach((mk2, k) => g.appendChild(mvE("rect", { x: 12 + k * bw, y: 40, width: bw - 3, height: 52, rx: 2, fill: mk2 ? "#e7dcc3" : "#fff", stroke: mk2 ? "#b7a680" : "#d8cfbc", "stroke-dasharray": mk2 ? "" : "3 2", opacity: mk2 ? "1" : "0.6" })));
       } else if (type === "convergence_curve") {
-        let d = "M12 108"; for (let t = 0; t <= 40; t++) { const x = 12 + t * 7.4; const yy = 108 - 92 * (1 - Math.exp(-t / 10)); d += ` L${x} ${yy}`; }
+        // coeff 모드면 계수 c가 클수록 곡선이 가파름(같은 반복 수 대비 더 수렴) — 비coeff는 k=0.1로 기존과 동일
+        const k = ctrlMode === "coeff" ? 0.05 + 0.16 * coeffC() : 0.1;
+        let d = "M12 108"; for (let t = 0; t <= 40; t++) { const x = 12 + t * 7.4; const yy = 108 - 92 * (1 - Math.exp(-t * k)); d += ` L${x} ${yy}`; }
         g.appendChild(mvE("path", { d, stroke: ACC, fill: "none", "stroke-width": "2" }));
-        const it = Math.min(40, S.iter); const px = 12 + it * 7.4, py = 108 - 92 * (1 - Math.exp(-it / 10));
+        const it = Math.min(40, S.iter); const px = 12 + it * 7.4, py = 108 - 92 * (1 - Math.exp(-it * k));
         g.appendChild(mvE("circle", { cx: px, cy: py, r: 4, fill: ACC }));
         g.appendChild(mvT(px + 6, py - 4, `iter ${S.iter}`, { fill: FAINT, "font-size": "9" }));
       } else if (type === "summary_rows") {
@@ -2233,6 +2296,25 @@ function buildMethodViz(raw) {
         rows.forEach((row, k) => {
           g.append(mvT(20, 36 + k * 30, row[0], { fill: FAINT, "font-size": "12" }), mvT(300, 36 + k * 30, row[1], { fill: INK, "font-size": "13", "font-weight": "700", "text-anchor": "end" }));
         });
+      } else if (type === "dual_dist") {
+        // P2: 두 집단 분포 대비. gap(단일 소스 gapValue) 반영 — 파이프라인 미니 dual_dist_box와 같은 값.
+        const gap = gapValue();
+        const mid = 160, sep = 22 + gap * 92, base = 116, amp = 80, sd = 25;
+        const cA = mid - sep / 2, cB = mid + sep / 2;
+        const bell = (cen, col) => {
+          let d = `M${cen - 52} ${base}`;
+          for (let x = -52; x <= 52; x += 4) d += ` L${cen + x} ${base - amp * Math.exp(-(x * x) / (2 * sd * sd))}`;
+          d += ` L${cen + 52} ${base} Z`;
+          return mvE("path", { d, fill: col, opacity: "0.32", stroke: col, "stroke-width": "1.6" });
+        };
+        const ddMod = spec.modules.find((mm) => mm.primitive === "dual_dist_box");
+        const labels = (ddMod && Array.isArray(ddMod.primitive_spec.labels) && ddMod.primitive_spec.labels.length) ? ddMod.primitive_spec.labels : ["분포 A", "분포 B"];
+        g.append(bell(cA, ACC), bell(cB, "#7c5cbf"));
+        g.append(
+          mvE("line", { x1: cA, y1: 18, x2: cB, y2: 18, stroke: FAINT, "stroke-dasharray": "3 3" }),
+          mvT(mid, 13, `격차 ${gap.toFixed(2)}`, { "text-anchor": "middle", fill: FAINT, "font-size": "9", "paint-order": "stroke", stroke: "#fbf7f0", "stroke-width": "3" }),
+          mvT(cA, base + 13, mvCutPx(labels[0] || "A", 90, 9.5), { "text-anchor": "middle", fill: ACC, "font-size": "9.5" }),
+          mvT(cB, base + 13, mvCutPx(labels[1] || "B", 90, 9.5), { "text-anchor": "middle", fill: "#7c5cbf", "font-size": "9.5" }));
       } else { // transform
         const mod = spec.modules.find((mm) => mm.id === step.module) || {};
         const prev = spec.modules[idxOf(step.module) - 1];
@@ -2296,7 +2378,7 @@ function buildMethodViz(raw) {
     val.textContent = `${S.eta}${c.unit || ""}`;
     slider.addEventListener("input", () => {
       S.eta = Number(slider.value); val.textContent = `${S.eta}${c.unit || ""}`;
-      refreshMods(); drawDetail(); updateReadout();
+      refreshMods(); drawDetail(); updateReadout(); updateBadges();
     });
     lab.title = c.semantics || "";
     ctrlBar.append(lab, slider, val);
@@ -2318,7 +2400,8 @@ function buildMethodViz(raw) {
   })();
   const readoutValue = (r) => {
     switch (r.source) {
-      case "keep_frac": return `${keepCount()}/${C}`;
+      case "keep_frac": case "mask_count": return `${keepCount()}/${C}`;
+      case "control": return `${S.eta}${(spec.control && spec.control.unit) || ""}`;
       case "flips": return String(S.flips);
       case "sim_metric": {
         const v = simMetric();
@@ -2449,9 +2532,15 @@ function buildMethodViz(raw) {
       return { c, t: k / 4 };
     });
     let last = performance.now();
+    let lastQueue = last;
     let altPhase = -1;
     const tick = (now) => {
       const dt = (now - last) / 1000; last = now;
+      // coeff 모드: queue_bank 카드 유입 간격을 계수 c에 비례(c 클수록 짧게). 마스크·슬래브는 불변.
+      if (ctrlMode === "coeff" && queueEls.length) {
+        const interval = 2400 * (1 - 0.6 * coeffC());
+        if (now - lastQueue > interval) { lastQueue = now; S.pulse = 10; }
+      }
       // 입자
       dots.forEach((d) => {
         d.t += dt / 10; if (d.t > 1.15) d.t -= 1.15;
