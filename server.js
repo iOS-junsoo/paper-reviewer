@@ -218,6 +218,9 @@ if (!firestoreReady) {
 // LLM 호출: Claude Agent SDK (Max 구독의 Claude Code 인증 사용 — API 크레딧 불필요)
 // PDF는 임시 파일로 저장 후 Read 도구가 비전으로 읽는다 (20페이지씩 분할).
 // ---------------------------------------------------------------------------
+// 연구 방법론 시각화 생성 지시문 v4 (판정→라우팅→생성) — 백틱·코드스팬이 많아 파일에서 읽어 주입.
+// §13(렌더러 관리자용 구현 노트)·PROGRESS 주석은 prompts/method_viz_v4.md 생성 시 이미 제거됨.
+const METHOD_VIZ_V4 = fs.readFileSync(path.join(__dirname, "prompts", "method_viz_v4.md"), "utf8");
 const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 리서처입니다.
 지정된 논문 PDF 전체(텍스트, 레이아웃, 그림, 표, 수식)를 읽고 아래 JSON 스키마에 맞춰 분석 결과를 작성하세요.
 
@@ -240,63 +243,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "analogy": "이 단계를 일상에 빗댄 비유 한 문장 (예: '도서관에서 질문과 가장 관련 있는 책들을 골라 가중 평균하는 것과 같다')"
     }
   ],
-  "method_visualization": {
-    "설명": "논문의 방법(method) 그림 1개를 인터랙티브 2.5D 파이프라인으로 재구성하는 스펙. SVG/HTML을 직접 그리지 않고 아래 구조만 채우면 앱 렌더러가 그린다. 방법 그림이 없는 순수 이론/서베이 논문이면 이 필드를 통째로 생략(null).",
-    "paper_type": "architecture(핵심 기여가 새 네트워크 구조 자체) | method(기존 네트워크 위에서 도는 기법: 프루닝·증류·LoRA·공정성 제약 등)",
-    "paper_type_reason": "판정 근거 한 문장",
-    "section_ref": "재구성한 논문 위치 (예: 'Fig.2, §4.2~4.3')",
-    "example": { "설명": "데이터셋의 구체적 샘플 하나 — 모든 모듈·단계를 관통", "dataset": "CelebA", "sample": "얼굴 이미지 한 장", "task": "Smiling 이진 분류", "group": "집단 축(공정성 논문이 아니면 생략)" },
-    "modules": [
-      {
-        "id": "영문 소문자 스네이크, 고유 (예: 'dense')",
-        "name": "모듈 이름 — ==라틴 18자·한글 10자 이내== (렌더 폭이 좁아 넘치면 잘림)",
-        "name_short": "name이 상한을 넘으면 필수 — 8자 내외 축약 표기 (예: 'Dense f(θ)')",
-        "sub": "12자 내외 부제 (예: '가중치 동결')",
-        "primitive": "io_cube | iso_stack | card_stack | op_box | dual_dist_box | switch_box | queue_bank (아래 프리미티브 사전 참고)",
-        "lane_hint": "선택: top | middle | bottom — 같은 깊이(rank)에 모듈이 여러 개일 때 세로 배치 힌트 (병렬 3갈래 입력 등). 자동 배치가 논문 그림과 다를 때만",
-        "primitive_spec": {
-          "설명": "primitive별 필수 필드. io_cube:{glyph:'face|text|none'} / iso_stack:{layers:[{ch:4,h:118},...] (ch 4~8, h 50~130), frozen:true|false} / card_stack:{count:6,label:'r₁ … r_C',color:'purple|tan'} / op_box:{dynamic_sub:true|false} / dual_dist_box:{labels:['집단 A','집단 B']} / switch_box:{} (Alternating 같은 라우팅 — alternating edge 2개와 짝) / queue_bank:{count:8,label:'Q_t',grow:true} (가로 카드 열 큐 — grow=true면 sim 반복 시 카드가 밀려 들어옴)"
-        },
-        "role": "이 모듈이 하는 일 한 문장",
-        "data_state": "통과 후 데이터의 형태 한 문장 (실제 채널 수 등은 여기에 텍스트로 병기)"
-      }
-    ],
-    "edges": [
-      { "from": "모듈 id 또는 'input'", "to": "모듈 id", "kind": "forward(실선) | gradient(버건디 점선, 역방향 허용) | frozen(회색 점선) | alternating(스위치처럼 같은 출발점에서 두 목적지로 번갈아 흐르는 쌍 — 반드시 2개 한 쌍)", "label": "선택, ==한글 6자 내외== (예: '∂ℓ/∂r')" }
-    ],
-    "groups": [
-      { "id": "bias_align", "label": "Bias Alignment", "members": ["묶을 모듈 id들"], "style": "dashed" }
-    ],
-    "control": {
-      "설명": "조작 파라미터 정확히 1개. 조작 시 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T > 학습률은 피함).",
-      "param": "eta", "symbol": "η", "label": "sparsity η",
-      "min": 10, "max": 90, "default": 50, "step": 5, "unit": "%",
-      "direction": "control이 '마스크/상위 선택' 의미일 때만: keep_top(상위 유지 비율 — η처럼 클수록 많이 남음) | remove_top(상위 제거 비율 — 프루닝 α처럼 클수록 많이 제거). 리드아웃(활성 수)·임계선 방향이 이 값을 따른다. ==마스크 의미가 아니면(손실 가중치 λ 등) 이 필드를 생략==하라 — 생략 시 '활성 n/m' 리드아웃이 생기지 않는다",
-      "affects": ["조작 시 화면이 변하는 모듈 id 목록"],
-      "semantics": "이 값이 무엇을 하는지 (예: '상위 η% 점수 채널만 유지' / '점수 상위 α%를 제거')"
-    },
-    "sim": {
-      "설명": "'학습 반복' 버튼의 정성적 시뮬레이션 정의 (실제 gradient 아님, 수치는 예시)",
-      "readouts": "선택: 하단에 표시할 리드아웃 정의 [{label:'학습 반복',source:'iter'},{label:'반사실 쌍 거리',source:'sim_metric',format:'0.00 (예시)'}] — source: iter|flips|keep_frac|sim_metric. 생략 시 기본(direction 있으면 활성/반복/변동, 없으면 반복만)",
-      "state": "시뮬레이션 상태 (예: '채널별 점수 배열 r')",
-      "update_rule": "반복마다 상태가 어떻게 변하는지 정성 규칙",
-      "qualitative_trends": ["반복에 따라 나타나는 경향 2~3개"],
-      "disclaimer": "정성적 시뮬레이션·예시값임을 밝히는 한 줄"
-    },
-    "steps": [
-      {
-        "module": "modules의 id와 정확히 일치",
-        "title": "단계 제목",
-        "desc": "무엇을+왜 2~3문장. 관통 예시가 이 모듈에서 어떤 형태로 변하는지 반드시 언급",
-        "detail_viz": {
-          "type": "pixel_grid | activation_bars | histogram | sorted_threshold | slab_mask | convergence_curve | transform | summary_rows (아래 detail_viz 사전 참고)",
-          "binds": ["이 시각화가 읽는 상태: example | sim.state | control | sim.iter 중 필요한 것"],
-          "groups": "activation_bars 전용(선택): {n: 6, label: '층'} — 실제 구조가 'g묶음 × 항목'(예: 6층 × 헤드)이면 묶음 구분선·라벨을 그린다",
-          "caption": "패널 하단 한 줄. 예시값이면 '(예시)', 실제 수를 축약해 그렸으면 '축약' 표기 (예: '층별 합산으로 축약 (예시)')"
-        }
-      }
-    ]
-  },
+  "method_visualization": "방법 시각화 스펙(지원 유형) 또는 폴백 figures(미지원 유형). ==형식·9유형 판정·라우팅·생성 규칙·검증은 아래 [연구 방법론 시각화 생성 지시문 v4] 전문을 그대로 따른다== — paper_type_primary/secondary·paper_type_reason 포함. 방법 그림이 없거나 미지원 유형이면 지시문의 폴백(§10)을 따르거나 생략(null).",
   "experiments": {
     "takeaway": "전체 실험이 보여주는 핵심 결론 한 줄 (이 논문이 '무엇을 얼마나' 입증했는지)",
     "metrics_explained": [ { "name": "측정 지표 이름 (예: BLEU, perplexity, accuracy)", "meaning": "그 지표가 무엇을 재는지 + 높을수록/낮을수록 좋은지 쉬운 한 줄" } ],
@@ -367,19 +314,11 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 - timeline: 연구 배경 탭 상단에 표시될 분야 발전 이정표 3~6개 (연도순). label은 기법/모델명(영어), note는 한 줄 의미. 마지막 항목은 이 논문 자신으로.
 - problem: "## 소제목"으로 2~3개 단락 구분. 기존 방법(existing methods)들을 구체적으로 거명하고 각각의 한계를 짚은 뒤, 이 논문이 정확히 어떤 문제를 타깃하는지 명시하세요.
 - method_steps: 4~8개 단계. 각 단계는 짧은 title + "무엇을 + 왜"를 담은 description + 일상 비유(analogy). 비유는 그 단계의 핵심 직관을 비전공자도 떠올릴 수 있게. 데이터가 흘러가는 순서대로 배열하세요.
-- method_visualization: ==논문의 방법(method) 그림 딱 1개를 인터랙티브 2.5D 파이프라인 스펙으로 재구성==하세요. ==SVG/HTML 코드를 직접 출력하지 말고== 위 스키마 구조만 채우면 앱 렌더러가 그립니다. ==성능/실험 결과 그림·표는 금지==(방법 그림만). 방법 그림이 없는 순수 이론/서베이 논문이면 이 필드를 생략(null)하세요. 목표는 화려함이 아니라 ==아래 검증을 통과하는 정확한 스펙==입니다.
-  [작성 전] 논문/기법의 유명 해설 자료를 WebSearch로 1~2회 찾아 통용되는 시각적 관례를 참고하세요.
-  [사전 판정] paper_type(architecture=새 구조 자체 / method=기존 망 위 기법)을 근거와 함께 정하고, 재구성할 방법 그림 1개와 관통 예시(데이터셋 실제 샘플 하나)를 정합니다. 예시 하나가 모든 모듈·단계를 관통해야 합니다(모듈마다 다른 예시 금지).
-  [modules] ==5~7개==(덜 중요한 모듈은 통합 — 7개를 넘기면 화면이 좁아져 두 줄로 꺾인다), 배열 순서 = 데이터 흐름. name은 ==라틴 18자·한글 10자 이내==(넘으면 name_short 필수 — 잘린 이름은 깨진 화면으로 보인다). 각 모듈의 primitive를 성격에 맞게 고르되 ==같은 primitive를 3개 이상 반복 금지==:
-    · io_cube: 입력/출력 데이터(이미지·텍스트). · iso_stack: CNN/백본(채널 슬래브 2.5D 스택; layers는 실제 백본을 비례 축소 — 공간↓=h감소·채널↑=ch증가, ch 4~8·h 50~130, 실제 채널 수는 data_state에 텍스트 병기). · card_stack: 벡터/점수 집합(중요도 r 등). · op_box: 연산·선택(마스크·게이트·라우터; dynamic_sub=control 따라 부제 갱신). · dual_dist_box: 두 집단/두 분포 비교하는 손실·지표. · switch_box: Alternating 같은 라우팅 모듈(나가는 alternating edge 쌍과 함께). · queue_bank: Q_v/Q_t 같은 큐 뱅크(가로 카드 열; grow=true면 반복 시 카드 유입 애니메이션).
-  [배치] 렌더러가 ==forward/alternating edge로 깊이(rank)를 계산해 x를, 같은 깊이의 병렬 모듈은 세로 lane으로== 배치한다 — 병렬 입력 3갈래·분기·합류가 실제 2D 위상으로 나온다. edges가 위상을 정확히 담는 것이 가장 중요하며, 자동 배치가 논문 그림과 다르면 lane_hint(top/middle/bottom)로 교정하라. 논문 그림의 점선 묶음 영역은 groups로 표현(members에 모듈 id).
-  [edges] 모듈 간 연결. kind: forward(실선) / gradient(버건디 점선, 역방향 허용) / frozen(회색 점선). label은 ==한글 6자 내외==(길면 렌더러가 숨김). ==위→아래 일렬 금지==: 병렬은 modules 순서+edges 분기로, 합류는 op_box(⊕), 스킵/잔차는 별도 forward edge, 동결 경로는 frozen edge, 반복은 왕복 edge로 위상을 옮기세요.
-  [control] 조작 파라미터 ==정확히 1개==. 시각 변화가 가장 직관적인 것(sparsity·rank·top-k > λ·T; 학습률류는 피함). min/max/default는 ==논문 실험 설정 범위==에서. ==direction 판단==: 마스크/상위 선택 의미면 keep_top('상위 유지' 비율) 또는 remove_top('상위 제거' 비율 — 프루닝 α) — 틀리면 활성 수·임계선이 정반대다. ==마스크 의미가 아니면(손실 가중치 λ·온도 T 등) direction을 생략==(활성 리드아웃이 생기지 않음). 필요하면 sim.readouts로 그 논문에 맞는 리드아웃(예: '반사실 쌍 거리')을 정의하라. affects의 모든 모듈은 실제로 화면이 변해야 하고, affects 대상 단계에는 반드시 control을 binds에 넣은 detail_viz(sorted_threshold/slab_mask)를 두세요.
-  [sim] '학습 반복' 버튼용 정성 시뮬레이션(실제 gradient 아님). state·update_rule·qualitative_trends·disclaimer를 채웁니다.
-  [steps] 5~8개, 각 단계는 정확히 하나의 module에 매핑(module은 modules의 id와 일치). desc는 "무엇을+왜" 2~3문장 + 관통 예시가 이 모듈에서 어떤 형태로 변하는지 언급. detail_viz는 ==반드시 상태에 바인딩(binds)==되며 ==같은 type 2개 이상 반복 금지==(histogram 남발 금지). 데이터가 "샘플→활성→점수→마스크→서브넷→지표"로 변해가는 흐름이 type 선택에 드러나게:
-    · pixel_grid(입력 격자, binds:[example], 입력 1회) · activation_bars(레이어별 채널 활성, binds:[example], 캡션 '(예시)'; 실제 구조가 'g묶음 × 항목'이면 groups:{n,label}로 묶음 구분 표시, 축약 시 캡션에 명시) · histogram(상태 배열 분포, binds:[sim.state]) · sorted_threshold(정렬+control 임계선, binds:[sim.state,control]) · slab_mask(슬래브 마스크 소멸, binds:[sim.state,control], iso_stack과 짝) · convergence_curve(정성 수렴 곡선+현재 위치, binds:[sim.iter], 캡션 '예시 곡선') · transform(형태 변화만; reshape/⊕ 등의 기본값, binds:[example]) · summary_rows(최종 요약, binds:[sim.state,control,sim.iter], 마지막 단계).
-  [수치 정직성] 값은 논문에서 읽은 실제 수치만. 없으면 정성적 패턴 반영 예시값을 쓰되 caption/desc에 '(예시)' 명시. ==지어낸 수치를 실제처럼 쓰기 금지==.
-  [검증 대비] 렌더러가 검사합니다(실패 항목은 부분 강등): modules 5~7·id 고유, steps.module이 modules에 존재, control.affects가 modules에 존재+연동 정의, iso_stack layers 범위, detail_viz type 사전+필수 binds, edges from/to·groups.members가 modules에 존재, alternating은 같은 출발점 2개 한 쌍. 통과를 목표로 정확히 작성하세요.
+- method_visualization / figures: 아래 [연구 방법론 시각화 생성 지시문 v4]를 ==그대로 따르세요==. 논문을 읽고 ① 9유형 판정 → ② 지원 유형(T1·T2·T3·T4·T7·T9)이면 method_visualization, 미지원(T5·T6·T8)이면 figures 폴백 → ③ 스펙 생성. ==SVG/HTML 직접 출력 금지==. paper_type_primary/paper_type_secondary/paper_type_reason는 폴백이어도 포함. (figures 폴백의 세부 형식은 기존 그림 규칙을 따른다.)
+
+======================== 연구 방법론 시각화 생성 지시문 v4 (시작) ========================
+${METHOD_VIZ_V4}
+======================== 연구 방법론 시각화 생성 지시문 v4 (끝) ========================
 - equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
 - experiments: 실험·결과 섹션 (전용 탭). ==논문의 Experiments(실험) 절을 보고, 실험을 논문에 나온 번호·순서대로 정리==하세요. 구성:
   · 맨 위 takeaway: 전체 실험이 입증한 핵심 결론 한 줄.
