@@ -1761,18 +1761,22 @@ function validateMethodViz(raw) {
     // direction은 '마스크/선택' 의미일 때만 스펙이 명시 — 없으면 마스크 관련 UI(활성 리드아웃 등) 생략
     if (!["keep_top", "remove_top"].includes(control.direction)) control.direction = null;
     // P1: control.mode (mask/coeff/text). 하위호환: mode 부재 → direction 있으면 mask, 없으면 text.
+    const modeGiven = ["mask", "coeff", "text"].includes(control.mode); // 스펙이 mode를 명시했나
     let cmode = control.mode;
-    if (cmode == null) cmode = control.direction ? "mask" : "text";        // 부재 → 하위호환
-    else if (!["mask", "coeff", "text"].includes(cmode)) control = null;    // ④ mode 값 3종 밖 → control 제거
+    if (!modeGiven) cmode = control.direction ? "mask" : "text";           // 부재 → 하위호환
+    if (control.mode != null && !modeGiven) control = null;                 // ④ mode 값 3종 밖 → control 제거
     if (control) {
       control.mode = cmode;
+      // 비mask 모드는 direction(마스크 UI 트리거)을 제거 — coeff/text에서 슬래브·활성 리드아웃 누출 방지(AC-3)
+      if (cmode !== "mask") control.direction = null;
       if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
       else {
         const primOf = (id) => { const m = modules.find((x) => x.id === id); return m ? m.primitive : null; };
-        // 검증 4규칙 (AC-7): 위반 시 control만 제거(정적) — 전체 폴백 아님
+        // 검증 규칙 (AC-7): 위반 시 control만 제거(정적) — 전체 폴백 아님
         if (cmode === "mask" && !control.direction) control = null;                       // ① mask인데 direction 없음
-        else if (cmode === "mask" && !control.affects.some((id) => ["iso_stack", "op_box"].includes(primOf(id)))) control = null; // ② mask인데 마스크 대상 없음
-        else if (cmode === "coeff" && !(control.affects.some((id) => ["dual_dist_box", "queue_bank"].includes(primOf(id)))
+        // ②③ 시각-효과-대상 제약은 mode를 명시한 v4 스펙에만 적용 — mode 없는 v3 스펙은 강등 금지(AC-1 하위호환)
+        else if (modeGiven && cmode === "mask" && !control.affects.some((id) => ["iso_stack", "op_box"].includes(primOf(id)))) control = null; // ② mask인데 마스크 대상 없음
+        else if (modeGiven && cmode === "coeff" && !(control.affects.some((id) => ["dual_dist_box", "queue_bank"].includes(primOf(id)))
           || steps.some((s) => ["convergence_curve", "dual_dist"].includes(s.detail_viz.type)))) control = null; // ③ coeff인데 반응 대상 없음
       }
     }
@@ -2181,22 +2185,22 @@ function buildMethodViz(raw) {
       // P3-a: loop_badge — 엣지 중점 아래 알약 배지. text 모드이고 affects에 이 엣지 모듈이 있으면 N=슬라이더 값
       if (e.badge && e.badge.text) {
         const affected = ctrlMode === "text" && spec.control && (spec.control.affects.includes(e.to) || spec.control.affects.includes(e.from));
-        const suffix = String(e.badge.text).replace(/[\d.]+/g, "").trim() || "×";
-        const btxt = affected ? `${S.eta}${suffix}` : String(e.badge.text);
+        const unit = (spec.control && spec.control.unit) || ""; // 접미사는 스펙의 unit 사용(× 날조 금지)
+        const btxt = affected ? `${S.eta}${unit}` : String(e.badge.text);
         const by = ly + (e.label && len >= 70 ? 15 : 2); // 라벨 있으면 그 아래로 분리
         const bw = mvTextW(btxt, 8.5) + 12;
         const pill = mvE("rect", { x: lx - bw / 2, y: by - 8, width: bw, height: 15, rx: 7.5, fill: "#fbf7f0", stroke: "#8c2f39", "stroke-width": "1" });
         const ptxt = mvT(lx, by + 3.2, btxt, { "text-anchor": "middle", fill: "#8c2f39", "font-size": "8.5", "font-weight": "600" });
         gEdgeLab.append(pill, ptxt);
         bb.add(lx - bw / 2 - 2, by - 10, lx + bw / 2 + 2, by + 8); // fit-to-view가 배지를 자르지 않게(AC-5)
-        if (affected) textBadges.push({ pill, ptxt, suffix, cx: lx });
+        if (affected) textBadges.push({ pill, ptxt, unit, cx: lx });
       }
     });
   }
   // text 모드: 슬라이더 조작 시 배지 N값만 갱신(파이프라인 그래픽 불변 — AC-3)
   function updateBadges() {
     textBadges.forEach((b) => {
-      const t = `${S.eta}${b.suffix}`; b.ptxt.textContent = t;
+      const t = `${S.eta}${b.unit}`; b.ptxt.textContent = t;
       const w = mvTextW(t, 8.5) + 12;
       b.pill.setAttribute("x", b.cx - w / 2); b.pill.setAttribute("width", w);
     });
@@ -2243,7 +2247,7 @@ function buildMethodViz(raw) {
           const nn = mvClamp(Math.round(Number(dv.groups.n)), 2, 12), pr = Math.max(1, Math.round(12 / nn));
           grp = Array.from({ length: nn }, (_, i) => ({ label: `${dv.groups.label || ""}${i + 1}`, count: pr }));
         }
-        grp = grp && grp.length ? grp.map((x) => ({ label: String(x.label || ""), count: mvClamp(Math.round(Number(x.count) || 1), 1, 20) })).slice(0, 8) : null;
+        grp = grp && grp.length ? grp.map((x) => ({ label: String(x.label || ""), count: mvClamp(Math.round(Number(x.count) || 1), 1, 20) })) : null;
         const K = grp ? grp.reduce((a, x) => a + x.count, 0) : 12;
         const bw = 296 / K;
         const rv = (k) => { const x = Math.sin(k * 91.7 + S.stepIdx * 13.1) * 43758.5; return x - Math.floor(x); };
@@ -2253,7 +2257,8 @@ function buildMethodViz(raw) {
           grp.forEach((gg, gi) => {
             const x0 = 12 + acc * bw, x1 = 12 + (acc + gg.count) * bw;
             if (gi > 0) g.appendChild(mvE("line", { x1: x0, y1: 14, x2: x0, y2: 112, stroke: FAINT, "stroke-dasharray": "3 3", opacity: "0.6" }));
-            g.appendChild(mvT((x0 + x1) / 2, 126, mvCutPx(gg.label, x1 - x0 - 2, 7.5), { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
+            // 폭이 한 글자도 안 되면 라벨 생략(구분선만) — '…'만 남는 붕괴 방지
+            if (x1 - x0 - 2 >= 14) g.appendChild(mvT((x0 + x1) / 2, 126, mvCutPx(gg.label, x1 - x0 - 2, 7.5), { "text-anchor": "middle", fill: FAINT, "font-size": "7.5" }));
             acc += gg.count;
           });
         }
@@ -2297,8 +2302,8 @@ function buildMethodViz(raw) {
           g.append(mvT(20, 36 + k * 30, row[0], { fill: FAINT, "font-size": "12" }), mvT(300, 36 + k * 30, row[1], { fill: INK, "font-size": "13", "font-weight": "700", "text-anchor": "end" }));
         });
       } else if (type === "dual_dist") {
-        // P2: 두 집단 분포 대비. gap(단일 소스 gapValue) 반영 — 파이프라인 미니 dual_dist_box와 같은 값.
-        const gap = gapValue();
+        // P2: 두 집단 분포 대비. 미니 dual_dist_box와 동일 게이트 — coeff면 gapValue(단일 소스), 아니면 정적(gap=1)로 일치.
+        const gap = ctrlMode === "coeff" ? gapValue() : 1;
         const mid = 160, sep = 22 + gap * 92, base = 116, amp = 80, sd = 25;
         const cA = mid - sep / 2, cB = mid + sep / 2;
         const bell = (cen, col) => {
