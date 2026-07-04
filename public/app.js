@@ -1714,22 +1714,54 @@ function validateMethodViz(raw) {
   const _sv = []; // P3: §9 검증기의 강등 내역(조용한 강등 → 기록)
   const PRIM = new Set(["io_cube", "iso_stack", "card_stack", "op_box", "dual_dist_box", "switch_box", "queue_bank"]);
   const DVIZ = new Set(["pixel_grid", "activation_bars", "histogram", "sorted_threshold", "slab_mask", "convergence_curve", "transform", "summary_rows", "dual_dist"]);
-  const seen = new Set();
-  let modules = (Array.isArray(raw.modules) ? raw.modules : [])
-    .filter((m) => m && typeof m === "object" && m.id && !seen.has(m.id) && seen.add(m.id));
-  if (modules.length < 2) return null; // 최소 구조 없음 → 상위에서 폴백
-  modules.forEach((m) => {
-    if (!PRIM.has(m.primitive)) { _sv.push({ rule: "primitive_unknown", target: "module:" + m.id, action: `"${m.primitive}"→op_box` }); m.primitive = "op_box"; }
+  const EKIND = ["forward", "gradient", "frozen", "alternating"];
+  // 모듈 리스트 공용 강제(프리미티브·lane·iso_stack layers). tag는 로그용 depth 표기.
+  const coerceMods = (mods, tag) => mods.forEach((m) => {
+    if (!PRIM.has(m.primitive)) { _sv.push({ rule: "primitive_unknown", target: `module:${m.id}${tag}`, action: `"${m.primitive}"→op_box` }); m.primitive = "op_box"; }
     m.primitive_spec = m.primitive_spec && typeof m.primitive_spec === "object" ? m.primitive_spec : {};
     if (!["top", "middle", "bottom"].includes(m.lane_hint)) m.lane_hint = null;
     if (m.primitive === "iso_stack") {
-      let ls = (Array.isArray(m.primitive_spec.layers) ? m.primitive_spec.layers : [])
-        .filter((l) => l && Number.isFinite(Number(l.ch)))
-        .map((l) => ({ ch: mvClamp(Math.round(Number(l.ch)), 4, 8), h: mvClamp(Math.round(Number(l.h)) || 90, 50, 130) }));
+      let ls = (Array.isArray(m.primitive_spec.layers) ? m.primitive_spec.layers : []).filter((l) => l && Number.isFinite(Number(l.ch))).map((l) => ({ ch: mvClamp(Math.round(Number(l.ch)), 4, 8), h: mvClamp(Math.round(Number(l.h)) || 90, 50, 130) }));
       if (!ls.length) ls = [{ ch: 4, h: 116 }, { ch: 6, h: 84 }, { ch: 8, h: 58 }];
       m.primitive_spec.layers = ls;
     }
   });
+  const coerceEdges = (rawE, eids, tag) => { const es = rawE.filter((e) => e && eids.has(e.to) && (eids.has(e.from) || e.from === "input"))
+      .map((e) => ({ from: e.from, to: e.to, kind: EKIND.includes(e.kind) ? e.kind : "forward", label: e.label || "", badge: (e.badge && typeof e.badge === "object" && e.badge.text != null) ? { text: String(e.badge.text).slice(0, 8) } : null }));
+    if (rawE.length > es.length) _sv.push({ rule: "edge_invalid_endpoint", target: `edges${tag}`, action: `${rawE.length - es.length}개 제거(from/to 미존재)` }); return es; };
+  const coerceSteps = (rawS, sids, tag) => { const ss = (Array.isArray(rawS) ? rawS : []).filter((s) => s && sids.has(s.module));
+    ss.forEach((s, si) => { s.detail_viz = s.detail_viz && typeof s.detail_viz === "object" ? s.detail_viz : {};
+      if (!DVIZ.has(s.detail_viz.type)) { _sv.push({ rule: "detail_viz_unknown_type", target: `steps[${si}]${tag}`, action: `"${s.detail_viz.type}"→transform` }); s.detail_viz.type = "transform"; }
+      s.detail_viz.binds = Array.isArray(s.detail_viz.binds) ? s.detail_viz.binds : []; }); return ss; };
+  // P1(LOD): expand(모듈 내부 파이프라인) 재귀 검증. 깊이≤2, id 네임스페이스(부모id.자식id) 전역 고유, source_ref 필수.
+  const validateExpand = (parentId, ex, depth, gIds) => {
+    if (ex == null) return null;
+    if (typeof ex !== "object") { _sv.push({ rule: "expand_malformed", target: `${parentId} (depth ${depth})`, action: "expand 제거" }); return null; }
+    const dtag = ` (depth ${depth})`;
+    if (!ex.source_ref || !String(ex.source_ref).trim()) { _sv.push({ rule: "expand_no_source_ref", target: parentId + dtag, action: "expand 제거(근거 없음)" }); return null; }
+    if (depth > 2) { _sv.push({ rule: "expand_depth_exceeded", target: parentId + dtag, action: "깊이 3+ expand 무시" }); return null; }
+    let mods = (Array.isArray(ex.modules) ? ex.modules : []).filter((m) => m && typeof m === "object" && typeof m.id === "string");
+    const badNs = mods.some((m) => m.id.indexOf(parentId + ".") !== 0);
+    const dupSet = new Set(mods.map((m) => m.id));
+    const dup = mods.some((m) => gIds.has(m.id)) || dupSet.size !== mods.length;
+    if (badNs || dup) { _sv.push({ rule: "expand_id_namespace", target: parentId + dtag, action: `expand 제거(${badNs ? "id 접두 누락" : "중복 id"})` }); return null; }
+    if (mods.length < 2 || mods.length > 6) { _sv.push({ rule: "expand_module_count", target: parentId + dtag, action: `expand 제거(모듈 ${mods.length}개, 2~6 아님)` }); return null; }
+    mods.forEach((m) => gIds.add(m.id));
+    coerceMods(mods, dtag);
+    const eids = new Set(mods.map((m) => m.id));
+    const edges = coerceEdges(Array.isArray(ex.edges) ? ex.edges : [], eids, `:${parentId}${dtag}`);
+    const steps = coerceSteps(ex.steps, eids, `:${parentId}${dtag}`);
+    mods.forEach((m) => { m.expand = validateExpand(m.id, m.expand, depth + 1, gIds); });
+    return { source_ref: String(ex.source_ref), modules: mods, edges, steps };
+  };
+  const seen = new Set();
+  let modules = (Array.isArray(raw.modules) ? raw.modules : [])
+    .filter((m) => m && typeof m === "object" && m.id && !seen.has(m.id) && seen.add(m.id));
+  if (modules.length < 2) return null; // 최소 구조 없음 → 상위에서 폴백
+  coerceMods(modules, "");
+  // expand 재귀 검증 — gIds에 전역 id 누적(하위호환: expand 없으면 아무 변화 없음)
+  const gIds = new Set(modules.map((m) => m.id));
+  modules.forEach((m) => { m.expand = validateExpand(m.id, m.expand, 1, gIds); });
   const ids = new Set(modules.map((m) => m.id));
   const rawEdges = Array.isArray(raw.edges) ? raw.edges : [];
   const edges = rawEdges
@@ -1755,7 +1787,8 @@ function validateMethodViz(raw) {
   });
   let control = raw.control && typeof raw.control === "object" ? raw.control : null;
   if (control) {
-    control.affects = (Array.isArray(control.affects) ? control.affects : []).filter((id) => ids.has(id));
+    // affects는 expand 내부 전역 id도 허용(P1.6) — gIds 기준으로 필터
+    control.affects = (Array.isArray(control.affects) ? control.affects : []).filter((id) => gIds.has(id));
     let { min, max, default: def, step } = control;
     min = Number(min); max = Number(max); def = Number(def); step = Number(step);
     if (!Number.isFinite(min)) min = 0;
@@ -1777,7 +1810,8 @@ function validateMethodViz(raw) {
       if (cmode !== "mask") control.direction = null;
       if (!control.affects.length) { _sv.push({ rule: "control_no_affects", target: "control", action: "제거(정적)" }); control = null; }
       else {
-        const primOf = (id) => { const m = modules.find((x) => x.id === id); return m ? m.primitive : null; };
+        const findDeep = (id, list) => { for (const mm of list) { if (mm.id === id) return mm; if (mm.expand && mm.expand.modules) { const f = findDeep(id, mm.expand.modules); if (f) return f; } } return null; };
+        const primOf = (id) => { const m = findDeep(id, modules); return m ? m.primitive : null; };
         // 검증 규칙 (AC-7): 위반 시 control만 제거(정적) — 전체 폴백 아님
         if (cmode === "mask" && !control.direction) { _sv.push({ rule: "mask_no_direction", target: "control", action: "제거(정적)" }); control = null; } // ①
         // ②③ 시각-효과-대상 제약은 mode를 명시한 v4 스펙에만 적용 — mode 없는 v3 스펙은 강등 금지(AC-1 하위호환)
@@ -1792,8 +1826,12 @@ function validateMethodViz(raw) {
   return { ...raw, modules, edges, groups, steps, control, sim, _specValidation: _sv };
 }
 
-function buildMethodViz(raw) {
-  const spec = validateMethodViz(raw);
+function buildMethodViz(raw, opts) {
+  // opts.panel: expand 내부 파이프라인 패널 모드(크롬·입자·전역 컨트롤러 생략, 레이아웃/그리기/불변식은 동일 재사용)
+  // opts.depth: 현재 깊이(0=레벨0). opts.preValidated: raw가 이미 검증된 스펙. opts.qaSink: QA 리포트 수집 배열.
+  opts = opts || {};
+  const panel = !!opts.panel, depth = opts.depth || 0;
+  const spec = opts.preValidated ? raw : validateMethodViz(raw);
   if (!spec) return null;
 
   // ── 상태 ──
@@ -1933,15 +1971,15 @@ function buildMethodViz(raw) {
 
   // ── 골격 DOM ──
   const wrap = document.createElement("div");
-  wrap.className = "mviz";
+  wrap.className = panel ? "mviz mviz-panelbody" : "mviz";
   const header = document.createElement("div");
   header.className = "mviz-head";
   header.innerHTML = `<span class="mviz-badge">인터랙티브 파이프라인</span>` +
     (spec.section_ref ? `<span class="mviz-ref">${escapeHtmlAttr(spec.section_ref)}</span>` : "");
-  wrap.appendChild(header);
+  if (!panel) wrap.appendChild(header);
 
   const stage = document.createElement("div");
-  stage.className = "mviz-stage mviz-left";
+  stage.className = panel ? "mviz-stage mviz-panel-svg" : "mviz-stage mviz-left";
   const svg = mvE("svg", { class: "mviz-svg", preserveAspectRatio: "xMidYMid meet" });
   const defs = mvE("defs");
   ["#6b6258", "#8c2f39"].forEach((c, k) => {
@@ -2071,6 +2109,7 @@ function buildMethodViz(raw) {
     S.mods.clear();
     spec.modules.forEach((m, i) => { const g = drawModule(m, i); gMods.appendChild(g); S.mods.set(m.id, g); });
     applyHighlight();
+    if (typeof decorateExpandable === "function") decorateExpandable(); // P2: expand 표시·클릭 재적용(모듈 재생성마다)
   }
 
   // ── 그룹(점선 라운드 박스) — 멤버 모듈 bbox 합집합 ──
@@ -2213,12 +2252,23 @@ function buildMethodViz(raw) {
   }
 
   function applyHighlight() {
-    const active = spec.steps[S.stepIdx] && spec.steps[S.stepIdx].module;
+    // P3: S.stepIdx는 effSteps(내부 스텝 삽입 반영) 인덱스다. 내부 스텝이면 상위 파이프라인에서는 부모 모듈을 강조한다.
+    const es = (typeof effSteps !== "undefined") ? effSteps[S.stepIdx] : null;
+    const active = es ? (es.internal ? es.parentId : (es.step && es.step.module)) : (spec.steps[S.stepIdx] && spec.steps[S.stepIdx].module);
     S.mods.forEach((g, id) => {
       const on = !active || id === active;
       if (g.__gfx) g.__gfx.setAttribute("opacity", on ? "1" : "0.5");
       if (g.__lab) g.__lab.setAttribute("opacity", on ? "1" : "0.75");
     });
+  }
+  // P2.5: 패널이 열릴 때 내부 모듈을 흐름 순서대로 1회 순차 하이라이트(방향만) — 입자 대체
+  const _seqTimers = [];
+  function sequentialHighlight() {
+    _seqTimers.forEach(clearTimeout); _seqTimers.length = 0;
+    if (S.reduce || !S.mods.size) return;
+    const ids = spec.modules.map((m) => m.id);
+    ids.forEach((id, k) => _seqTimers.push(setTimeout(() => { S.mods.forEach((g, gid) => { if (g.__gfx) g.__gfx.setAttribute("opacity", gid === id ? "1" : "0.4"); }); }, k * 150)));
+    _seqTimers.push(setTimeout(() => applyHighlight(), ids.length * 150 + 200));
   }
 
   // ── 스테퍼 + desc + detail 패널 ──
@@ -2233,8 +2283,10 @@ function buildMethodViz(raw) {
   detailCap.className = "mviz-detail-cap";
   detailWrap.append(detailSvg, detailCap);
 
-  function drawDetail() {
-    const step = spec.steps[S.stepIdx]; if (!step) return;
+  // P3: 계층 스테퍼 — 유효 스텝 목록(내부 스텝 삽입 반영). {step, label, internal, parentId, ctrl}
+  let effSteps = spec.steps.map((s, i) => ({ step: s, label: String(i + 1), internal: false, parentId: null, ctrl: null }));
+  function drawDetail(stepArg) {
+    const step = stepArg || (effSteps[S.stepIdx] && effSteps[S.stepIdx].step) || spec.steps[S.stepIdx]; if (!step) return;
     const dv = step.detail_viz || {};
     detailSvg.textContent = "";
     const g = mvE("g"); detailSvg.appendChild(g);
@@ -2347,20 +2399,41 @@ function buildMethodViz(raw) {
   }
 
   function renderStepInfo() {
-    const step = spec.steps[S.stepIdx];
+    const es = effSteps[S.stepIdx]; if (!es) return; const step = es.step;
     stepInfo.innerHTML = "";
-    const t = document.createElement("h4"); t.className = "mviz-step-title";
-    t.textContent = `${S.stepIdx + 1}. ${step.title || ""}`;
+    const t = document.createElement("h4"); t.className = "mviz-step-title" + (es.internal ? " mviz-step-internal" : "");
+    t.textContent = `${es.label}. ${step.title || ""}`;
     const d = document.createElement("p"); d.className = "mviz-step-desc";
     renderRich(d, step.desc || "");
     stepInfo.append(t, d);
+    if (!es.internal) { const mod = spec.modules.find((m) => m.id === step.module);
+      if (mod && mod.expand && (mod.expand.steps || []).length && openState.id !== mod.id) {
+        const b = mvBtn("⤢ 내부 단계 보기", "내부 파이프라인을 펼치고 단계를 삽입", () => toggleExpand(mod));
+        b.classList.add("mviz-instep-btn"); stepInfo.appendChild(b);
+      } }
   }
   function goStep(i) {
-    S.stepIdx = mvClamp(i, 0, spec.steps.length - 1);
-    posEl.textContent = `${S.stepIdx + 1} / ${spec.steps.length}`;
-    applyHighlight(); renderStepInfo(); drawDetail();
-    // fit-to-view라 전체가 항상 보임 — 스크롤 이동 불필요
+    S.stepIdx = mvClamp(i, 0, effSteps.length - 1);
+    const es = effSteps[S.stepIdx]; if (!es) return;
+    posEl.textContent = `${es.label} / ${effSteps.length}`;
+    if (es.internal && es.ctrl) {
+      S.mods.forEach((g, id) => { const on = id === es.parentId; if (g.__gfx) g.__gfx.setAttribute("opacity", on ? "1" : "0.4"); if (g.__lab) g.__lab.setAttribute("opacity", on ? "1" : "0.6"); });
+      try { const pm = es.step.module; es.ctrl.S.mods.forEach((g, id) => { const on = id === pm; if (g.__gfx) g.__gfx.setAttribute("opacity", on ? "1" : "0.45"); }); } catch (e) {}
+      renderStepInfo(); drawDetail(es.step);
+    } else { applyHighlight(); renderStepInfo(); drawDetail(); }
   }
+  const updateStepUI = () => { const es = effSteps[S.stepIdx]; if (es) posEl.textContent = `${es.label} / ${effSteps.length}`; };
+  const _insertSteps = (m) => { _removeSteps();
+    const pi = effSteps.findIndex((e) => !e.internal && e.step.module === m.id);
+    if (pi < 0 || !m.expand || !(m.expand.steps || []).length || !openState.ctrl) { updateStepUI(); return; }
+    const plabel = effSteps[pi].label;
+    const inserts = m.expand.steps.map((s, k) => ({ step: s, label: `${plabel}.${k + 1}`, internal: true, parentId: m.id, ctrl: openState.ctrl }));
+    effSteps.splice(pi + 1, 0, ...inserts); if (!panel) goStep(pi + 1); else updateStepUI(); // 첫 내부 스텝으로 이동
+  };
+  const _removeSteps = () => { const cur = effSteps[S.stepIdx]; effSteps = effSteps.filter((e) => !e.internal);
+    if (cur && cur.internal) { const pi = effSteps.findIndex((e) => e.step.module === cur.parentId); S.stepIdx = pi >= 0 ? pi : mvClamp(S.stepIdx, 0, effSteps.length - 1); }
+    else if (cur) { S.stepIdx = mvClamp(effSteps.indexOf(cur), 0, Math.max(0, effSteps.length - 1)); } updateStepUI();
+  };
 
   // 스테퍼 버튼
   const prevB = mvBtn("◀", "이전 단계", () => goStep(S.stepIdx - 1));
@@ -2371,9 +2444,7 @@ function buildMethodViz(raw) {
   function togglePlay() {
     if (S.playTimer) { clearInterval(S.playTimer); S.playTimer = 0; playB.textContent = "⏵ 자동"; return; }
     playB.textContent = "⏸ 정지";
-    S.playTimer = setInterval(() => {
-      if (S.stepIdx >= spec.steps.length - 1) { goStep(0); } else goStep(S.stepIdx + 1);
-    }, 2200);
+    S.playTimer = setInterval(() => { if (S.stepIdx >= effSteps.length - 1) { goStep(0); } else goStep(S.stepIdx + 1); }, 2200);
   }
 
   // ── 컨트롤 바 (control + sim + 스키마 주도 리드아웃) ──
@@ -2390,6 +2461,7 @@ function buildMethodViz(raw) {
     slider.addEventListener("input", () => {
       S.eta = Number(slider.value); val.textContent = `${S.eta}${c.unit || ""}`;
       refreshMods(); drawDetail(); updateReadout(); updateBadges();
+      try { if (openState.ctrl && openState.ctrl.updateFromControl) openState.ctrl.updateFromControl(S.eta); } catch (e) {} // P2.6: 열린 패널도 갱신
     });
     lab.title = c.semantics || "";
     ctrlBar.append(lab, slider, val);
@@ -2495,7 +2567,68 @@ function buildMethodViz(raw) {
     hHandle.addEventListener("pointerup", onUp);
   });
 
-  wrap.append(split, hHandle, ctrlBar, foot);
+  // P2: expand 패널이 펼쳐질 영역(파이프라인 바로 아래) — 지연 렌더(처음 열릴 때만 생성)
+  const expandArea = document.createElement("div"); expandArea.className = "mviz-expand-area";
+  if (panel) wrap.append(stage, expandArea); else wrap.append(split, hHandle, expandArea, ctrlBar, foot);
+
+  // ── P2: expand 인라인 확장 UI (지연 렌더 · 한 경로만 열림 · 부모 하이라이트 · 화면고정 배지) ──
+  const openState = { id: null, ctrl: null, panelEl: null };
+  const expandBadges = new Map();
+  const hasExpandable = spec.modules.some((m) => m.expand);
+  // 패널 QA 리포트 싱크는 상위 뷰 수명에 고정한다(레벨0 렌더마다 초기화 — 세션 무한 누적 방지).
+  if (!panel) { try { window.__vizQAPanels = []; } catch (e) {} }
+  function decorateExpandable() {
+    if (!hasExpandable) return;
+    spec.modules.forEach((m) => { if (!m.expand) return; const g = S.mods.get(m.id), p = positions[idxOf(m.id)]; if (!g || !p) return;
+      const r = mvE("rect", { x: -p.halfW - 5, y: 118 - 54, width: p.halfW * 2 + 10, height: 90, rx: 7, fill: "none", stroke: "#8c2f39", "stroke-width": openState.id === m.id ? "2.8" : "1.8", "vector-effect": "non-scaling-stroke", "stroke-dasharray": openState.id === m.id ? "" : "5 3", class: "mviz-expand-border" });
+      g.insertBefore(r, g.firstChild); if (g.style) g.style.cursor = "pointer";
+      g.addEventListener("click", (ev) => { ev.stopPropagation(); toggleExpand(m); });
+    });
+    ensureBadges();
+  }
+  function ensureBadges() { spec.modules.forEach((m) => { if (!m.expand || expandBadges.has(m.id)) return;
+    const b = document.createElement("button"); b.type = "button"; b.className = "mviz-expand-badge"; b.textContent = "⤢"; b.title = "내부 파이프라인 펼치기";
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); const mm = spec.modules.find((x) => x.id === m.id); toggleExpand(mm); });
+    stage.appendChild(b); expandBadges.set(m.id, b); }); }
+  function positionBadges() { if (!expandBadges.size) return; let sr; try { sr = stage.getBoundingClientRect(); } catch (e) { return; }
+    expandBadges.forEach((b, id) => { const g = S.mods.get(id); if (!g || !g.__gfx) { b.style.display = "none"; return; }
+      try { const gr = g.__gfx.getBoundingClientRect(); if (!gr.width) { b.style.display = "none"; return; }
+        b.style.display = ""; b.style.left = (gr.right - sr.left - 8) + "px"; b.style.top = (gr.top - sr.top - 4) + "px"; b.textContent = openState.id === id ? "✕" : "⤢"; b.classList.toggle("open", openState.id === id);
+      } catch (e) { b.style.display = "none"; } }); }
+  function markOpen(id, on) { const g = S.mods.get(id); if (!g) return; const bd = g.querySelector(".mviz-expand-border");
+    if (bd) { bd.setAttribute("stroke-width", on ? "2.8" : "1.8"); bd.setAttribute("stroke-dasharray", on ? "" : "5 3"); } if (on && g.__gfx) g.__gfx.setAttribute("opacity", "1"); }
+  function toggleExpand(m) {
+    if (!m || !m.expand) return;
+    if (openState.id === m.id) { closePanel(); return; }
+    if (openState.id) closePanel();
+    openState.id = m.id; markOpen(m.id, true);
+    const mini = { modules: m.expand.modules, edges: m.expand.edges, steps: m.expand.steps || [], groups: [], section_ref: m.expand.source_ref, sim: {}, paper_type_primary: spec.paper_type_primary || spec.paper_type };
+    const panelWrap = document.createElement("div"); panelWrap.className = "mviz-panel";
+    const head = document.createElement("div"); head.className = "mviz-panel-head";
+    head.innerHTML = `<span class="mviz-panel-title">▸ ${escapeHtmlAttr(m.name || m.id)} 내부</span><span class="mviz-panel-ref">${escapeHtmlAttr(m.expand.source_ref)}</span>`;
+    const closeBtn = document.createElement("button"); closeBtn.type = "button"; closeBtn.className = "mviz-panel-close"; closeBtn.textContent = "✕"; closeBtn.title = "닫기";
+    closeBtn.addEventListener("click", (ev) => { ev.stopPropagation(); closePanel(); }); head.appendChild(closeBtn);
+    let ctrl = null; try { ctrl = buildMethodViz(mini, { panel: true, depth: depth + 1, preValidated: true, qaSink: (window.__vizQAPanels = window.__vizQAPanels || []) }); } catch (e) { ctrl = null; }
+    panelWrap.appendChild(head);
+    if (ctrl) panelWrap.appendChild(ctrl.wrap); else { const err = document.createElement("div"); err.className = "mviz-panel-empty"; err.textContent = "(내부 파이프라인 없음)"; panelWrap.appendChild(err); }
+    expandArea.appendChild(panelWrap); openState.ctrl = ctrl; openState.panelEl = panelWrap;
+    requestAnimationFrame(() => { panelWrap.classList.add("open"); try { positionBadges(); } catch (e) {} if (ctrl && !ctrl._destroyed) { try { ctrl.runVizQA(); } catch (e) {} try { ctrl.sequentialHighlight(); } catch (e) {} } });
+    insertExpandSteps(m);
+  }
+  function closePanel() {
+    if (!openState.id) return; const wasId = openState.id;
+    if (openState.ctrl && openState.ctrl.destroy) try { openState.ctrl.destroy(); } catch (e) {}
+    if (openState.panelEl) openState.panelEl.remove();
+    openState.id = null; openState.ctrl = null; openState.panelEl = null;
+    markOpen(wasId, false); removeExpandSteps(); if (!panel) goStep(S.stepIdx); applyHighlight(); positionBadges();
+  }
+  // P3.5: Esc → 열린 패널 닫기(최상위부터). destroy에서 해제.
+  let _escH = null;
+  if (!panel && hasExpandable) { _escH = (e) => { if ((e.key === "Escape" || e.key === "Esc") && openState.id && !e.isComposing) { e.stopPropagation(); closePanel(); } };
+    try { document.addEventListener("keydown", _escH, true); } catch (e) {} }
+  // P3: 계층 스테퍼 — 열린 모듈의 내부 스텝을 부모 스텝 뒤에 삽입/제거 (아래에서 정의, 여기선 전방참조)
+  function insertExpandSteps(m) { if (typeof _insertSteps === "function") _insertSteps(m); }
+  function removeExpandSteps() { if (typeof _removeSteps === "function") _removeSteps(); }
 
   // ── 초기 렌더 → 콘텐츠 bbox 기반 viewBox (fit-to-view: 스크롤 없이 전체 표시) ──
   drawGroups(); drawEdges(); refreshMods();
@@ -2505,7 +2638,7 @@ function buildMethodViz(raw) {
     svg.setAttribute("viewBox", vb.map((v) => Math.round(v)).join(" "));
     svg.__vbW = vb[2]; svg.__vbH = vb[3];
   }
-  goStep(0); updateReadout();
+  if (!panel) { goStep(0); updateReadout(); } else { applyHighlight(); }
 
   // 축소 배율이 낮으면 부제·엣지 라벨 숨김(가독성 하한) — ResizeObserver로 반응, viewBox는 불변
   const updateCompact = () => {
@@ -2515,12 +2648,14 @@ function buildMethodViz(raw) {
       const scale = Math.min(r.width / svg.__vbW, (r.height || 1) / svg.__vbH);
       svg.classList.toggle("mviz-compact", scale < 0.62);
     } catch {}
+    try { positionBadges(); } catch (e) {} // P2: expand 배지 화면좌표 재배치
   };
   updateCompact();
   if (typeof ResizeObserver !== "undefined") {
     S.ro = new ResizeObserver(updateCompact);
     try { S.ro.observe(stage); } catch {}
   }
+  if (!panel && hasExpandable) try { requestAnimationFrame(() => { try { positionBadges(); } catch (e) {} }); } catch (e) {}
 
   // ── 단일 rAF: 순전파 입자 + alternating 토글 + 스위치 레버 + 큐 펄스 (백그라운드 탭은 rAF가 자동 정지) ──
   function startAnim() {
@@ -2583,7 +2718,7 @@ function buildMethodViz(raw) {
     };
     S.raf = requestAnimationFrame(tick);
   }
-  startAnim();
+  if (!panel) startAnim(); // 패널은 입자 없음(P2.5) — 대신 열릴 때 1회 순차 하이라이트
 
   // ── P1~P3 렌더러 자가진단: 불변식 8종 검사 → 자동 복구 → QA 리포트 (getBBox/BCR 필요 → rAF 후) ──
   function runVizQA() {
@@ -2688,28 +2823,53 @@ function buildMethodViz(raw) {
     const specVal = (spec._specValidation || []).slice();
     let scale = 1; try { const r = stage.getBoundingClientRect(); if (r.width && svg.__vbW) scale = Math.min(r.width / svg.__vbW, (r.height || 1) / svg.__vbH); } catch (e) {}
     const hidden = svg.querySelectorAll('[opacity="0"]').length;
-    const report = { paper_ref: spec.section_ref || "", paper_type: spec.paper_type_primary || spec.paper_type || "", timestamp: new Date().toISOString(),
+    // P4: depth 표기 — 패널(depth>0)의 위반·강등 target에 전역 id 경로+depth 부기
+    if (depth > 0) { inv.forEach((v) => { if (!/depth/.test(v.target)) v.target += `, depth ${depth}`; }); }
+    // 트리 지표(레벨 0 집계)
+    const countExp = (mods) => (mods || []).reduce((a, m) => a + (m.expand ? 1 + countExp(m.expand.modules) : 0), 0);
+    const maxDep = (mods, d) => (mods || []).reduce((mx, m) => Math.max(mx, m.expand ? maxDep(m.expand.modules, d + 1) : d), d);
+    const report = { paper_ref: spec.section_ref || spec.source_ref || "", paper_type: spec.paper_type_primary || spec.paper_type || "", depth, timestamp: new Date().toISOString(),
       spec_validation: specVal, invariants: inv,
-      layout_metrics: { scale: +scale.toFixed(2), modules: spec.modules.length, steps: spec.steps.length, edges: edges.length, hidden_labels: hidden, serpentine: !!serp, text_overflow_count: inv.filter((v) => v.id === "INV-4").length } };
-    try { window.__vizQA = report; } catch (e) {}
+      layout_metrics: { scale: +scale.toFixed(2), modules: spec.modules.length, steps: spec.steps.length, edges: edges.length, hidden_labels: hidden, serpentine: !!serp, text_overflow_count: inv.filter((v) => v.id === "INV-4").length,
+        expandable_modules: countExp(spec.modules), expand_removed: specVal.filter((v) => /^expand_/.test(v.rule)).length, max_depth_used: maxDep(spec.modules, 0) } };
     const nViol = inv.length, nUnres = inv.filter((v) => !v.resolved).length;
+    if (panel) { // 패널: 레벨0 리포트를 덮지 않고 수집처에 병합, 배지·콘솔 생략
+      try { if (Array.isArray(opts.qaSink)) { opts.qaSink.push(report); if (opts.qaSink.length > 200) opts.qaSink.shift(); } } catch (e) {} // 상한(누적 방어)
+      return report;
+    }
+    try { window.__vizQA = report; } catch (e) {}
     try { if (console && console.table) { console.log(`%c[vizQA] ${report.paper_ref || report.paper_type} — 위반 ${nViol} / 미해결 ${nUnres} · 강등 ${specVal.length}`, "color:#8c2f39;font-weight:bold");
       if (nViol) console.table(inv.map((v) => ({ id: v.id, target: v.target, detail: v.detail, recovery: v.recovery.join(",") || "-", resolved: v.resolved })));
       if (specVal.length) console.table(specVal); } } catch (e) {}
     // dev 모드 배지 (localStorage.mvizDev==="1" 또는 window.MVIZ_DEV)
     let dev = false; try { dev = localStorage.getItem("mvizDev") === "1" || window.MVIZ_DEV === true; } catch (e) {}
-    if (dev && (nViol || specVal.length)) { try {
+    if (dev && (nViol || specVal.length || report.layout_metrics.expandable_modules)) { try {
       const badge = document.createElement("button"); badge.type = "button"; badge.className = "mviz-qa-badge";
-      badge.textContent = `QA: 위반 ${nViol} / 미해결 ${nUnres}${specVal.length ? " · 강등 " + specVal.length : ""}`;
+      badge.textContent = `QA: 위반 ${nViol} / 미해결 ${nUnres}${specVal.length ? " · 강등 " + specVal.length : ""}${report.layout_metrics.expandable_modules ? " · 확장 " + report.layout_metrics.expandable_modules : ""}`;
       badge.title = "클릭 시 QA 리포트를 콘솔에 출력";
-      badge.addEventListener("click", () => { console.log("[vizQA] 전체 리포트:", report); });
+      badge.addEventListener("click", () => { console.log("[vizQA] 전체 리포트:", report, "패널:", window.__vizQAPanels || []); });
       stage.appendChild(badge);
     } catch (e) {} }
     return report;
   }
   // 렌더 후 자동 실행(검사+복구+리포트). window.__vizNoAutoQA로 끄면 수동 호출만(전후 비교 테스트용).
   let _noAuto = false; try { _noAuto = (typeof window !== "undefined" && window.__vizNoAutoQA === true); } catch (e) {}
-  if (!_noAuto) try { requestAnimationFrame(() => { try { runVizQA(); } catch (e) { try { console.warn("[vizQA] 리포트 생성 실패(렌더는 계속):", e); } catch (x) {} } }); } catch (e) {}
+  if (!panel && !_noAuto) try { requestAnimationFrame(() => { try { runVizQA(); } catch (e) { try { console.warn("[vizQA] 리포트 생성 실패(렌더는 계속):", e); } catch (x) {} } }); } catch (e) {}
+
+  // 패널 모드: 크롬·전역 컨트롤러 없이 재사용용 핸들만 반환
+  if (panel) {
+    return { wrap, stage, svg, spec, S, positions, runVizQA, refreshMods, applyHighlight, sequentialHighlight,
+      updateFromControl: (eta) => { S.eta = eta; refreshMods(); }, // P2.6: 상위 슬라이더가 열린 패널 갱신
+      _destroyed: false,
+      destroy() {
+        this._destroyed = true;
+        if (S.raf) cancelAnimationFrame(S.raf);
+        if (S.ro) { try { S.ro.disconnect(); } catch (e) {} }
+        _seqTimers.forEach(clearTimeout); _seqTimers.length = 0; // 순차 하이라이트 타이머 정리(닫힌 패널의 detached DOM 발화 방지)
+        try { if (openState.ctrl && openState.ctrl.destroy) openState.ctrl.destroy(); } catch (e) {} // 손자 패널 재귀 정리(ResizeObserver 누수 방지)
+        S.raf = 0; S.ro = null;
+      } };
+  }
 
   // 컨트롤러 (논문 전환 시 정리)
   activeMethodViz = {
@@ -2718,6 +2878,9 @@ function buildMethodViz(raw) {
       if (S.raf) cancelAnimationFrame(S.raf);
       if (S.playTimer) clearInterval(S.playTimer);
       if (S.ro) { try { S.ro.disconnect(); } catch {} }
+      _seqTimers.forEach(clearTimeout); _seqTimers.length = 0;
+      try { if (openState.ctrl && openState.ctrl.destroy) openState.ctrl.destroy(); } catch (e) {}
+      try { if (_escH) document.removeEventListener("keydown", _escH, true); } catch (e) {}
       S.raf = 0; S.playTimer = 0; S.ro = null;
     },
   };

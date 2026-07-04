@@ -11,7 +11,11 @@
 //
 // 종료 코드: 회귀가 하나라도 있으면 1(CI 게이트용), 없으면 0.
 // 회귀 정의: 위반 증가 / 미해결 증가 / scale 0.05↑ 급감 / hidden_labels 증가 /
-//            text_overflow 증가 / spec_validation(강등) 증가 / 모듈·엣지 수 변화.
+//            text_overflow 증가 / spec_validation(강등) 증가 / 모듈·엣지 수 변화 /
+//            expand_removed 증가(v3.4 — 근거 누락 등으로 드릴인 스펙이 예기치 않게 제거됨).
+// v3.4 신규 layout_metrics: expandable_modules(드릴인 가능 모듈 수),
+//   expand_removed(검증에서 제거된 expand 수), max_depth_used(사용된 최대 깊이).
+//   expandable_modules·max_depth_used 변화는 정보성(회귀 아님) — expand 없는 골든 셋은 셋 다 0.
 
 const fs = require("fs");
 const path = require("path");
@@ -54,6 +58,10 @@ for (const k of allKeys) {
   const dOverflow = (nm.text_overflow_count || 0) - (bm.text_overflow_count || 0);
   const dSpecVal = (n.spec_validation || []).length - (b.spec_validation || []).length;
   const dMod = (nm.modules || 0) - (bm.modules || 0), dEdge = (nm.edges || 0) - (bm.edges || 0);
+  // v3.4 드릴인 지표
+  const dExpRemoved = (nm.expand_removed || 0) - (bm.expand_removed || 0);
+  const dExpAble = (nm.expandable_modules || 0) - (bm.expandable_modules || 0);
+  const dMaxDepth = (nm.max_depth_used || 0) - (bm.max_depth_used || 0);
   // 회귀 판정
   const reg = [];
   if (dViol > 0) reg.push(`위반 +${dViol}`);
@@ -64,11 +72,15 @@ for (const k of allKeys) {
   if (dSpecVal > 0) reg.push(`강등 +${dSpecVal}`);
   if (dMod !== 0) reg.push(`모듈 ${dMod > 0 ? "+" : ""}${dMod}`);
   if (dEdge !== 0) reg.push(`엣지 ${dEdge > 0 ? "+" : ""}${dEdge}`);
+  if (dExpRemoved > 0) reg.push(`expand_removed +${dExpRemoved}`);
   // 개선/변화(회귀 아님)
   const impr = [];
   if (dViol < 0) impr.push(`위반 ${dViol}`);
   if (dScale >= 0.05) impr.push(`scale +${dScale}`);
   if (dHidden < 0) impr.push(`hidden ${dHidden}`);
+  if (dExpAble) impr.push(`expandable ${dExpAble > 0 ? "+" : ""}${dExpAble}`);
+  if (dMaxDepth) impr.push(`max_depth ${dMaxDepth > 0 ? "+" : ""}${dMaxDepth}`);
+  if (dExpRemoved < 0) impr.push(`expand_removed ${dExpRemoved}`);
   const bi = byInv(b), ni = byInv(n), invIds = [...new Set([...Object.keys(bi), ...Object.keys(ni)])].sort();
   const invDelta = invIds.map((id) => { const d = (ni[id] || 0) - (bi[id] || 0); return d ? `${id}${d > 0 ? "+" : ""}${d}` : null; }).filter(Boolean).join(" ");
   if (reg.length) { regressions++; lines.push(`  ✗ ${k}: ⚠️ 회귀 [${reg.join(", ")}]${invDelta ? "  (" + invDelta + ")" : ""}`); }

@@ -1,44 +1,404 @@
 {
-  "01_7e07881f": { "paper_ref": "§3~§4, Algorithm 1, Fig.1", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-6", "target": "group:성능 보호 (1단계)", "detail": "패딩 6px<16", "recovery": ["group_pad_expand"], "resolved": true },
-    { "id": "INV-6", "target": "group:편향 제거 (2단계)", "detail": "패딩 11px<16", "recovery": ["group_pad_expand"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.54, "modules": 7, "steps": 7, "edges": 7, "hidden_labels": 4, "serpentine": true, "text_overflow_count": 0 } },
-  "02_3922cf3c": { "paper_ref": "Fig.1, §2.1~2.3", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:finetune→backbone", "detail": "종단 직선 4px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:SNNL-Fair 채널 점수화", "detail": "패딩 11px<16", "recovery": ["group_pad_expand"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.6, "modules": 7, "steps": 7, "edges": 7, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } },
-  "03_2904022d": { "paper_ref": "Fig.1, §3.2~3.3 (Eq.1~4)", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:saliency→dense", "detail": "종단 직선 4px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:Fairness Saliency", "detail": "패딩 11px<16", "recovery": ["group_pad_expand"], "resolved": true },
-    { "id": "INV-7", "target": "edge:saliency→dense", "detail": "gradient 점선이 그룹 테두리와 20px내 평행", "recovery": ["group_dash_distinct(2 6)"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.72, "modules": 6, "steps": 6, "edges": 7, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } },
-  "04_178db7a1": { "paper_ref": "Fig.2, §3.1~3.2, Algorithm 1", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:input→net", "detail": "종단 직선 12px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-1", "target": "edge:net→score", "detail": "종단 직선 4px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:Fair Selection", "detail": "패딩 6px<16", "recovery": ["group_pad_expand"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.5, "modules": 6, "steps": 7, "edges": 6, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } },
-  "05_e558a9a3": { "paper_ref": "Fig.1, §3~§4 (Eq.3~9), Algorithm 1", "paper_type": "T3", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:dense→gap", "detail": "종단 직선 12px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-1", "target": "edge:constraint→sparse", "detail": "종단 직선 4px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:CEAG 제약", "detail": "패딩 12px<16", "recovery": ["group_pad_expand"], "resolved": true },
-    { "id": "INV-7", "target": "edge:constraint→sparse", "detail": "gradient 점선이 그룹 테두리와 20px내 평행", "recovery": ["group_dash_distinct(2 6)"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.5, "modules": 6, "steps": 7, "edges": 7, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } },
-  "06_55cd1928": { "paper_ref": "Fig.1, §2.2", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:prune_mask→main", "detail": "종단 직선 4px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:Mask Generation", "detail": "패딩 6px<16", "recovery": ["group_pad_expand"], "resolved": true },
-    { "id": "INV-7", "target": "edge:prune_mask→main", "detail": "gradient 점선이 그룹 테두리와 20px내 평행", "recovery": ["group_dash_distinct(2 6)"], "resolved": true },
-    { "id": "INV-8", "target": "edge:sa→sa_attr × prune_mask→main", "detail": "교차각 39°<60", "recovery": ["crossing_halo"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.38, "modules": 7, "steps": 7, "edges": 8, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } },
-  "07_29cd4e47": { "paper_ref": "Eq.(1)~(2), §4.2~4.3", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:dense→sparse", "detail": "종단 직선 12px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-1", "target": "edge:loss→score", "detail": "종단 직선 11px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:마스크 탐색", "detail": "패딩 6px<16", "recovery": ["group_pad_expand"], "resolved": true },
-    { "id": "INV-7", "target": "edge:loss→score", "detail": "gradient 점선이 그룹 테두리와 20px내 평행", "recovery": ["group_dash_distinct(2 6)"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.72, "modules": 6, "steps": 6, "edges": 7, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } },
-  "08_a20b6c47": { "paper_ref": "Fig.2, §4.1~4.3, Algorithm 1", "paper_type": "T4", "spec_validation": [], "invariants": [
-    { "id": "INV-1", "target": "edge:dense→sparse", "detail": "종단 직선 12px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-1", "target": "edge:disc→score", "detail": "종단 직선 11px", "recovery": ["terminal_extend"], "resolved": true },
-    { "id": "INV-6", "target": "group:적대적 가지치기", "detail": "패딩 8px<16", "recovery": ["group_pad_expand"], "resolved": true },
-    { "id": "INV-7", "target": "edge:disc→score", "detail": "gradient 점선이 그룹 테두리와 20px내 평행", "recovery": ["group_dash_distinct(2 6)"], "resolved": true } ],
-    "layout_metrics": { "scale": 0.72, "modules": 6, "steps": 6, "edges": 7, "hidden_labels": 4, "serpentine": false, "text_overflow_count": 0 } }
+  "01_7e07881f": {
+    "paper_ref": "§3~§4, Algorithm 1, Fig.1",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.131Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-6",
+        "target": "group:성능 보호 (1단계)",
+        "detail": "패딩 6px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:편향 제거 (2단계)",
+        "detail": "패딩 11px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.54,
+      "modules": 7,
+      "steps": 7,
+      "edges": 7,
+      "hidden_labels": 4,
+      "serpentine": true,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "02_3922cf3c": {
+    "paper_ref": "Fig.1, §2.1~2.3",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.145Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:finetune→backbone",
+        "detail": "종단 직선 4px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:SNNL-Fair 채널 점수화",
+        "detail": "패딩 11px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.91,
+      "modules": 7,
+      "steps": 7,
+      "edges": 7,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "03_2904022d": {
+    "paper_ref": "Fig.1, §3.2~3.3 (Eq.1~4)",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.155Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:saliency→dense",
+        "detail": "종단 직선 4px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:Fairness Saliency",
+        "detail": "패딩 11px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-7",
+        "target": "edge:saliency→dense",
+        "detail": "gradient 점선이 그룹 테두리와 20px내 평행",
+        "recovery": [
+          "group_dash_distinct(2 6)"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.82,
+      "modules": 6,
+      "steps": 6,
+      "edges": 7,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "04_178db7a1": {
+    "paper_ref": "Fig.2, §3.1~3.2, Algorithm 1",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.163Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:input→net",
+        "detail": "종단 직선 12px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-1",
+        "target": "edge:net→score",
+        "detail": "종단 직선 4px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:Fair Selection",
+        "detail": "패딩 6px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.5,
+      "modules": 6,
+      "steps": 7,
+      "edges": 6,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "05_e558a9a3": {
+    "paper_ref": "Fig.1, §3~§4 (Eq.3~9), Algorithm 1",
+    "paper_type": "T3",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.169Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:dense→gap",
+        "detail": "종단 직선 12px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-1",
+        "target": "edge:constraint→sparse",
+        "detail": "종단 직선 4px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:CEAG 제약",
+        "detail": "패딩 12px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-7",
+        "target": "edge:constraint→sparse",
+        "detail": "gradient 점선이 그룹 테두리와 20px내 평행",
+        "recovery": [
+          "group_dash_distinct(2 6)"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.5,
+      "modules": 6,
+      "steps": 7,
+      "edges": 7,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "06_55cd1928": {
+    "paper_ref": "Fig.1, §2.2 (Explainability-aware Node Attribution & Attribution-based Pruning)",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.177Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:prune_mask→main",
+        "detail": "종단 직선 4px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:Mask Generation",
+        "detail": "패딩 6px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-7",
+        "target": "edge:prune_mask→main",
+        "detail": "gradient 점선이 그룹 테두리와 20px내 평행",
+        "recovery": [
+          "group_dash_distinct(2 6)"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-8",
+        "target": "edge:sa→sa_attr × prune_mask→main",
+        "detail": "교차각 39°<60",
+        "recovery": [
+          "crossing_halo"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.38,
+      "modules": 7,
+      "steps": 7,
+      "edges": 8,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "07_29cd4e47": {
+    "paper_ref": "Eq.(1)~(2), §4.2~4.3",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.183Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:dense→sparse",
+        "detail": "종단 직선 12px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-1",
+        "target": "edge:loss→score",
+        "detail": "종단 직선 11px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:마스크 탐색",
+        "detail": "패딩 6px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-7",
+        "target": "edge:loss→score",
+        "detail": "gradient 점선이 그룹 테두리와 20px내 평행",
+        "recovery": [
+          "group_dash_distinct(2 6)"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.82,
+      "modules": 6,
+      "steps": 6,
+      "edges": 7,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  },
+  "08_a20b6c47": {
+    "paper_ref": "Fig.2, §4.1~4.3, Algorithm 1",
+    "paper_type": "T4",
+    "depth": 0,
+    "timestamp": "2026-07-04T10:39:16.187Z",
+    "spec_validation": [],
+    "invariants": [
+      {
+        "id": "INV-1",
+        "target": "edge:dense→sparse",
+        "detail": "종단 직선 12px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-1",
+        "target": "edge:disc→score",
+        "detail": "종단 직선 11px",
+        "recovery": [
+          "terminal_extend"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-6",
+        "target": "group:적대적 가지치기",
+        "detail": "패딩 8px<16",
+        "recovery": [
+          "group_pad_expand"
+        ],
+        "resolved": true
+      },
+      {
+        "id": "INV-7",
+        "target": "edge:disc→score",
+        "detail": "gradient 점선이 그룹 테두리와 20px내 평행",
+        "recovery": [
+          "group_dash_distinct(2 6)"
+        ],
+        "resolved": true
+      }
+    ],
+    "layout_metrics": {
+      "scale": 0.82,
+      "modules": 6,
+      "steps": 6,
+      "edges": 7,
+      "hidden_labels": 4,
+      "serpentine": false,
+      "text_overflow_count": 0,
+      "expandable_modules": 0,
+      "expand_removed": 0,
+      "max_depth_used": 0
+    }
+  }
 }

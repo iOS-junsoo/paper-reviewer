@@ -2384,6 +2384,26 @@ footer {
 .mviz-left .mviz-svg { display: block; width: 100%; height: 100%; }
 .mviz-qa-badge { position: absolute; top: 6px; right: 6px; z-index: 5; font: 600 10px/1 system-ui, sans-serif; padding: 3px 7px; border-radius: 6px; background: #8c2f39; color: #fff; border: none; cursor: pointer; opacity: 0.82; }
 .mviz-qa-badge:hover { opacity: 1; }
+/* P2: expand 드릴인 — 확장 표시 배지 / 인라인 패널 */
+.mviz-expand-badge { position: absolute; z-index: 6; width: 18px; height: 18px; padding: 0; font: 700 11px/16px system-ui, sans-serif; text-align: center; border-radius: 50%; background: #8c2f39; color: #fff; border: 1.5px solid #fbf7f0; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.mviz-expand-badge.open { background: #fbf7f0; color: #8c2f39; }
+.mviz-expand-area { display: flex; flex-direction: column; gap: 8px; }
+.mviz-expand-area:empty { display: none; }
+.mviz-panel { max-height: 0; overflow: hidden; opacity: 0; border: 1px solid #d8cfbc; border-left: 3px solid #8c2f39; border-radius: 10px; background: #fbf7f0; transition: max-height .3s ease, opacity .25s ease; margin-top: 6px; position: relative; }
+.mviz-panel::before { content: ""; position: absolute; left: -3px; top: -8px; width: 14px; height: 12px; border-left: 2px solid #8c2f39; border-top: 2px solid #8c2f39; border-top-left-radius: 4px; }
+.mviz-panel.open { max-height: 520px; opacity: 1; }
+.mviz-panel-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; border-bottom: 1px solid #ece4d5; }
+.mviz-panel-title { font-weight: 700; color: #8c2f39; }
+.mviz-panel-ref { color: #9b9285; font-size: 11px; }
+.mviz-panel-close { margin-left: auto; width: 20px; height: 20px; padding: 0; border: none; background: transparent; color: #9b9285; cursor: pointer; font-size: 13px; }
+.mviz-panel-close:hover { color: #8c2f39; }
+.mviz-panel-empty { padding: 12px; color: #9b9285; font-size: 12px; }
+.mviz-panelbody { }
+.mviz-panel-svg { flex: none; width: 100%; height: 240px; min-width: 0; overflow: hidden; background: #fff; border: 1px solid #ece4d5; border-radius: 8px; padding: 4px; position: relative; box-sizing: border-box; }
+.mviz-panel .mviz-panel-svg { height: 220px; }
+.mviz-panel .mviz-panel .mviz-panel-svg { height: 180px; } /* depth 2 더 작게 */
+.mviz-step-internal { color: #8c2f39; } /* 내부 스텝 제목(3.1 형식) */
+.mviz-instep-btn { margin-top: 8px; font-size: 11px; }
 /* 축소 배율이 낮을 때 부제·엣지 라벨 숨김 (가독성 하한) */
 .mviz-svg.mviz-compact .mv-sub, .mviz-svg.mviz-compact .mv-elabel { display: none; }
 .mviz-divider { flex: none; width: 10px; cursor: col-resize; display: flex; align-items: center; justify-content: center; touch-action: none; }
