@@ -1711,6 +1711,7 @@ function mvWrapPx(text, maxW, size) {
 
 function validateMethodViz(raw) {
   if (!raw || typeof raw !== "object") return null;
+  const _sv = []; // P3: §9 검증기의 강등 내역(조용한 강등 → 기록)
   const PRIM = new Set(["io_cube", "iso_stack", "card_stack", "op_box", "dual_dist_box", "switch_box", "queue_bank"]);
   const DVIZ = new Set(["pixel_grid", "activation_bars", "histogram", "sorted_threshold", "slab_mask", "convergence_curve", "transform", "summary_rows", "dual_dist"]);
   const seen = new Set();
@@ -1718,7 +1719,7 @@ function validateMethodViz(raw) {
     .filter((m) => m && typeof m === "object" && m.id && !seen.has(m.id) && seen.add(m.id));
   if (modules.length < 2) return null; // 최소 구조 없음 → 상위에서 폴백
   modules.forEach((m) => {
-    if (!PRIM.has(m.primitive)) m.primitive = "op_box";
+    if (!PRIM.has(m.primitive)) { _sv.push({ rule: "primitive_unknown", target: "module:" + m.id, action: `"${m.primitive}"→op_box` }); m.primitive = "op_box"; }
     m.primitive_spec = m.primitive_spec && typeof m.primitive_spec === "object" ? m.primitive_spec : {};
     if (!["top", "middle", "bottom"].includes(m.lane_hint)) m.lane_hint = null;
     if (m.primitive === "iso_stack") {
@@ -1730,21 +1731,26 @@ function validateMethodViz(raw) {
     }
   });
   const ids = new Set(modules.map((m) => m.id));
-  const edges = (Array.isArray(raw.edges) ? raw.edges : [])
+  const rawEdges = Array.isArray(raw.edges) ? raw.edges : [];
+  const edges = rawEdges
     .filter((e) => e && (ids.has(e.from) || e.from === "input") && ids.has(e.to))
     .map((e) => ({ from: e.from, to: e.to, kind: ["forward", "gradient", "frozen", "alternating"].includes(e.kind) ? e.kind : "forward", label: e.label || "",
       badge: (e.badge && typeof e.badge === "object" && e.badge.text != null) ? { text: String(e.badge.text).slice(0, 8) } : null }));
-  const groups = (Array.isArray(raw.groups) ? raw.groups : [])
+  if (rawEdges.length > edges.length) _sv.push({ rule: "edge_invalid_endpoint", target: "edges", action: `${rawEdges.length - edges.length}개 제거(from/to 미존재)` });
+  const rawGroups = Array.isArray(raw.groups) ? raw.groups : [];
+  const groups = rawGroups
     .filter((g) => g && typeof g === "object")
     .map((g) => ({ id: g.id || "", label: g.label || "", members: (Array.isArray(g.members) ? g.members : []).filter((id) => ids.has(id)), style: g.style === "solid" ? "solid" : "dashed" }))
     .filter((g) => g.members.length);
+  if (rawGroups.length > groups.length) _sv.push({ rule: "group_no_valid_member", target: "groups", action: `${rawGroups.length - groups.length}개 제거` });
   let steps = (Array.isArray(raw.steps) ? raw.steps : []).filter((s) => s && ids.has(s.module));
   if (steps.length < 2) {
+    _sv.push({ rule: "steps_insufficient", target: "steps", action: "모듈에서 자동 생성(transform)" });
     steps = modules.map((m) => ({ module: m.id, title: m.name || m.id, desc: m.role || "", detail_viz: { type: "transform", binds: ["example"], caption: m.data_state || "" } }));
   }
-  steps.forEach((s) => {
+  steps.forEach((s, si) => {
     s.detail_viz = s.detail_viz && typeof s.detail_viz === "object" ? s.detail_viz : {};
-    if (!DVIZ.has(s.detail_viz.type)) s.detail_viz.type = "transform";
+    if (!DVIZ.has(s.detail_viz.type)) { _sv.push({ rule: "detail_viz_unknown_type", target: "steps[" + si + "]", action: `"${s.detail_viz.type}"→transform` }); s.detail_viz.type = "transform"; }
     s.detail_viz.binds = Array.isArray(s.detail_viz.binds) ? s.detail_viz.binds : [];
   });
   let control = raw.control && typeof raw.control === "object" ? raw.control : null;
@@ -1764,26 +1770,26 @@ function validateMethodViz(raw) {
     const modeGiven = ["mask", "coeff", "text"].includes(control.mode); // 스펙이 mode를 명시했나
     let cmode = control.mode;
     if (!modeGiven) cmode = control.direction ? "mask" : "text";           // 부재 → 하위호환
-    if (control.mode != null && !modeGiven) control = null;                 // ④ mode 값 3종 밖 → control 제거
+    if (control.mode != null && !modeGiven) { _sv.push({ rule: "control_mode_invalid", target: "control", action: `"${control.mode}"→제거(정적)` }); control = null; } // ④ mode 값 3종 밖
     if (control) {
       control.mode = cmode;
       // 비mask 모드는 direction(마스크 UI 트리거)을 제거 — coeff/text에서 슬래브·활성 리드아웃 누출 방지(AC-3)
       if (cmode !== "mask") control.direction = null;
-      if (!control.affects.length) control = null; // 연동 대상 없으면 정적 모드
+      if (!control.affects.length) { _sv.push({ rule: "control_no_affects", target: "control", action: "제거(정적)" }); control = null; }
       else {
         const primOf = (id) => { const m = modules.find((x) => x.id === id); return m ? m.primitive : null; };
         // 검증 규칙 (AC-7): 위반 시 control만 제거(정적) — 전체 폴백 아님
-        if (cmode === "mask" && !control.direction) control = null;                       // ① mask인데 direction 없음
+        if (cmode === "mask" && !control.direction) { _sv.push({ rule: "mask_no_direction", target: "control", action: "제거(정적)" }); control = null; } // ①
         // ②③ 시각-효과-대상 제약은 mode를 명시한 v4 스펙에만 적용 — mode 없는 v3 스펙은 강등 금지(AC-1 하위호환)
-        else if (modeGiven && cmode === "mask" && !control.affects.some((id) => ["iso_stack", "op_box"].includes(primOf(id)))) control = null; // ② mask인데 마스크 대상 없음
+        else if (modeGiven && cmode === "mask" && !control.affects.some((id) => ["iso_stack", "op_box"].includes(primOf(id)))) { _sv.push({ rule: "mask_no_visual_target", target: "control", action: "제거(정적)" }); control = null; } // ②
         else if (modeGiven && cmode === "coeff" && !(control.affects.some((id) => ["dual_dist_box", "queue_bank"].includes(primOf(id)))
-          || steps.some((s) => ["convergence_curve", "dual_dist"].includes(s.detail_viz.type)))) control = null; // ③ coeff인데 반응 대상 없음
+          || steps.some((s) => ["convergence_curve", "dual_dist"].includes(s.detail_viz.type)))) { _sv.push({ rule: "coeff_no_visual_target", target: "control", action: "제거(정적)" }); control = null; } // ③
       }
     }
   }
   const sim = raw.sim && typeof raw.sim === "object" ? raw.sim : {};
   sim.readouts = (Array.isArray(sim.readouts) ? sim.readouts : null);
-  return { ...raw, modules, edges, groups, steps, control, sim };
+  return { ...raw, modules, edges, groups, steps, control, sim, _specValidation: _sv };
 }
 
 function buildMethodViz(raw) {
@@ -2171,7 +2177,7 @@ function buildMethodViz(raw) {
           bb.add(Math.min(x1, x2) - 4, Math.min(y1, y2) - 16, Math.max(x1, x2) + 4, Math.max(y1, y2) + 6);
         }
       }
-      const path = mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": mk, "data-kind": e.kind });
+      const path = mvE("path", { d, stroke: col, fill: "none", "stroke-width": "1.6", "stroke-dasharray": dash, "marker-end": mk, "data-kind": e.kind, "data-from": e.from, "data-to": e.to });
       gEdges.appendChild(path);
       if (e.kind === "alternating") altEdgeEls.push(path);
       if (e.label) {
@@ -2579,8 +2585,135 @@ function buildMethodViz(raw) {
   }
   startAnim();
 
+  // ── P1~P3 렌더러 자가진단: 불변식 8종 검사 → 자동 복구 → QA 리포트 (getBBox/BCR 필요 → rAF 후) ──
+  function runVizQA() {
+    const inv = [];
+    const push = (id, target, detail) => { const o = { id, target, detail, recovery: [], resolved: false }; inv.push(o); return o; };
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    // 모듈 그래픽 bbox(사용자 좌표) — getBBox 우선, 실패 시 positions 추정
+    const modBox = {};
+    spec.modules.forEach((m, i) => {
+      const p = positions[i]; if (!p) return;
+      let b = { x0: p.cx - p.halfW, y0: p.cy - 46, x1: p.cx + p.halfW, y1: p.cy + 30 };
+      try { const g = S.mods.get(m.id), bb2 = g && g.__gfx && g.__gfx.getBBox && g.__gfx.getBBox();
+        if (bb2 && bb2.width > 1) b = { x0: p.cx + bb2.x, y0: (p.cy - 118) + bb2.y, x1: p.cx + bb2.x + bb2.width, y1: (p.cy - 118) + bb2.y + bb2.height }; } catch (e) {}
+      modBox[m.id] = b;
+    });
+    const segsOf = (d) => { const t = String(d || "").match(/[MLC]|-?[\d.]+/g); if (!t) return []; const pts = []; let i = 0, cur = null;
+      while (i < t.length) { const c = t[i++];
+        if (c === "M" || c === "L") { cur = [+t[i++], +t[i++]]; pts.push(cur); }
+        else if (c === "C") { const x1 = +t[i++], y1 = +t[i++], x2 = +t[i++], y2 = +t[i++], x = +t[i++], y = +t[i++], p0 = cur || [x, y];
+          for (let s = 1; s <= 10; s++) { const u = s / 10, mm = 1 - u; pts.push([mm * mm * mm * p0[0] + 3 * mm * mm * u * x1 + 3 * mm * u * u * x2 + u * u * u * x, mm * mm * mm * p0[1] + 3 * mm * mm * u * y1 + 3 * mm * u * u * y2 + u * u * u * y]); } cur = [x, y]; } }
+      const s = []; for (let k = 1; k < pts.length; k++) s.push([pts[k - 1], pts[k]]); return s; };
+    const edges = [...gEdges.querySelectorAll("path[data-kind]")].map((el) => ({ el, kind: el.getAttribute("data-kind"), from: el.getAttribute("data-from"), to: el.getAttribute("data-to"), segs: segsOf(el.getAttribute("d")) }));
+    const inRect = (p, r, pad) => p[0] > r.x0 + pad && p[0] < r.x1 - pad && p[1] > r.y0 + pad && p[1] < r.y1 - pad;
+    const orient = (A, B, C) => Math.sign((B[0] - A[0]) * (C[1] - A[1]) - (B[1] - A[1]) * (C[0] - A[0]));
+    const segseg = (p, q, u, v) => orient(p, q, u) !== orient(p, q, v) && orient(u, v, p) !== orient(u, v, q);
+    const segRect = (a, b, r) => { if (Math.max(a[0], b[0]) < r.x0 || Math.min(a[0], b[0]) > r.x1 || Math.max(a[1], b[1]) < r.y0 || Math.min(a[1], b[1]) > r.y1) return false;
+      if (inRect(a, r, 0) || inRect(b, r, 0)) return true; const c = [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
+      for (let k = 0; k < 4; k++) if (segseg(a, b, c[k], c[(k + 1) % 4])) return true; return false; };
+
+    // INV-1 종단 직선 — 화살촉 직전 '방향이 유지되는' 마지막 직선 구간 ≥14px + 진입 ⊥(±15°)
+    edges.forEach((e) => { const s = e.segs; if (!s.length) return; const endPt = s[s.length - 1][1];
+      // 종단 접선은 샘플 chord가 아니라 d의 실제 종단(마지막 점 − 직전 정점/제어점)으로 — 곡선 종단의 각도 오판 방지
+      const _n = (e.el.getAttribute("d").match(/-?[\d.]+/g) || []).map(Number), _l = _n.length;
+      const endDir = _l >= 4 ? (() => { const v = [_n[_l - 2] - _n[_l - 4], _n[_l - 1] - _n[_l - 3]], m = Math.hypot(...v) || 1; return [v[0] / m, v[1] / m]; })() : [1, 0];
+      // 끝에서 뒤로, 연속 세그먼트가 30°이내(부드러운 곡선/직선)면 같은 종단으로 누적 — 직전 '코너'에서 멈춤
+      let straightLen = dist(s[s.length - 1][0], s[s.length - 1][1]);
+      for (let k = s.length - 2; k >= 0; k--) { const a = [s[k + 1][1][0] - s[k + 1][0][0], s[k + 1][1][1] - s[k + 1][0][1]], b = [s[k][1][0] - s[k][0][0], s[k][1][1] - s[k][0][1]];
+        if ((a[0] * b[0] + a[1] * b[1]) / ((Math.hypot(...a) || 1) * (Math.hypot(...b) || 1)) < 0.866) break; straightLen += Math.hypot(...b); }
+      const ang = Math.atan2(Math.abs(endDir[1]), Math.abs(endDir[0])) * 180 / Math.PI, perp = Math.min(ang, Math.abs(90 - ang)) <= 15;
+      if (straightLen < 14 || !perp) { const o = push("INV-1", `edge:${e.from}→${e.to}`, `종단 직선 ${straightLen.toFixed(0)}px${perp ? "" : "·비직교"}`);
+        try { const dstr = e.el.getAttribute("d"); // 복구: 마지막 코너를 화살촉 반대로 밀어 종단 직선 16px 확보(직선 L 종단만)
+          const m2 = /L\s*-?[\d.]+\s+-?[\d.]+\s+L\s*(-?[\d.]+)\s+(-?[\d.]+)\s*$/.exec(dstr);
+          if (perp && m2) { const ex = +m2[1], ey = +m2[2], np = [ex - 16 * endDir[0], ey - 16 * endDir[1]];
+            const d2 = dstr.replace(/L\s*-?[\d.]+\s+-?[\d.]+\s+L\s*-?[\d.]+\s+-?[\d.]+\s*$/, `L${np[0].toFixed(1)} ${np[1].toFixed(1)} L${ex.toFixed(1)} ${ey.toFixed(1)}`);
+            e.el.setAttribute("d", d2); o.recovery.push("terminal_extend"); o.resolved = true; }
+          else o.recovery.push(perp ? "reroute_needed" : "angle_needs_reroute");
+        } catch (x) {} }
+    });
+    // INV-2 앵커 유효성 — 끝점이 대상 bbox 경계 위(±5px), 내부 침투/허공 금지
+    edges.forEach((e) => { const s = e.segs; if (!s.length || !modBox[e.to]) return; const end = s[s.length - 1][1], r = modBox[e.to];
+      const onBoundary = (Math.abs(end[0] - r.x0) <= 6 || Math.abs(end[0] - r.x1) <= 6 || Math.abs(end[1] - r.y0) <= 6 || Math.abs(end[1] - r.y1) <= 6) && end[0] >= r.x0 - 8 && end[0] <= r.x1 + 8 && end[1] >= r.y0 - 8 && end[1] <= r.y1 + 8;
+      const deepInside = inRect(end, r, 6);
+      if (deepInside || (!onBoundary && dist(end, [(r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2]) < Math.hypot(r.x1 - r.x0, r.y1 - r.y0))) {
+        if (deepInside) push("INV-2", `edge:${e.from}→${e.to}`, `끝점 bbox 내부 침투`); }
+    });
+    // INV-3 관통 — 비인접 모듈 bbox 교차
+    edges.forEach((e) => { spec.modules.forEach((m) => { if (m.id === e.from || m.id === e.to) return; const r = modBox[m.id]; if (!r) return;
+      const rr = { x0: r.x0 + 2, y0: r.y0 + 2, x1: r.x1 - 2, y1: r.y1 - 2 };
+      if (e.segs.some((sg) => segRect(sg[0], sg[1], rr))) { push("INV-3", `edge:${e.from}→${e.to}`, `모듈 ${m.id} 관통`); } }); });
+    // INV-4 텍스트 오버플로 — 모듈 내부 텍스트 실측 폭(getComputedTextLength)이 모듈 할당 폭(halfW·2) 초과
+    spec.modules.forEach((m, i) => { try { const g = S.mods.get(m.id); if (!g || !g.__gfx) return; const cw = positions[i].halfW * 2;
+      [...g.__gfx.querySelectorAll("text")].forEach((t) => { let tl = 0; try { tl = t.getComputedTextLength(); } catch (e) { return; }
+        if (tl > cw + 2) { const o = push("INV-4", `module:${m.id}`, `내부 텍스트 "${(t.textContent || "").slice(0, 12)}" ${tl.toFixed(0)}>${cw.toFixed(0)}px`);
+          try { t.setAttribute("opacity", "0"); const ti = document.createElementNS("http://www.w3.org/2000/svg", "title"); ti.textContent = t.textContent; t.appendChild(ti); o.recovery.push("label_hide→title"); o.resolved = true; } catch (x) {} } });
+    } catch (e) {} });
+    // INV-5 라벨 충돌 — 엣지 라벨·배지·부제·그룹 라벨 bbox 쌍 겹침(화면 좌표)
+    const labels = [...gEdgeLab.querySelectorAll("text"), ...gGrpLab.querySelectorAll("text"), ...svg.querySelectorAll(".mv-sub")].filter((t) => (t.textContent || "").trim());
+    const lb = labels.map((t) => { try { return { t, r: t.getBoundingClientRect() }; } catch (e) { return null; } }).filter((x) => x && x.r.width > 1);
+    for (let i = 0; i < lb.length; i++) for (let j = i + 1; j < lb.length; j++) { const a = lb[i].r, b = lb[j].r;
+      if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) {
+        const o = push("INV-5", `labels`, `"${(lb[i].t.textContent || "").slice(0, 8)}"↔"${(lb[j].t.textContent || "").slice(0, 8)}" 겹침`);
+        try { const hide = lb[i].t.classList.contains("mv-elabel") ? lb[i].t : (lb[j].t.classList.contains("mv-elabel") ? lb[j].t : lb[i].t); hide.setAttribute("opacity", "0"); o.recovery.push("label_hide"); o.resolved = true; } catch (x) {} } }
+    // INV-6 그룹 패딩 ≥16px (사용자 좌표) + 복구: 박스 확장
+    [...gGroups.querySelectorAll("rect")].forEach((rect, gi) => { const grp = spec.groups[gi]; if (!grp) return;
+      let u = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }; grp.members.forEach((id) => { const r = modBox[id]; if (!r) return; u.x0 = Math.min(u.x0, r.x0); u.y0 = Math.min(u.y0, r.y0); u.x1 = Math.max(u.x1, r.x1); u.y1 = Math.max(u.y1, r.y1); });
+      if (!isFinite(u.x0)) return; const gx = +rect.getAttribute("x"), gy = +rect.getAttribute("y"), gw = +rect.getAttribute("width"), gh = +rect.getAttribute("height");
+      const pad = Math.min(u.x0 - gx, u.y0 - gy, gx + gw - u.x1, gy + gh - u.y1);
+      if (pad < 16) { const o = push("INV-6", `group:${grp.label || grp.id}`, `패딩 ${pad.toFixed(0)}px<16`);
+        try { const nx = Math.min(gx, u.x0 - 16), ny = Math.min(gy, u.y0 - 16), nx1 = Math.max(gx + gw, u.x1 + 16), ny1 = Math.max(gy + gh, u.y1 + 16);
+          rect.setAttribute("x", nx); rect.setAttribute("y", ny); rect.setAttribute("width", nx1 - nx); rect.setAttribute("height", ny1 - ny); o.recovery.push("group_pad_expand"); o.resolved = true; } catch (x) {} }
+    });
+    // INV-7 점선 혼동 — gradient edge가 그룹 테두리와 20px 이내 평행. 복구: 그룹 점선을 구분 상수(2 6)로 강제
+    const grpRects = [...gGroups.querySelectorAll("rect")].map((rc) => ({ el: rc, fixed: false, x0: +rc.getAttribute("x"), y0: +rc.getAttribute("y"), x1: +rc.getAttribute("x") + +rc.getAttribute("width"), y1: +rc.getAttribute("y") + +rc.getAttribute("height") }));
+    edges.filter((e) => e.kind === "gradient").forEach((e) => { grpRects.forEach((gr) => {
+      const near = e.segs.some((sg) => { const horiz = Math.abs(sg[1][1] - sg[0][1]) < 3, vert = Math.abs(sg[1][0] - sg[0][0]) < 3;
+        if (horiz && (Math.abs(sg[0][1] - gr.y0) < 20 || Math.abs(sg[0][1] - gr.y1) < 20) && Math.max(sg[0][0], sg[1][0]) > gr.x0 && Math.min(sg[0][0], sg[1][0]) < gr.x1) return true;
+        if (vert && (Math.abs(sg[0][0] - gr.x0) < 20 || Math.abs(sg[0][0] - gr.x1) < 20) && Math.max(sg[0][1], sg[1][1]) > gr.y0 && Math.min(sg[0][1], sg[1][1]) < gr.y1) return true; return false; });
+      if (near) { const o = push("INV-7", `edge:${e.from}→${e.to}`, `gradient 점선이 그룹 테두리와 20px내 평행`);
+        try { const cur = gr.el.getAttribute("stroke-dasharray"); if (cur !== "2 6") { gr.el.setAttribute("stroke-dasharray", "2 6"); gr.el.setAttribute("stroke", "#b7a680"); gr.el.setAttribute("stroke-opacity", "0.6"); }
+          o.recovery.push("group_dash_distinct(2 6)"); o.resolved = true; } catch (x) {} } }); });
+    // INV-8 교차각 ≥60°
+    for (let i = 0; i < edges.length; i++) for (let j = i + 1; j < edges.length; j++) { const A = edges[i], B = edges[j];
+      if (A.from === B.from || A.to === B.to || A.from === B.to || A.to === B.from) continue; // 공유 엔드포인트는 교차 아님
+      for (const a of A.segs) for (const b of B.segs) { if (!segseg(a[0], a[1], b[0], b[1])) continue;
+        const va = [a[1][0] - a[0][0], a[1][1] - a[0][1]], vb = [b[1][0] - b[0][0], b[1][1] - b[0][1]];
+        const dot = va[0] * vb[0] + va[1] * vb[1], ang = Math.acos(Math.min(1, Math.abs(dot) / (Math.hypot(...va) * Math.hypot(...vb) || 1))) * 180 / Math.PI;
+        if (ang < 60) { const o = push("INV-8", `edge:${A.from}→${A.to} × ${B.from}→${B.to}`, `교차각 ${ang.toFixed(0)}°<60`);
+          try { const c = mvE("circle", { cx: (a[0][0] + a[1][0]) / 2, cy: (a[0][1] + a[1][1]) / 2, r: 4, fill: "#fbf7f0" }); gEdges.insertBefore(c, B.el); o.recovery.push("crossing_halo"); o.resolved = true; } catch (x) {} }
+      } }
+
+    // ── P3 QA 리포트 ──
+    const specVal = (spec._specValidation || []).slice();
+    let scale = 1; try { const r = stage.getBoundingClientRect(); if (r.width && svg.__vbW) scale = Math.min(r.width / svg.__vbW, (r.height || 1) / svg.__vbH); } catch (e) {}
+    const hidden = svg.querySelectorAll('[opacity="0"]').length;
+    const report = { paper_ref: spec.section_ref || "", paper_type: spec.paper_type_primary || spec.paper_type || "", timestamp: new Date().toISOString(),
+      spec_validation: specVal, invariants: inv,
+      layout_metrics: { scale: +scale.toFixed(2), modules: spec.modules.length, steps: spec.steps.length, edges: edges.length, hidden_labels: hidden, serpentine: !!serp, text_overflow_count: inv.filter((v) => v.id === "INV-4").length } };
+    try { window.__vizQA = report; } catch (e) {}
+    const nViol = inv.length, nUnres = inv.filter((v) => !v.resolved).length;
+    try { if (console && console.table) { console.log(`%c[vizQA] ${report.paper_ref || report.paper_type} — 위반 ${nViol} / 미해결 ${nUnres} · 강등 ${specVal.length}`, "color:#8c2f39;font-weight:bold");
+      if (nViol) console.table(inv.map((v) => ({ id: v.id, target: v.target, detail: v.detail, recovery: v.recovery.join(",") || "-", resolved: v.resolved })));
+      if (specVal.length) console.table(specVal); } } catch (e) {}
+    // dev 모드 배지 (localStorage.mvizDev==="1" 또는 window.MVIZ_DEV)
+    let dev = false; try { dev = localStorage.getItem("mvizDev") === "1" || window.MVIZ_DEV === true; } catch (e) {}
+    if (dev && (nViol || specVal.length)) { try {
+      const badge = document.createElement("button"); badge.type = "button"; badge.className = "mviz-qa-badge";
+      badge.textContent = `QA: 위반 ${nViol} / 미해결 ${nUnres}${specVal.length ? " · 강등 " + specVal.length : ""}`;
+      badge.title = "클릭 시 QA 리포트를 콘솔에 출력";
+      badge.addEventListener("click", () => { console.log("[vizQA] 전체 리포트:", report); });
+      stage.appendChild(badge);
+    } catch (e) {} }
+    return report;
+  }
+  // 렌더 후 자동 실행(검사+복구+리포트). window.__vizNoAutoQA로 끄면 수동 호출만(전후 비교 테스트용).
+  let _noAuto = false; try { _noAuto = (typeof window !== "undefined" && window.__vizNoAutoQA === true); } catch (e) {}
+  if (!_noAuto) try { requestAnimationFrame(() => { try { runVizQA(); } catch (e) { try { console.warn("[vizQA] 리포트 생성 실패(렌더는 계속):", e); } catch (x) {} } }); } catch (e) {}
+
   // 컨트롤러 (논문 전환 시 정리)
   activeMethodViz = {
+    runVizQA, // 테스트/골든셋에서 동기 호출 가능
     destroy() {
       if (S.raf) cancelAnimationFrame(S.raf);
       if (S.playTimer) clearInterval(S.playTimer);

@@ -1,0 +1,36 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>골든 QA 리포트 수집</title>
+<link rel="stylesheet" href="style.css">
+<style>body{margin:0;font-family:system-ui,sans-serif;padding:16px;background:#f4efe6}
+#bar{margin-bottom:10px}button{font:inherit;padding:6px 12px;border:1px solid #b7a680;background:#fff;border-radius:6px;cursor:pointer;margin-right:8px}
+#render{position:absolute;left:-9999px;top:0;width:900px}
+textarea{width:100%;height:60vh;font:11px/1.4 monospace}</style></head><body>
+<div class="app" style="display:none"></div>
+<div id="bar"><b>골든 셋 QA 리포트 수집</b>
+  <button id="run">전수 렌더 + 리포트 수집</button>
+  <button id="dl">JSON 다운로드</button>
+  <span id="msg"></span></div>
+<textarea id="out" placeholder="여기에 수집된 리포트 JSON이 출력됩니다. 복사하거나 다운로드해 golden/reports/&lt;날짜&gt;.json 로 저장하세요."></textarea>
+<div id="render"></div>
+<div style="display:none"><div id="bm-add" style="display:none"></div><div id="cache-badge" style="display:none"></div><div id="cancel-analysis" style="display:none"></div><div id="chat-close" style="display:none"></div><div id="chat-drawer" style="display:none"></div><div id="chat-fab" style="display:none"></div><div id="chat-form" style="display:none"></div><div id="chat-input" style="display:none"></div><div id="chat-messages" style="display:none"></div><div id="chat-resize" style="display:none"></div><div id="chat-send" style="display:none"></div><div id="contributions" style="display:none"></div><div id="dropzone" style="display:none"></div><div id="error" style="display:none"></div><div id="file-input" style="display:none"></div><div id="folder-new" style="display:none"></div><div id="glossary-card" style="display:none"></div><div id="glossary-close" style="display:none"></div><div id="glossary-list" style="display:none"></div><div id="glossary-search" style="display:none"></div><div id="history-list" style="display:none"></div><div id="history-search" style="display:none"></div><div id="kbd-help" style="display:none"></div><div id="kbd-help-close" style="display:none"></div><div id="loading" style="display:none"></div><div id="loading-fill" style="display:none"></div><div id="loading-log" style="display:none"></div><div id="loading-pct" style="display:none"></div><div id="loading-text" style="display:none"></div><div id="notes-bookmarks" style="display:none"></div><div id="notes-card" style="display:none"></div><div id="notes-close" style="display:none"></div><div id="notes-status" style="display:none"></div><div id="notes-text" style="display:none"></div><div id="one-liner" style="display:none"></div><div id="panel-background" style="display:none"></div><div id="panel-equations" style="display:none"></div><div id="panel-figures" style="display:none"></div><div id="panel-method" style="display:none"></div><div id="panel-problem" style="display:none"></div><div id="panel-results" style="display:none"></div><div id="panel-seminar" style="display:none"></div><div id="paper-title" style="display:none"></div><div id="pdf-jump-flag" style="display:none"></div><div id="pdf-missing" style="display:none"></div><div id="pdf-pane" style="display:none"></div><div id="pdf-scroll" style="display:none"></div><div id="pdf-toggle" style="display:none"></div><div id="pdf-zoom-in" style="display:none"></div><div id="pdf-zoom-out" style="display:none"></div><div id="pdf-zoom-reset" style="display:none"></div><div id="pick-btn" style="display:none"></div><div id="qa-list" style="display:none"></div><div id="qa-prep" style="display:none"></div><div id="reanalyze-banner" style="display:none"></div><div id="rebar-cancel" style="display:none"></div><div id="rebar-fill" style="display:none"></div><div id="rebar-pct" style="display:none"></div><div id="rebar-text" style="display:none"></div><div id="related" style="display:none"></div><div id="related-list" style="display:none"></div><div id="sb-active" style="display:none"></div><div id="sb-active-prog" style="display:none"></div><div id="sb-active-title" style="display:none"></div><div id="sb-collapse" style="display:none"></div><div id="sb-foldermenu" style="display:none"></div><div id="sb-new" style="display:none"></div><div id="sb-open" style="display:none"></div><div id="tabs" style="display:none"></div><div id="theme-toggle" style="display:none"></div><div id="tool-cheatsheet" style="display:none"></div><div id="tool-copy" style="display:none"></div><div id="tool-download" style="display:none"></div><div id="tool-glossary" style="display:none"></div><div id="tool-notes" style="display:none"></div><div id="tool-regen" style="display:none"></div><div id="workspace" style="display:none"></div></div>
+<script>
+  const _f=window.fetch; window.fetch=(u,o)=>{ if(typeof u==="string"&&u.indexOf("/api/")===0) return Promise.resolve(new Response("[]",{status:200,headers:{"Content-Type":"application/json"}})); return _f?_f(u,o):Promise.reject(new Error("no fetch")); };
+  window.__vizNoAutoQA=true;
+  let lastJSON="";
+  function collect(){
+    if(!window.GOLDEN){ document.getElementById("msg").textContent="golden_specs.js 미로드"; return; }
+    const mount=document.getElementById("render"); const reports={};
+    for(const [name,spec] of Object.entries(window.GOLDEN)){
+      mount.innerHTML=""; if(window.activeMethodViz&&window.activeMethodViz.destroy) try{activeMethodViz.destroy();}catch(e){}
+      const el=window.buildMethodViz(spec); if(!el){reports[name]={error:"fallback(null)"};continue;} mount.appendChild(el);
+      try{ reports[name]=activeMethodViz.runVizQA(); }catch(e){ reports[name]={error:e.message}; }
+    }
+    lastJSON=JSON.stringify(reports,null,2); document.getElementById("out").value=lastJSON;
+    const n=Object.keys(reports).length, viol=Object.values(reports).reduce((a,r)=>a+((r.invariants||[]).length),0);
+    document.getElementById("msg").textContent=n+"편 수집 · 총 위반 "+viol;
+  }
+  document.getElementById("run").addEventListener("click",collect);
+  document.getElementById("dl").addEventListener("click",()=>{ if(!lastJSON)collect(); const b=new Blob([lastJSON],{type:"application/json"}); const a=document.createElement("a"); a.href=URL.createObjectURL(b); a.download="golden_reports.json"; a.click(); });
+</script>
+<script src="app.js"></script>
+<script src="golden_specs.js"></script>
+</body></html>
