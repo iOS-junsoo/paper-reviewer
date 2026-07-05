@@ -1596,43 +1596,51 @@ function setThinking(el, msg) {
 // ---------- 연구 방법론: 재구성 figure들 + 스테퍼 ----------
 /* method_viz_html: 논문당 독립 실행형 HTML 시각화(viz_guideline.md 산출물)를
    sandboxed iframe(srcdoc)으로 격리 렌더. CSS/JS 충돌 없이, §2.8 리사이즈 호환
-   (width:100% + 내부 SVG viewBox)을 만족한다. 높이는 내부에서 postMessage로 보고. */
+   (width:100% + 내부 SVG viewBox)을 만족한다. 높이는 부모가 내부 문서를 실측해 맞춘다. */
 function buildMethodVizFrame(html) {
   const frame = document.createElement("iframe");
   frame.className = "method-viz-frame";
   frame.title = "연구 방법론 인터랙티브 시각화";
-  // allow-scripts만 — 동일출처 미부여(불투명 origin)로 부모 접근 차단. 스크립트/애니메이션은 정상 동작.
-  frame.setAttribute("sandbox", "allow-scripts");
+  // allow-scripts + allow-same-origin: 콘텐츠는 외부 요청 없는 1st-party 자체완결 HTML이라
+  // 높이 실측(contentDocument 접근)을 위해 동일출처를 허용한다. 정적 서빙되는 우리 산출물만 들어온다.
+  frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
   frame.setAttribute("scrolling", "no");
-  frame.setAttribute("loading", "lazy");
   frame.style.width = "100%";
   frame.style.border = "0";
   frame.style.display = "block";
   frame.style.height = "620px"; // 초기값 — 로드 후 실측 높이로 교체
-  // 높이 자동조절: 내부에 리포터 스크립트를 주입하고 postMessage 수신
-  const token = "mviz-" + Math.random().toString(36).slice(2);
-  const reporter =
-    "<script>(function(){var T=" + JSON.stringify(token) + ";" +
-    "function h(){var d=document.documentElement,b=document.body;if(!b)return;" +
-    "var ht=Math.max(b.scrollHeight,d.scrollHeight,b.offsetHeight,d.offsetHeight);" +
-    "parent.postMessage({__mvizToken:T,__mvizHeight:ht},'*');}" +
-    "window.addEventListener('load',h);window.addEventListener('resize',h);" +
-    "[120,400,900,1800].forEach(function(t){setTimeout(h,t);});" +
-    "try{if(window.ResizeObserver){new ResizeObserver(h).observe(document.body);}}catch(e){}" +
-    "})();<\/script>";
-  const injected = /<\/body>/i.test(html)
-    ? html.replace(/<\/body>/i, reporter + "</body>")
-    : html + reporter;
-  frame.srcdoc = injected;
-  const onMsg = (e) => {
-    if (e.source !== frame.contentWindow) return; // 이 프레임이 보낸 것만
-    const d = e.data;
-    if (!d || d.__mvizToken !== token) return;
-    const h = Math.max(280, Math.min(6000, Number(d.__mvizHeight) || 0));
-    if (h) frame.style.height = h + "px";
+  frame.srcdoc = html;
+  const fit = () => {
+    try {
+      const doc = frame.contentDocument;
+      if (!doc || !doc.body) return;
+      // 축소도 반영하려면 먼저 높이를 줄여 뷰포트 클램프를 없앤 뒤 body 실제 콘텐츠 높이를 잰다.
+      // (높이만 0으로 — 폭은 100% 유지되므로 리플로우 없음.)
+      frame.style.height = "0px";
+      const raw = doc.body.scrollHeight;
+      frame.style.height = (raw > 0 ? Math.max(280, Math.min(6000, raw)) : 620) + "px";
+    } catch (e) {}
   };
-  window.addEventListener("message", onMsg);
-  _mvizHtmlCleanup = () => window.removeEventListener("message", onMsg);
+  let innerRO = null, ro = null;
+  frame.addEventListener("load", () => {
+    fit();
+    [120, 400, 900, 1800].forEach((t) => setTimeout(fit, t)); // 폰트·rAF·2단계 애니메이션 정착 후 재측정
+    // 내부 body 크기 변화(폭 리플로우·애니메이션)를 내부 window의 ResizeObserver로 관측해 높이 반영.
+    // (부모 RO로 자식 문서 요소를 관측하면 문서 경계에서 불안정 — 내부 생성자를 쓴다.)
+    try {
+      const win = frame.contentWindow, doc = frame.contentDocument;
+      if (win && win.ResizeObserver && doc && doc.body) { innerRO = new win.ResizeObserver(fit); innerRO.observe(doc.body); }
+    } catch (e) {}
+  });
+  // iframe 박스 폭이 바뀌면(패널 리사이즈) 재측정 — 리플로우 정착을 위해 지연 재측정도 건다.
+  try {
+    if (window.ResizeObserver) {
+      let lastW = 0;
+      ro = new ResizeObserver(() => { const w = frame.clientWidth; if (w && w !== lastW) { lastW = w; fit(); setTimeout(fit, 160); setTimeout(fit, 520); } });
+      ro.observe(frame);
+    }
+  } catch (e) {}
+  _mvizHtmlCleanup = () => { if (ro) { try { ro.disconnect(); } catch (e) {} } if (innerRO) { try { innerRO.disconnect(); } catch (e) {} } };
   return frame;
 }
 
