@@ -431,11 +431,36 @@ body.reading .new-analysis { display: inline-block; }
   margin: 32px auto 0;
   padding: 0 24px;
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
-  gap: 24px;
+  /* [PDF] [드래그 핸들 24px(gap 겸용)] [결과]. --pdf-w를 드래그로 조절(px). */
+  grid-template-columns: minmax(220px, var(--pdf-w, 0.92fr)) 24px minmax(0, 1fr);
+  gap: 0;
   align-items: start;
 }
-.workspace.pdf-collapsed { grid-template-columns: minmax(0, 1fr); }
+.workspace.pdf-collapsed { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+.workspace.pdf-collapsed .ws-resize { display: none; }
+
+/* 패널 폭 조절 드래그 핸들 (PDF ↔ 결과) */
+.ws-resize {
+  align-self: stretch;
+  min-height: 220px;
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+.ws-resize::after {
+  content: "";
+  width: 3px;
+  height: 56px;
+  border-radius: 2px;
+  background: var(--line);
+  transition: background 0.12s, height 0.12s;
+}
+.ws-resize:hover::after { background: var(--accent); height: 80px; }
+/* 드래그 중: iframe·PDF가 포인터를 삼키지 않도록 */
+body.ws-resizing { user-select: none; cursor: col-resize; }
+body.ws-resizing iframe, body.ws-resizing .pdf-scroll { pointer-events: none; }
 .workspace.pdf-collapsed .pdf-pane .pdf-scroll,
 .workspace.pdf-collapsed .pdf-pane .pdf-missing { display: none; }
 .workspace.pdf-collapsed .pdf-pane { position: fixed; left: 12px; top: 12px; height: auto; width: auto; z-index: 20; }
@@ -585,8 +610,9 @@ body.reading .new-analysis { display: inline-block; }
 }
 
 @media (max-width: 980px) {
-  .workspace { grid-template-columns: 1fr; }
+  .workspace { grid-template-columns: 1fr; gap: 24px; }
   .pdf-pane { position: static; height: 60vh; }
+  .ws-resize { display: none; } /* 모바일: 세로 스택 → 드래그 핸들 숨김 */
 }
 
 /* ── result ────────────────────────────────────────────────────────── */

@@ -1375,6 +1375,41 @@ document.getElementById("chat-close").addEventListener("click", () => {
   });
 })();
 
+// 워크스페이스 패널 폭 조절 (PDF ↔ 결과 드래그). --pdf-w(px)를 workspace에 설정, localStorage 저장.
+// HTML 시각화 iframe·JSON 렌더러 모두 width:100%라 이 폭 변화를 자동으로 따라간다.
+(() => {
+  const handle = document.getElementById("ws-resize");
+  const workspace = document.getElementById("workspace");
+  if (!handle || !workspace) return;
+  const MIN_PDF = 220, HANDLE = 24, MIN_RESULT = 300, PAD = 48; // padding 0 24px 양쪽
+  const maxPdf = () => Math.max(MIN_PDF, workspace.clientWidth - PAD - HANDLE - MIN_RESULT);
+  const apply = (px) => workspace.style.setProperty("--pdf-w", Math.round(px) + "px");
+  // 로드 시 복원 — 현재 폭 대비 클램프
+  const saved = Number(localStorage.getItem("wsPdfWidth"));
+  if (saved >= MIN_PDF) { const m = maxPdf(); if (saved <= m) apply(saved); }
+  handle.addEventListener("pointerdown", (e) => {
+    if (workspace.classList.contains("pdf-collapsed")) return; // 접힘 상태에선 비활성
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("ws-resizing");
+    const onMove = (ev) => {
+      const wsRect = workspace.getBoundingClientRect();
+      const px = Math.min(maxPdf(), Math.max(MIN_PDF, ev.clientX - (wsRect.left + 24)));
+      apply(px);
+    };
+    const onUp = () => {
+      handle.releasePointerCapture(e.pointerId);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("ws-resizing");
+      const cur = getComputedStyle(workspace).getPropertyValue("--pdf-w").trim();
+      if (cur.endsWith("px")) localStorage.setItem("wsPdfWidth", String(parseInt(cur, 10)));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+  });
+})();
+
 function renderChatLog() {
   chatMessages.innerHTML = "";
   if (!chatHistory.length) {
