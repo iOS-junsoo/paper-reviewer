@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (CLIP Debiasing · 폴백[T7 시스템 골격 차용] · C버전 - Bias Alignment 박스만 살짝 입체)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [ ] 블록6: JS-3 — 실험실(두 분포 KL 정렬 애니메이션 + α), 초기화
+  근거: 2411.12785. frozen CLIP(t→f(t),t'→f(t'),v→g(v)) → Bias Alignment 모듈 BA(학습): φ(t)←BA(f(t)), ψ(v)←BA(g(v)), 두 분포 KL 정렬 Lba. → Counterfactual Debiasing: 반사실 텍스트 t' 당김 Lcd, β~Bernoulli(0.5) alternating. 총손실 L=αLcd+(1−α)Lba. 추론 φ(t)←f(t)−BA(f(t)). 백본 ViT-B/16·B/32. plug-and-play.
+  주: C버전=Bias Alignment 모듈 박스에만 슬랩 깊이(Fig.4 3D 인상 재현). 데이터여정·실험실은 2D 동일. 데이터 자체는 부피 없음(임베딩·분포)이라 등급 A가 데이터상 정답이나, 원본 figure 인상 재현 목적의 C.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CLIP Debiasing (약한 입체)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --txt:#7a6bb0;--txt-face:#e7e2f2;--img:#c9743e;--img-face:#f6e1d2;
+    --frozen:#5b8bb0;--frozen-face:#dde8f1;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#5a4a8a;
+    background:var(--txt-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .fallback-badge{display:inline-block;font-size:10px;font-weight:700;color:#8a7d79;
+    background:#f0ebe5;border-radius:999px;padding:3px 10px;margin-left:6px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 440px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot .zbox{filter:drop-shadow(0 0 6px rgba(140,47,57,.5));}
+  .zbox{transition:filter .35s;}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .lab-grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;}
+  .lab-col{flex:1;min-width:260px;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .stat{display:inline-block;background:var(--accent-faint);border-radius:8px;padding:6px 13px;text-align:center;margin-right:10px;}
+  .stat .v{font-size:15px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
+  .stat .k{font-size:10px;color:#a06e6e;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>CLIP 편향 제거<span class="type-badge">Vision-Language · 편향 제거</span><span class="fallback-badge">9개 타입 외 · T7 골격 차용</span></h1>
+<p class="lead">CLIP 같은 이미지-텍스트 모델은 "male dancer" 같은 표현에서 사회적 편향을 학습한다. 이 논문은 <b>frozen CLIP은 그대로 두고</b>, 편향만 골라내는 작은 모듈(Bias Alignment)을 붙여 제거한다. 핵심은 두 가지 — 이미지와 텍스트의 편향 분포를 <b>정렬</b>하고, 반사실 텍스트(male↔female)를 임베딩 공간에서 <b>당겨</b> 편향을 지우되 원래의 이미지-텍스트 정렬 능력은 지킨다. 아래에서 α로 두 목표의 균형을 조작한다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 440 500" width="100%" role="img" aria-label="CLIP 편향 제거 파이프라인: frozen CLIP으로 임베딩을 얻고 Bias Alignment 모듈로 두 modality 편향을 정렬한 뒤 counterfactual debiasing으로 편향을 제거한다">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+
+        <!-- zone0: 입력 triplet -->
+        <g class="zone" data-zone="0">
+          <rect class="zbox" x="24" y="30" width="90" height="120" rx="8" fill="#fdfbf9" stroke="#b56a70" stroke-dasharray="4 3"/>
+          <text x="69" y="48" font-size="9.5" font-weight="600" fill="#8c2f39" text-anchor="middle">Biased</text>
+          <text x="69" y="60" font-size="9.5" font-weight="600" fill="#8c2f39" text-anchor="middle">Triplets</text>
+          <rect x="36" y="70" width="66" height="20" rx="4" fill="var(--txt-face)" stroke="#7a6bb0"/>
+          <text x="69" y="84" font-size="9" fill="#5a4a8a" text-anchor="middle">t "male…"</text>
+          <rect x="36" y="94" width="66" height="20" rx="4" fill="var(--txt-face)" stroke="#7a6bb0"/>
+          <text x="69" y="108" font-size="9" fill="#5a4a8a" text-anchor="middle">t' "female…"</text>
+          <rect x="36" y="118" width="66" height="20" rx="4" fill="var(--img-face)" stroke="#c9743e"/>
+          <text x="69" y="132" font-size="9" fill="#9a4e1e" text-anchor="middle">v 🖼</text>
+        </g>
+        <!-- zone1: frozen CLIP -->
+        <g class="zone" data-zone="1">
+          <rect class="zbox" x="150" y="46" width="80" height="88" rx="8" fill="var(--frozen-face)" stroke="#5b8bb0"/>
+          <text x="190" y="86" font-size="11" font-weight="600" fill="#3f5f7d" text-anchor="middle">CLIP</text>
+          <text x="190" y="100" font-size="9" fill="#5b8bb0" text-anchor="middle">❄ frozen</text>
+        </g>
+        <!-- 임베딩 f(t),f(t'),g(v) -->
+        <g class="zone" data-zone="1">
+          <rect x="264" y="48" width="44" height="18" rx="3" fill="var(--txt-face)" stroke="#7a6bb0"/>
+          <text x="286" y="61" font-size="9" fill="#5a4a8a" text-anchor="middle">f(t)</text>
+          <rect x="264" y="80" width="44" height="18" rx="3" fill="var(--txt-face)" stroke="#7a6bb0"/>
+          <text x="286" y="93" font-size="9" fill="#5a4a8a" text-anchor="middle">f(t')</text>
+          <rect x="264" y="112" width="44" height="18" rx="3" fill="var(--img-face)" stroke="#c9743e"/>
+          <text x="286" y="125" font-size="9" fill="#9a4e1e" text-anchor="middle">g(v)</text>
+        </g>
+        <!-- zone2: Bias Alignment 모듈 (학습) — 슬랩 스택으로 Fig.4 입체 인상 재현 -->
+        <g class="zone" data-zone="2">
+          <!-- 뒤 슬랩 3장 (깊이감) -->
+          <rect x="135" y="161" width="200" height="70" rx="8" fill="#f7ebee" stroke="#d8bcc0" stroke-width="0.8" opacity="0.55"/>
+          <rect x="130" y="166" width="200" height="70" rx="8" fill="#f4e6e8" stroke="#cdb0b5" stroke-width="0.8" opacity="0.7"/>
+          <rect x="125" y="171" width="200" height="70" rx="8" fill="#f2e0e3" stroke="#c2a3a8" stroke-width="0.8" opacity="0.85"/>
+          <!-- 맨 앞 슬랩 (텍스트 담음) -->
+          <rect class="zbox" x="120" y="176" width="200" height="70" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="220" y="196" font-size="11" font-weight="600" fill="#8c2f39" text-anchor="middle">Bias Alignment 모듈 (학습 🔥)</text>
+          <text x="220" y="212" font-size="8.5" fill="#a06e6e" text-anchor="middle">φ(t)←BA(f(t)), ψ(v)←BA(g(v))</text>
+          <text x="220" y="226" font-size="8.5" fill="#a06e6e" text-anchor="middle">두 modality 편향을 분포로 추출</text>
+          <text x="220" y="239" font-size="8.5" fill="#a06e6e" text-anchor="middle">plug-and-play</text>
+        </g>
+        <!-- zone3: 분포 정렬 (KL) -->
+        <g class="zone" data-zone="3">
+          <rect class="zbox" x="40" y="278" width="160" height="56" rx="8" fill="#f0ebf5" stroke="#7a6bb0"/>
+          <text x="120" y="298" font-size="10.5" font-weight="600" fill="#5a4a8a" text-anchor="middle">편향 분포 정렬</text>
+          <text x="120" y="313" font-size="8.5" fill="#7a6bb0" text-anchor="middle">이미지·텍스트 분포를</text>
+          <text x="120" y="325" font-size="8.5" fill="#7a6bb0" text-anchor="middle">KL로 맞춤 · L_ba</text>
+        </g>
+        <!-- zone4: 반사실 제거 -->
+        <g class="zone" data-zone="4">
+          <rect class="zbox" x="240" y="278" width="160" height="56" rx="8" fill="var(--img-face)" stroke="#c9743e"/>
+          <text x="320" y="298" font-size="10.5" font-weight="600" fill="#9a4e1e" text-anchor="middle">반사실 편향 제거</text>
+          <text x="320" y="313" font-size="8.5" fill="#c9743e" text-anchor="middle">male↔female 텍스트 당김</text>
+          <text x="320" y="325" font-size="8.5" fill="#c9743e" text-anchor="middle">alternating · L_cd</text>
+        </g>
+        <!-- zone5: debiased 임베딩 -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="120" y="378" width="200" height="52" rx="8" fill="var(--frozen-face)" stroke="#5b8bb0"/>
+          <text x="220" y="398" font-size="11" font-weight="600" fill="#3f5f7d" text-anchor="middle">편향 제거된 임베딩</text>
+          <text x="220" y="413" font-size="8.5" fill="#5b8bb0" text-anchor="middle">φ̄(t), ψ̄(v) · V-L 정렬은 유지</text>
+        </g>
+
+        <!-- 흐름선 -->
+        <line class="flowline" x1="114" y1="80" x2="148" y2="80" marker-end="url(#ah)"/>
+        <line class="flowline" x1="220" y1="134" x2="220" y2="174" marker-end="url(#ah)"/>
+        <line class="flowline" x1="180" y1="246" x2="120" y2="276" marker-end="url(#ah)"/>
+        <line class="flowline" x1="260" y1="246" x2="320" y2="276" marker-end="url(#ah)"/>
+        <line class="flowline" x1="120" y1="334" x2="180" y2="376" marker-end="url(#ah)"/>
+        <line class="flowline" x1="320" y1="334" x2="260" y2="376" marker-end="url(#ah)"/>
+
+        <path id="flowpath" d="M69 150 L190 90 L220 210 L120 306 L220 404" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>편향 분포 정렬 · α로 두 목표 균형</h2>
+    <p class="desc">이 방법의 핵심 두 가지를 조작해 본다. 왼쪽은 <b>편향 분포 정렬</b> — 이미지 편향(주황)과 텍스트 편향(보라) 분포가 원래 다르게 생겼는데, "정렬" 버튼을 누르면 KL divergence를 줄여 두 분포가 겹쳐진다(논문의 핵심 관찰: 두 modality를 함께 정렬해야 성능이 유지됨). 오른쪽 α는 <b>편향 제거(L_cd)와 분포 정렬(L_ba)의 균형</b>을 정한다 — α가 크면 제거를 강하게, 작으면 정렬을 강하게.</p>
+    <div class="lab-grid">
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">이미지 편향 vs 텍스트 편향 분포</div>
+        <svg id="dist-svg" viewBox="0 0 280 170" width="100%" style="max-width:320px;" role="img" aria-label="이미지 편향과 텍스트 편향 분포, 정렬 전후"></svg>
+        <button id="d-align" style="margin-top:10px;">▶ 두 분포 정렬 (KL↓)</button>
+      </div>
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">균형 계수 α (L = α·L_cd + (1−α)·L_ba)</div>
+        <div style="margin:8px 0;">
+          <span class="stat"><span class="v" id="st-cd">0.50</span><span class="k">편향 제거 L_cd</span></span>
+          <span class="stat"><span class="v" id="st-ba">0.50</span><span class="k">분포 정렬 L_ba</span></span>
+        </div>
+        <svg id="bal-svg" viewBox="0 0 240 90" width="100%" style="max-width:260px;" role="img" aria-label="α에 따른 두 손실 비중"></svg>
+        <div class="dctrl">
+          <label for="d-alpha">α</label>
+          <input type="range" id="d-alpha" min="0" max="1" step="0.05" value="0.5">
+          <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:36px;text-align:right;" id="d-alpha-v">0.50</span>
+        </div>
+      </div>
+    </div>
+    <p class="note">편향 분포와 임베딩 위치는 방법의 동작을 보여주는 정성적 예시이며, 특정 실험의 실제 측정값이 아니다. 구조(frozen CLIP + plug-and-play Bias Alignment 모듈, 두 modality 분포를 KL로 정렬 L_ba, 반사실 텍스트 alternating β~Bernoulli(0.5) 당김 L_cd, 총손실 L=α·L_cd+(1−α)·L_ba, 추론 시 φ(t)←f(t)−BA(f(t)), 백본 ViT-B/16·B/32)는 논문(2411.12785)의 실제 정의다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function miniSvg(vb){return el("svg",{viewBox:vb||"0 0 300 150",width:"100%",style:"max-width:330px;"});}
+
+const STEPS=[
+ {zone:"0",t:"편향된 입력 세 쌍",
+  d:"학습 입력은 세 쌍이다: 원래 텍스트 t(\"male dancer\"), 속성만 바꾼 반사실 텍스트 t'(\"female dancer\"), 그리고 이미지 v. t와 t'는 '무용수'라는 같은 개념에 성별 속성만 다르다 — 이 대비가 편향을 잡아내는 열쇠다.",
+  sh:"triplet (t, t', v)",v:h=>{const s=miniSvg("0 0 300 130");
+   el("rect",{x:30,y:20,width:110,height:24,rx:5,fill:"#e7e2f2",stroke:"#7a6bb0"},s);
+   el("text",{x:85,y:36,"font-size":10,fill:"#5a4a8a","text-anchor":"middle"},s).textContent="t: male dancer";
+   el("rect",{x:30,y:52,width:110,height:24,rx:5,fill:"#e7e2f2",stroke:"#7a6bb0"},s);
+   el("text",{x:85,y:68,"font-size":10,fill:"#5a4a8a","text-anchor":"middle"},s).textContent="t': female dancer";
+   el("rect",{x:170,y:32,width:100,height:44,rx:5,fill:"#f6e1d2",stroke:"#c9743e"},s);
+   el("text",{x:220,y:58,"font-size":11,fill:"#9a4e1e","text-anchor":"middle"},s).textContent="v (이미지)";
+   el("text",{x:150,y:100,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="같은 개념 '무용수', 속성만 다름";h.appendChild(s);}},
+ {zone:"1",t:"Frozen CLIP으로 임베딩",
+  d:"사전학습된 CLIP은 그대로 얼려둔다(재학습 안 함). 세 입력을 각각 벡터로 바꾼다: f(t), f(t'), g(v). CLIP을 건드리지 않으므로 원래의 강력한 이미지-텍스트 정렬 능력이 보존된다 — 이게 이 방법의 전제다.",
+  sh:"f(t), f(t'), g(v)",v:h=>{const s=miniSvg("0 0 300 130");
+   el("rect",{x:110,y:20,width:80,height:40,rx:6,fill:"#dde8f1",stroke:"#5b8bb0"},s);
+   el("text",{x:150,y:38,"font-size":11,fill:"#3f5f7d","text-anchor":"middle","font-weight":600},s).textContent="CLIP ❄";
+   el("text",{x:150,y:52,"font-size":8,fill:"#5b8bb0","text-anchor":"middle"},s).textContent="frozen";
+   for(let i=0;i<10;i++){const vv=0.3+Math.abs(Math.sin(i*1.4))*0.6;
+    el("rect",{x:70+i*17,y:100-vv*30,width:13,height:vv*30,rx:1,fill:"#7a6bb0"},s);}
+   el("text",{x:150,y:120,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="편향이 섞인 임베딩 벡터";h.appendChild(s);}},
+ {zone:"2",t:"Bias Alignment 모듈 (학습)",
+  d:"여기가 유일하게 학습되는 부분이다. 작은 모듈 BA가 임베딩에서 '편향 성분'을 뽑아낸다: φ(t)←BA(f(t)), ψ(v)←BA(g(v)). 즉 임베딩을 '편향 + 중립'으로 분해하는 셈이다. 어떤 CLIP에도 끼울 수 있는 plug-and-play 모듈이다.",
+  sh:"φ(t)=BA(f(t)), ψ(v)=BA(g(v))",v:h=>{const s=miniSvg("0 0 300 130");
+   el("rect",{x:30,y:45,width:60,height:30,rx:4,fill:"#f0ebf5",stroke:"#7a6bb0"},s);
+   el("text",{x:60,y:64,"font-size":10,fill:"#5a4a8a","text-anchor":"middle"},s).textContent="f(t)";
+   el("text",{x:110,y:64,"font-size":14,fill:"#8c2f39","text-anchor":"middle"},s).textContent="→BA→";
+   el("rect",{x:150,y:28,width:60,height:24,rx:4,fill:"#f4e6e4",stroke:"#8c2f39"},s);
+   el("text",{x:180,y:44,"font-size":9,fill:"#8c2f39","text-anchor":"middle"},s).textContent="φ(t) 편향";
+   el("rect",{x:150,y:70,width:60,height:24,rx:4,fill:"#dde8f1",stroke:"#5b8bb0"},s);
+   el("text",{x:180,y:86,"font-size":9,fill:"#3f5f7d","text-anchor":"middle"},s).textContent="중립 성분";
+   el("text",{x:150,y:118,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="임베딩 = 편향 + 중립 으로 분해";h.appendChild(s);}},
+ {zone:"3",t:"두 modality 편향 분포 정렬 (L_ba)",
+  d:"핵심 관찰: 이미지 편향과 텍스트 편향은 서로 다르게 생겼다. 한쪽만 지우면 둘의 정렬이 깨져 성능이 망가진다. 그래서 두 편향을 각각 분포로 만들고, KL divergence를 줄여 서로 정렬한다 — 이것이 균형 잡힌 제거의 토대다.",
+  sh:"L_ba = KL(p(t) ‖ p(v))",v:h=>{const s=miniSvg("0 0 300 130");
+   /* 두 분포 겹침 */
+   for(let i=0;i<8;i++){const hh=Math.exp(-Math.pow((i-3)/2,2))*40;
+    el("rect",{x:40+i*12,y:90-hh,width:10,height:hh,rx:1,fill:"#7a6bb0",opacity:0.6},s);}
+   for(let i=0;i<8;i++){const hh=Math.exp(-Math.pow((i-4)/2,2))*40;
+    el("rect",{x:160+i*12,y:90-hh,width:10,height:hh,rx:1,fill:"#c9743e",opacity:0.6},s);}
+   el("text",{x:88,y:105,"font-size":8.5,fill:"#5a4a8a","text-anchor":"middle"},s).textContent="텍스트 편향";
+   el("text",{x:208,y:105,"font-size":8.5,fill:"#9a4e1e","text-anchor":"middle"},s).textContent="이미지 편향";
+   el("text",{x:150,y:122,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="KL로 두 분포를 맞춰 감";h.appendChild(s);}},
+ {zone:"4",t:"반사실 편향 제거 (L_cd)",
+  d:"이제 편향을 지운다. \"male dancer\"와 \"female dancer\"의 debiased 임베딩을 서로 가깝게 당긴다 — 성별이 달라도 '무용수'로는 같아야 하니까. β~Bernoulli(0.5)로 두 텍스트를 번갈아(alternating) 섞어 대칭적으로 당긴다. 이미지에도 같은 원리를 적용한다.",
+  sh:"L_cd, β~Bernoulli(0.5)",v:h=>{const s=miniSvg("0 0 300 130");
+   /* 두 점이 당겨짐 */
+   el("circle",{cx:80,cy:50,r:8,fill:"#7a6bb0"},s);
+   el("text",{x:80,y:35,"font-size":8,fill:"#5a4a8a","text-anchor":"middle"},s).textContent="male";
+   el("circle",{cx:220,cy:50,r:8,fill:"#c9743e"},s);
+   el("text",{x:220,y:35,"font-size":8,fill:"#9a4e1e","text-anchor":"middle"},s).textContent="female";
+   el("line",{x1:92,y1:50,x2:208,y2:50,stroke:"#8c2f39","stroke-width":1.5,"stroke-dasharray":"4 3","marker-end":"url(#ah)","marker-start":"url(#ah)"},s);
+   el("text",{x:150,y:44,"font-size":9,fill:"#8c2f39","text-anchor":"middle"},s).textContent="당김";
+   el("text",{x:150,y:90,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="같은 개념끼리 가깝게 →";
+   el("text",{x:150,y:105,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="속성(성별) 차이는 지워짐";h.appendChild(s);}},
+ {zone:"5",t:"편향 제거 + 정렬 유지",
+  d:"결과: 편향은 제거되고(φ̄, ψ̄) 원래의 이미지-텍스트 정렬 능력은 유지된다. 기존 방법들은 한쪽만 지워 정렬이 깨졌지만, 이 방법은 두 modality를 함께 다뤄 균형을 잡는다. 추론 때는 φ(t)←f(t)−BA(f(t))로 편향만 빼면 된다.",
+  sh:"φ̄(t), ψ̄(v)",v:h=>{h.innerHTML='<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;">이 방법의 기여는 <b>이미지·텍스트 편향을 함께 정렬한 뒤 제거</b>해, 편향 제거와 V-L 정렬 능력을 동시에 잡는 것이다. frozen CLIP에 붙이는 작은 모듈만 학습한다. ↓ 아래에서 분포 정렬과 α 균형을 조작해 보세요.</div>';}}
+];
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== 실험실: 편향 분포 정렬 ===== */
+const distSvg=$("dist-svg");
+let aligned=false, animT=null;
+/* 텍스트 분포(보라)는 왼쪽 치우침, 이미지 분포(주황)는 오른쪽 치우침 → 정렬되면 가운데로 */
+const N=9;
+function distShape(center,spread,amp){const arr=[];
+ for(let i=0;i<N;i++){arr.push(Math.exp(-Math.pow((i-center)/spread,2))*amp);}return arr;}
+function renderDist(txtCenter,imgCenter){
+ distSvg.innerHTML="";
+ const x0=30,bw=22,base=120;
+ el("line",{x1:20,y1:base,x2:270,y2:base,stroke:"#dfd3c9","stroke-width":1},distSvg);
+ const txt=distShape(txtCenter,1.8,70), img=distShape(imgCenter,1.8,70);
+ txt.forEach((hh,i)=>el("rect",{x:x0+i*bw,y:base-hh,width:bw-4,height:hh,rx:1,fill:"#7a6bb0",opacity:0.55},distSvg));
+ img.forEach((hh,i)=>el("rect",{x:x0+i*bw+3,y:base-hh,width:bw-4,height:hh,rx:1,fill:"#c9743e",opacity:0.55},distSvg));
+ /* KL 근사값 표시 */
+ let kl=0;for(let i=0;i<N;i++){const p=txt[i]/70+0.01,q=img[i]/70+0.01;kl+=p*Math.log(p/q);}
+ el("text",{x:150,y:16,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},distSvg).textContent="KL ≈ "+Math.abs(kl).toFixed(2)+(aligned?" (정렬됨)":" (정렬 전)");
+ el("rect",{x:30,y:138,width:12,height:8,fill:"#7a6bb0",opacity:0.55},distSvg);
+ el("text",{x:47,y:145,"font-size":8,fill:"#5a4a8a"},distSvg).textContent="텍스트";
+ el("rect",{x:100,y:138,width:12,height:8,fill:"#c9743e",opacity:0.55},distSvg);
+ el("text",{x:117,y:145,"font-size":8,fill:"#9a4e1e"},distSvg).textContent="이미지";
+}
+$("d-align").addEventListener("click",()=>{
+ if(animT)return;
+ if(aligned){/* 리셋 */aligned=false;renderDist(2.5,6.5);$("d-align").textContent="▶ 두 분포 정렬 (KL↓)";return;}
+ let tc=2.5, ic=6.5;const target=4.2;
+ $("d-align").textContent="정렬 중…";
+ animT=setInterval(()=>{
+  tc+=(target-tc)*0.12; ic+=(target-ic)*0.12;
+  renderDist(tc,ic);
+  if(Math.abs(tc-target)<0.05&&Math.abs(ic-target)<0.05){clearInterval(animT);animT=null;aligned=true;
+   renderDist(target,target);$("d-align").textContent="↺ 다시 (정렬 전으로)";}
+ },40);
+});
+
+/* ===== α 균형 ===== */
+const balSvg=$("bal-svg");
+function renderBal(a){
+ $("d-alpha-v").textContent=a.toFixed(2);
+ $("st-cd").textContent=a.toFixed(2);$("st-ba").textContent=(1-a).toFixed(2);
+ balSvg.innerHTML="";
+ const W=220,x0=10,y=30,h=22;
+ /* L_cd (주황) + L_ba (보라) 비중 막대, 2단계 애니메이션 */
+ const cd=el("rect",{x:x0,y:y,width:0,height:h,rx:4,fill:"#c9743e",opacity:0.7},balSvg);
+ const ba=el("rect",{x:x0,y:y,width:0,height:h,rx:4,fill:"#7a6bb0",opacity:0.7},balSvg);
+ el("text",{x:x0,y:y+h+16,"font-size":9,fill:"#9a4e1e"},balSvg).textContent="◀ 편향제거 L_cd";
+ el("text",{x:x0+W,y:y+h+16,"font-size":9,fill:"#5a4a8a","text-anchor":"end"},balSvg).textContent="분포정렬 L_ba ▶";
+ requestAnimationFrame(()=>{requestAnimationFrame(()=>{
+  const cdW=a*W;
+  cd.setAttribute("width",cdW);
+  ba.setAttribute("x",x0+cdW);ba.setAttribute("width",W-cdW);
+ });});
+}
+$("d-alpha").addEventListener("input",e=>renderBal(+e.target.value));
+
+/* 초기화 */
+setStep(0);
+renderDist(2.5,6.5);
+renderBal(0.5);
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

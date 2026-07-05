@@ -78,13 +78,16 @@ async function main() {
 
       // 필수 구성: 스테퍼 점(dot), 스텝, 존
       const dots = [...document.querySelectorAll(".dot")];
-      const zones = [...document.querySelectorAll(".zone, [data-zone]")];
+      // 존 개수 = 고유 data-zone 값 수. 한 존을 여러 g가 공유해 함께 하이라이트하는 것은 허용(§2.3).
+      const zoneEls = [...document.querySelectorAll("[data-zone]")];
+      const zoneVals = new Set(zoneEls.map((z) => z.getAttribute("data-zone")).filter((v) => v != null && v !== ""));
       out.metrics.dots = dots.length;
-      out.metrics.zones = zones.length;
-      // 존 수 == 스텝 수. 단 zone 기반 하이라이트를 쓰는 경우만(zones>=2).
-      // T6/T8처럼 phase 기반(zones 0~1)은 다른 하이라이트 메커니즘이라 예외.
-      if (zones.length >= 2 && dots.length && zones.length !== dots.length) {
-        push("§2.3 zone_step_mismatch", `존 ${zones.length} != 스텝(dot) ${dots.length}`);
+      out.metrics.zones = zoneVals.size;
+      out.metrics.zone_elements = zoneEls.length;
+      // 고유 존 수 == 스텝 수. zone 기반 하이라이트를 쓰는 경우만(고유존>=2).
+      // T6/T8처럼 phase 기반(고유존 0~1)은 다른 하이라이트 메커니즘이라 예외.
+      if (zoneVals.size >= 2 && dots.length && zoneVals.size !== dots.length) {
+        push("§2.3 zone_step_mismatch", `고유 존 ${zoneVals.size} != 스텝(dot) ${dots.length}`);
       }
 
       // 텍스트 상호 겹침 (SVG text, 화면좌표 실측)
