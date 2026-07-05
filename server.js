@@ -547,6 +547,32 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
 
   if (aborted()) return; // 루프 종료와 거의 동시에 취소된 경우 저장하지 않음
 
+  // 방법론 타입 기반 HTML 시각화 생성(§8 자가검증 루프) — 메인 분석 뒤 이어서.
+  // 실패·미검증이어도 분석은 그대로 저장(기존 JSON method_visualization이 폴백).
+  if (!aborted()) {
+    try {
+      onProgress("방법론 인터랙티브 시각화 생성 중 — 타입 분류·수치 추출·자동 검증", 92);
+      const viz = await generateMethodVizHtml(
+        hash,
+        { analysis, title: analysis.title || fallbackTitle },
+        pdfPath,
+        pageCount,
+        ac
+      );
+      if (viz && viz.verify && viz.verify.pass) {
+        analysis.method_viz_html = viz.html;
+        if (viz.method_steps && viz.method_steps.length) analysis.method_steps = viz.method_steps;
+        console.log(`[방법론 HTML 생성] ${analysis.title || fallbackTitle}: ${viz.html.length}B · ${viz.viz_report && viz.viz_report.type}`);
+      } else {
+        console.warn(`[방법론 HTML 미검증 — JSON 폴백 유지] ${analysis.title || fallbackTitle}`);
+      }
+    } catch (e) {
+      if (aborted()) return;
+      console.warn(`[방법론 HTML 생성 실패 — JSON 폴백 유지] ${(e.message || "").slice(0, 150)}`);
+    }
+  }
+  if (aborted()) return;
+
   try {
     await store.set(hash, {
       hash,
