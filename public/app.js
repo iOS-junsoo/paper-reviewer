@@ -1632,6 +1632,39 @@ function setThinking(el, msg) {
 /* method_viz_html: 논문당 독립 실행형 HTML 시각화(viz_guideline.md 산출물)를
    sandboxed iframe(srcdoc)으로 격리 렌더. CSS/JS 충돌 없이, §2.8 리사이즈 호환
    (width:100% + 내부 SVG viewBox)을 만족한다. 높이는 부모가 내부 문서를 실측해 맞춘다. */
+// 시각화 HTML(iframe 콘텐츠)에 내부 리사이즈 핸들을 주입한다 — 생성물 재생성 없이
+// 서비스 레벨에서 일괄 적용. (1) .cols의 좌↔우(구조도↔여정) 세로 분할, (2) .lab/.compare
+// 실험실의 상하 높이 조절. 클래스명이 타입별로 달라 .cols의 자식 기준으로 견고하게 건다.
+function injectMvizResizers(html) {
+  const inject =
+    "<style>" +
+    ".__mvz-vdiv{flex:0 0 20px;align-self:stretch;cursor:col-resize;display:flex;align-items:center;justify-content:center;touch-action:none;}" +
+    ".__mvz-vdiv::after{content:'';width:3px;height:46px;border-radius:2px;background:#e8ddd4;transition:background .12s,height .12s;}" +
+    ".__mvz-vdiv:hover::after{background:#8c2f39;height:70px;}" +
+    ".__mvz-hdiv{height:14px;cursor:row-resize;display:flex;align-items:center;justify-content:center;touch-action:none;margin:6px 0 2px;}" +
+    ".__mvz-hdiv::after{content:'';height:3px;width:66px;border-radius:2px;background:#e8ddd4;transition:background .12s,width .12s;}" +
+    ".__mvz-hdiv:hover::after{background:#8c2f39;width:100px;}" +
+    "body.__mvz-rz{user-select:none;}" +
+    "</style>" +
+    "<script>(function(){function ready(f){if(document.readyState!=='loading')f();else document.addEventListener('DOMContentLoaded',f);}" +
+    "function drag(handle,onMove){handle.addEventListener('pointerdown',function(e){e.preventDefault();try{handle.setPointerCapture(e.pointerId);}catch(_){}" +
+    "document.body.classList.add('__mvz-rz');var mv=function(ev){onMove(ev);};" +
+    "var up=function(){try{handle.releasePointerCapture(e.pointerId);}catch(_){}handle.removeEventListener('pointermove',mv);handle.removeEventListener('pointerup',up);document.body.classList.remove('__mvz-rz');};" +
+    "handle.addEventListener('pointermove',mv);handle.addEventListener('pointerup',up);});}" +
+    "ready(function(){" +
+    "var cols=document.querySelector('.cols');" +
+    "if(cols){var kids=[].slice.call(cols.children).filter(function(c){return c.nodeType===1;});" +
+    "if(kids.length>=2){var left=kids[0];cols.style.gap='0';var vd=document.createElement('div');vd.className='__mvz-vdiv';cols.insertBefore(vd,kids[1]);" +
+    "var sx,sw,cw;vd.addEventListener('pointerdown',function(e){sx=e.clientX;sw=left.getBoundingClientRect().width;cw=cols.getBoundingClientRect().width;});" +
+    "drag(vd,function(ev){var w=Math.max(200,Math.min(cw-220,sw+(ev.clientX-sx)));left.style.flex='0 0 '+w+'px';});}}" +
+    "var lab=document.querySelector('.lab, .compare');" +
+    "if(lab){lab.style.overflow='auto';var hd=document.createElement('div');hd.className='__mvz-hdiv';if(lab.parentNode)lab.parentNode.insertBefore(hd,lab.nextSibling);" +
+    "var sy,sh;hd.addEventListener('pointerdown',function(e){sy=e.clientY;sh=lab.getBoundingClientRect().height;});" +
+    "drag(hd,function(ev){var h=Math.max(120,sh+(ev.clientY-sy));lab.style.height=h+'px';});}" +
+    "});})();<\/script>";
+  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, inject + "</body>") : html + inject;
+}
+
 function buildMethodVizFrame(html) {
   const frame = document.createElement("iframe");
   frame.className = "method-viz-frame";
@@ -1644,7 +1677,7 @@ function buildMethodVizFrame(html) {
   frame.style.border = "0";
   frame.style.display = "block";
   frame.style.height = "620px"; // 초기값 — 로드 후 실측 높이로 교체
-  frame.srcdoc = html;
+  frame.srcdoc = injectMvizResizers(html);
   const fit = () => {
     try {
       const doc = frame.contentDocument;
