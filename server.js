@@ -221,6 +221,11 @@ if (!firestoreReady) {
 // 연구 방법론 시각화 생성 지시문 v4 (판정→라우팅→생성) — 백틱·코드스팬이 많아 파일에서 읽어 주입.
 // §13(렌더러 관리자용 구현 노트)·PROGRESS 주석은 prompts/method_viz_v4.md 생성 시 이미 제거됨.
 const METHOD_VIZ_V4 = fs.readFileSync(path.join(__dirname, "prompts", "method_viz_v4.md"), "utf8");
+// 타입 기반 HTML 시각화 생성 지시문 — method 섹션 재생성 시 별도 파이프라인으로 주입.
+const METHOD_VIZ_HTML_GEN = fs.readFileSync(path.join(__dirname, "prompts", "method_viz_html_gen.md"), "utf8");
+// 생성 HTML 산출 디렉터리(자가검증·디버깅용으로 파일 보존; .gitignore 대상).
+const MVIZ_GEN_DIR = path.join(__dirname, ".mviz_gen");
+try { fs.mkdirSync(MVIZ_GEN_DIR, { recursive: true }); } catch (e) {}
 const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 리서처입니다.
 지정된 논문 PDF 전체(텍스트, 레이아웃, 그림, 표, 수식)를 읽고 아래 JSON 스키마에 맞춰 분석 결과를 작성하세요.
 
@@ -1178,6 +1183,64 @@ const SECTION_FIELDS = {
   qa: { keys: ["suggested_questions"], label: "예상 Q&A" },
   glossary: { keys: ["glossary"], label: "용어집" },
 };
+// scripts/verify_mviz.js를 실행해 {pass, violations, metrics}를 반환(서버측 최종 게이트).
+function runVerifyMviz(htmlPath) {
+  return new Promise((resolve) => {
+    execFile(
+      "node",
+      [path.join(__dirname, "scripts", "verify_mviz.js"), htmlPath, "--json"],
+      { cwd: __dirname, timeout: 90000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout) => {
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (e) {
+          resolve({ pass: false, violations: [{ rule: "verify_run_error", detail: (err && err.message) || "verify 실행/파싱 실패" }], metrics: {} });
+        }
+      }
+    );
+  });
+}
+
+// method 섹션: viz_guideline 기반 타입별 독립 HTML 시각화를 생성한다.
+// 에이전트가 한 query 안에서 Read(지침·참조·PDF)+Write(HTML)+Bash(verify)로 생성→검증→수정을
+// 자가 반복하고, 서버가 최종 게이트로 verify를 재실행한다.
+async function generateMethodVizHtml(hash, record, pdfPath, pageCount, ac) {
+  const a = record.analysis || {};
+  const outPath = path.join(MVIZ_GEN_DIR, `${hash}.html`);
+  try { fs.rmSync(outPath, { force: true }); } catch (e) {}
+  const prompt =
+    METHOD_VIZ_HTML_GEN +
+    `\n\n---\n## 이번 논문 (컨텍스트)\n` +
+    `- 제목: ${a.title || record.title || ""}\n` +
+    `- 원문 PDF: pdfs/${hash}.pdf (${pageCount}페이지) — Read로 필요한 범위만(20페이지씩) 읽어라.\n` +
+    `- 한 줄 요약(어조 참고): ${(a.one_liner || "").slice(0, 200)}\n` +
+    `- <OUTPUT_PATH> = ${outPath}\n` +
+    `  → 완성 HTML을 정확히 이 절대경로에 Write하라.\n` +
+    `- 자가검증: \`node scripts/verify_mviz.js ${outPath} --json\` 를 실행해 pass:true까지 고쳐라(최대 5회).\n` +
+    `작업 디렉터리는 저장소 루트다. prompts/method_viz_refs/ 와 scripts/ 를 상대경로로 접근할 수 있다.`;
+  let raw = null;
+  for await (const msg of query({
+    prompt,
+    options: { systemPrompt: SYSTEM_PROMPT, model: MODEL, allowedTools: ["Read", "Write", "Bash", "WebSearch"], maxTurns: 160, cwd: __dirname, abortController: ac },
+  })) {
+    if (msg.type === "result") {
+      if (msg.subtype !== "success") {
+        const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
+        const e = new Error(`방법론 HTML 생성 실패 (${msg.subtype})`);
+        if (isAuthError(detail)) e.code = "AUTH";
+        throw e;
+      }
+      raw = msg.result;
+    }
+  }
+  const meta = raw != null ? parseModelJson(raw) : {};
+  if (!fs.existsSync(outPath)) throw new Error("생성된 HTML 파일이 없습니다(모델이 Write하지 않음).");
+  const html = fs.readFileSync(outPath, "utf8");
+  if (!html || html.length < 400) throw new Error("생성된 HTML이 비었거나 너무 짧습니다.");
+  const verify = await runVerifyMviz(outPath); // 서버측 최종 게이트
+  return { html, method_steps: Array.isArray(meta.method_steps) ? meta.method_steps : null, viz_report: meta.viz_report || null, verify };
+}
+
 app.post("/api/reanalyze-section/:hash", async (req, res) => {
   const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
   const section = String((req.body && req.body.section) || "");
@@ -1200,6 +1263,33 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
     const a = record.analysis || {};
     const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
     const pageCount = doc.getPageCount();
+
+    // 방법론 섹션: 타입 기반 독립 HTML 시각화(method_viz_html) 생성 파이프라인.
+    // 자가 verify 루프 + 서버 최종 게이트. 검증 통과분만 저장(버그 있는 시각화 미배포).
+    if (section === "method") {
+      const result = await generateMethodVizHtml(hash, record, pdfPath, pageCount, ac);
+      if (ac.signal.aborted) return;
+      if (!result.verify || !result.verify.pass) {
+        return res.status(422).json({
+          error: "생성된 시각화가 자동 검증(§8.2)을 통과하지 못했습니다 — 버그 배포를 막기 위해 보류했습니다.",
+          violations: (result.verify && result.verify.violations) || [],
+          viz_report: result.viz_report || null,
+        });
+      }
+      const merged = { ...a, method_viz_html: result.html };
+      if (result.method_steps && result.method_steps.length) merged.method_steps = result.method_steps;
+      await store.set(hash, {
+        hash,
+        title: merged.title || record.title,
+        one_liner: merged.one_liner || record.one_liner,
+        venue: record.venue ?? (typeof merged.venue === "string" ? merged.venue.slice(0, 40) : null),
+        year: record.year ?? (Number.isFinite(Number(merged.year)) ? Number(merged.year) : null),
+        createdAt: record.createdAt,
+        analysis: merged,
+      });
+      return res.json({ ok: true, section, verify: result.verify, viz_report: result.viz_report, analysis: { cached: false, hash, ...merged } });
+    }
+
     const prompt =
       `${pdfPath} 경로에 "${a.title || ""}" 논문 PDF(${pageCount}페이지)가 있습니다. 이미 분석된 논문인데 ` +
       `'${spec.label}' 섹션만 더 정확하고 풍부하게 다시 만들려 합니다.\n` +
