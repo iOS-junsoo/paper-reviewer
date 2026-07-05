@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T3 · SimCLR — 대조학습, 임베딩 공간 당김/밀침, 2D)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: SimCLR(2002.05709). x→2 augment(x̃i,x̃j)→encoder f→representation h→projection head g→z. NT-Xent: -log[exp(sim(zi,zj)/τ)/Σ_{k≠i}exp(sim(zi,zk)/τ)], cosine sim, temperature τ, batch 4096, 2N points.
+  주: 2.5D 미적용 — 임베딩 공간의 당김/밀침 기하가 주인공이라 2D 공간 배치가 적합(부피 메타포 부적합). 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimCLR (T3)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --blue:#5b8bb0;--blue-face:#dde8f1;--green:#6b9e7a;--green-face:#dfeee3;
+    --amber:#c99b4e;--amber-face:#f6ead2;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#4a6b8a;
+    background:var(--blue-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 420px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot .zbox{filter:drop-shadow(0 0 6px rgba(140,47,57,.5));}
+  .zbox{transition:filter .35s;}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .lab-row{display:flex;gap:20px;align-items:center;flex-wrap:wrap;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;flex:1;min-width:260px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .legend{display:flex;gap:16px;font-size:11px;color:var(--ink-soft);margin-top:8px;flex-wrap:wrap;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .dot-lg{width:10px;height:10px;border-radius:50%;display:inline-block;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>SimCLR<span class="type-badge">T3 · 손실·목적함수 제안</span></h1>
+<p class="lead">SimCLR은 라벨 없이 이미지 표현을 배우는 <b>대조학습</b> 방법이다. 이미지 한 장을 서로 다르게 두 번 augment하면 "같은 것"이므로, 그 둘의 표현은 임베딩 공간에서 <b>서로 당기고</b>(positive), 배치 안 다른 이미지들과는 <b>서로 밀친다</b>(negative). 스테퍼로 이미지가 z 임베딩이 되는 과정을 따라가고, 아래에서 temperature τ를 조작하며 당김/밀침을 직접 본다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 420 500" width="100%" role="img" aria-label="SimCLR 파이프라인: 이미지 하나가 두 augmentation으로 갈라져 encoder와 projection head를 거쳐 두 임베딩 z가 되고 NT-Xent 손실로 당겨진다">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+          <marker id="ahg" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#8c2f39" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+
+        <!-- zone0: 입력 이미지 -->
+        <g class="zone" data-zone="0">
+          <rect class="zbox" x="160" y="24" width="100" height="40" rx="8" fill="var(--blue-face)" stroke="#5b8bb0"/>
+          <text x="210" y="41" font-size="10.5" font-weight="600" fill="#3f5f7d" text-anchor="middle">입력 이미지 x</text>
+          <text x="210" y="55" font-size="9" fill="#5b8bb0" text-anchor="middle">라벨 없음</text>
+        </g>
+        <!-- zone1: 두 augmentation (병렬) -->
+        <g class="zone" data-zone="1">
+          <rect class="zbox" x="70" y="96" width="120" height="40" rx="8" fill="var(--green-face)" stroke="#6b9e7a"/>
+          <text x="130" y="113" font-size="10" font-weight="600" fill="#3e6b4c" text-anchor="middle">augment t~T</text>
+          <text x="130" y="127" font-size="9" fill="#6b9e7a" text-anchor="middle">뷰 x̃ᵢ (crop·color)</text>
+          <rect class="zbox" x="230" y="96" width="120" height="40" rx="8" fill="var(--green-face)" stroke="#6b9e7a"/>
+          <text x="290" y="113" font-size="10" font-weight="600" fill="#3e6b4c" text-anchor="middle">augment t'~T</text>
+          <text x="290" y="127" font-size="9" fill="#6b9e7a" text-anchor="middle">뷰 x̃ⱼ (crop·color)</text>
+        </g>
+        <!-- zone2: base encoder f (병렬) -->
+        <g class="zone" data-zone="2">
+          <rect class="zbox" x="70" y="168" width="120" height="42" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="130" y="185" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">encoder f(·)</text>
+          <text x="130" y="199" font-size="9" fill="#8a7d79" text-anchor="middle">ResNet → hᵢ</text>
+          <rect class="zbox" x="230" y="168" width="120" height="42" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="290" y="185" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">encoder f(·)</text>
+          <text x="290" y="199" font-size="9" fill="#8a7d79" text-anchor="middle">ResNet → hⱼ</text>
+        </g>
+        <!-- zone3: projection head g (병렬) -->
+        <g class="zone" data-zone="3">
+          <rect class="zbox" x="70" y="240" width="120" height="42" rx="8" fill="var(--amber-face)" stroke="#c99b4e"/>
+          <text x="130" y="257" font-size="10.5" font-weight="600" fill="#7a5a1e" text-anchor="middle">projection g(·)</text>
+          <text x="130" y="271" font-size="9" fill="#a97b4e" text-anchor="middle">MLP → zᵢ</text>
+          <rect class="zbox" x="230" y="240" width="120" height="42" rx="8" fill="var(--amber-face)" stroke="#c99b4e"/>
+          <text x="290" y="257" font-size="10.5" font-weight="600" fill="#7a5a1e" text-anchor="middle">projection g(·)</text>
+          <text x="290" y="271" font-size="9" fill="#a97b4e" text-anchor="middle">MLP → zⱼ</text>
+        </g>
+        <!-- zone4: NT-Xent 손실 -->
+        <g class="zone" data-zone="4">
+          <rect class="zbox" x="110" y="330" width="200" height="52" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="210" y="349" font-size="11" font-weight="600" fill="#8c2f39" text-anchor="middle">NT-Xent 대조손실</text>
+          <text x="210" y="364" font-size="8.5" fill="#a06e6e" text-anchor="middle">zᵢ·zⱼ 당김 (positive)</text>
+          <text x="210" y="376" font-size="8.5" fill="#a06e6e" text-anchor="middle">zᵢ·z_others 밀침 (negative)</text>
+        </g>
+        <!-- zone5: 표현 학습 완료 -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="130" y="430" width="160" height="40" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="210" y="447" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">학습된 표현 h</text>
+          <text x="210" y="461" font-size="9" fill="#8a7d79" text-anchor="middle">g 버리고 h를 downstream에</text>
+        </g>
+
+        <!-- 흐름선 -->
+        <line class="flowline" x1="190" y1="52" x2="150" y2="94" marker-end="url(#ah)"/>
+        <line class="flowline" x1="230" y1="52" x2="270" y2="94" marker-end="url(#ah)"/>
+        <line class="flowline" x1="130" y1="136" x2="130" y2="166" marker-end="url(#ah)"/>
+        <line class="flowline" x1="290" y1="136" x2="290" y2="166" marker-end="url(#ah)"/>
+        <line class="flowline" x1="130" y1="210" x2="130" y2="238" marker-end="url(#ah)"/>
+        <line class="flowline" x1="290" y1="210" x2="290" y2="238" marker-end="url(#ah)"/>
+        <line class="flowline" x1="130" y1="282" x2="185" y2="328" marker-end="url(#ah)"/>
+        <line class="flowline" x1="290" y1="282" x2="235" y2="328" marker-end="url(#ah)"/>
+        <!-- gradient 회귀 (손실 → encoder/projection) -->
+        <path class="flowline" d="M110 356 C 40 356 40 189 68 189" fill="none" stroke="#8c2f39" stroke-dasharray="3 4" marker-end="url(#ahg)"/>
+        <text x="34" y="275" font-size="8.5" fill="#8c2f39" text-anchor="middle" transform="rotate(-90 34 275)">gradient</text>
+        <line class="flowline" x1="210" y1="382" x2="210" y2="428" marker-end="url(#ah)"/>
+
+        <path id="flowpath" d="M210 24 L130 96 L130 240 L210 355" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>임베딩 공간 — 당김과 밀침</h2>
+    <p class="desc">대조학습이 임베딩 공간에서 실제로 하는 일이다. 같은 이미지의 두 뷰(positive 쌍)는 <b>서로 당겨지고</b>, 배치 안 다른 이미지들(negative)은 <b>밀쳐진다</b>. "학습 스텝"을 누르면 이 힘이 한 번 작용한다. temperature τ는 이 힘의 날카로움을 조절한다 — τ가 작으면 가장 가까운 negative에 집중해 강하게 밀치고, τ가 크면 완만해진다.</p>
+    <div class="lab-row">
+      <svg id="emb-svg" viewBox="0 0 320 240" width="100%" style="max-width:340px;" role="img" aria-label="임베딩 공간의 점들이 당기고 밀치는 애니메이션"></svg>
+      <div style="flex:1;min-width:220px;">
+        <div class="legend">
+          <span><span class="dot-lg" style="background:#8c2f39;"></span> anchor zᵢ</span>
+          <span><span class="dot-lg" style="background:#5b8bb0;"></span> positive zⱼ (당김)</span>
+          <span><span class="dot-lg" style="background:#c9b0b3;"></span> negative (밀침)</span>
+        </div>
+        <div class="dctrl" style="margin-top:14px;">
+          <label for="d-tau">temperature τ</label>
+          <input type="range" id="d-tau" min="0.05" max="1" step="0.05" value="0.5">
+          <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:34px;text-align:right;" id="d-tau-v">0.5</span>
+        </div>
+        <button id="d-step" style="margin-top:12px;">▶ 학습 스텝 (당김/밀침 1회)</button>
+        <button id="d-reset" style="margin-top:8px;">↺ 초기화</button>
+      </div>
+    </div>
+    <p class="note">임베딩 점의 위치와 이동은 대조학습의 힘(당김/밀침)을 보여주는 정성적 시뮬레이션이며, 특정 데이터셋의 실제 임베딩이 아니다. 구조 수치(NT-Xent, cosine similarity, batch 4096, 2N points)와 τ의 역할은 논문(2002.05709)의 실제 정의다. τ의 시각적 효과 강도는 이해를 돕기 위한 정성적 표현이다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function miniSvg(){return el("svg",{viewBox:"0 0 300 160",width:"100%",style:"max-width:330px;"});}
+
+/* 간단한 강아지 이미지 아이콘(augment로 변형됨을 색·crop으로 표현) */
+function imgTile(s,x,y,sz,hue,cropShift,label){
+ const g=el("g",{},s);
+ el("rect",{x:x,y:y,width:sz,height:sz,rx:5,fill:`hsl(${hue} 40% 88%)`,stroke:`hsl(${hue} 35% 65%)`},g);
+ /* 대충의 형체 (원+삼각으로 피사체 암시), cropShift로 위치 이동 */
+ el("circle",{cx:x+sz*0.5+cropShift,cy:y+sz*0.55,r:sz*0.22,fill:`hsl(${hue} 45% 62%)`},g);
+ el("circle",{cx:x+sz*0.38+cropShift,cy:y+sz*0.4,r:sz*0.07,fill:`hsl(${hue} 45% 45%)`},g);
+ el("circle",{cx:x+sz*0.62+cropShift,cy:y+sz*0.4,r:sz*0.07,fill:`hsl(${hue} 45% 45%)`},g);
+ if(label)el("text",{x:x+sz/2,y:y+sz+14,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},g).textContent=label;
+ return g;
+}
+function vecBar(s,x,y,vals,color){
+ vals.forEach((v,i)=>{el("rect",{x:x+i*9,y:y-v*40,width:7,height:v*40,rx:1,fill:color},s);});
+}
+
+let seed=8;const rnd=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648;
+
+const STEPS=[
+ {zone:"0",t:"입력 이미지 (라벨 없음)",
+  d:"라벨이 전혀 없는 이미지 한 장에서 시작한다. 대조학습의 핵심 아이디어는 '라벨 대신, 같은 이미지에서 나온 두 뷰는 서로 같아야 한다'는 자기지도 신호를 쓰는 것이다.",
+  sh:"이미지 x",v:h=>{const s=miniSvg();imgTile(s,120,45,64,25,0,"원본 이미지 x");h.appendChild(s);}},
+ {zone:"1",t:"두 가지 augmentation",
+  d:"같은 이미지에 서로 다른 무작위 변형(crop, color jitter, blur 등)을 두 번 적용해 뷰 x̃ᵢ, x̃ⱼ를 만든다. 이 둘은 '같은 것의 다른 모습'이므로 positive 쌍이 된다. 논문은 강한 augmentation이 핵심이라고 강조한다.",
+  sh:"x̃ᵢ, x̃ⱼ (positive 쌍)",v:h=>{const s=miniSvg();
+   imgTile(s,40,45,64,200,-6,"뷰 x̃ᵢ (crop)");imgTile(s,190,45,64,45,8,"뷰 x̃ⱼ (color)");
+   el("text",{x:150,y:80,"font-size":16,fill:"#8c2f39","text-anchor":"middle"},s).textContent="↔";
+   h.appendChild(s);}},
+ {zone:"2",t:"base encoder f(·)",
+  d:"두 뷰를 각각 ResNet 같은 encoder에 통과시켜 표현 hᵢ, hⱼ를 얻는다. 이 encoder가 우리가 진짜로 얻고 싶은 것 — 학습이 끝나면 이 부분만 downstream 작업에 쓴다.",
+  sh:"h = f(x̃) · 2048차원",v:h=>{const s=miniSvg();seed=3;
+   el("text",{x:70,y:40,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="hᵢ";
+   vecBar(s,44,110,[.6,.3,.8,.5,.7,.4,.9,.5],"#b56a70");
+   el("text",{x:230,y:40,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="hⱼ";
+   vecBar(s,204,110,[.5,.4,.7,.6,.6,.5,.8,.6],"#b56a70");
+   el("text",{x:150,y:90,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="표현 벡터 (예시)";
+   h.appendChild(s);}},
+ {zone:"3",t:"projection head g(·)",
+  d:"표현 h를 작은 MLP(projection head)에 통과시켜 z를 만든다. 대조손실은 h가 아니라 이 z 위에서 계산한다 — 논문은 이 비선형 projection을 두는 것이 표현 품질을 크게 높인다는 것을 발견했다. 학습 후 g는 버린다.",
+  sh:"z = g(h) · 128차원",v:h=>{const s=miniSvg();
+   vecBar(s,70,105,[.7,.4,.9,.3],"#c99b4e");el("text",{x:85,y:40,"font-size":10,fill:"#7a5a1e","text-anchor":"middle"},s).textContent="zᵢ";
+   vecBar(s,190,105,[.6,.5,.8,.35],"#c99b4e");el("text",{x:205,y:40,"font-size":10,fill:"#7a5a1e","text-anchor":"middle"},s).textContent="zⱼ";
+   el("text",{x:150,y:80,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="정규화된 저차원 임베딩";
+   h.appendChild(s);}},
+ {zone:"4",t:"NT-Xent 대조손실",
+  d:"핵심 단계. zᵢ와 zⱼ(positive)의 cosine 유사도는 키우고, zᵢ와 배치 내 나머지 2N−2개(negative)의 유사도는 줄인다. temperature τ로 나눈 뒤 softmax 형태로 계산한다 — 사실상 '2N개 중 진짜 짝을 맞히는 분류' 문제다.",
+  sh:"ℓ = −log[ e^(sim(zᵢ,zⱼ)/τ) / Σ e^(sim/τ) ]",v:h=>{const s=miniSvg();
+   /* positive 당김, negative 밀침 미니 그림 */
+   el("circle",{cx:150,cy:70,r:8,fill:"#8c2f39"},s);el("text",{x:150,y:52,"font-size":9,fill:"#8c2f39","text-anchor":"middle"},s).textContent="zᵢ";
+   el("circle",{cx:190,cy:60,r:8,fill:"#5b8bb0"},s);
+   el("line",{x1:158,y1:68,x2:184,y2:62,stroke:"#5b8bb0","stroke-width":2},s);
+   el("text",{x:205,y:58,"font-size":8.5,fill:"#5b8bb0"},s).textContent="당김";
+   [[90,45],[70,95],[110,120],[220,110]].forEach(([cx,cy])=>{
+    el("circle",{cx:cx,cy:cy,r:6,fill:"#c9b0b3"},s);
+    el("line",{x1:150,y1:70,x2:cx,y2:cy,stroke:"#d8c4c6","stroke-width":1,"stroke-dasharray":"2 2"},s);});
+   el("text",{x:80,y:140,"font-size":8.5,fill:"#a89a9c","text-anchor":"middle"},s).textContent="negative 밀침";
+   h.appendChild(s);}},
+ {zone:"5",t:"표현 학습 완료",
+  d:"학습이 끝나면 projection head g는 버리고 encoder f가 만든 표현 h를 downstream 작업(분류 등)에 쓴다. 라벨 하나 없이, 오직 '같은 것은 가까이, 다른 것은 멀리'라는 신호만으로 쓸모 있는 표현을 얻은 것이다.",
+  sh:"downstream용 h",v:h=>{h.innerHTML='<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;">SimCLR의 기여는 새 아키텍처가 아니라 <b>단순한 프레임워크 + 강한 augmentation + projection head + NT-Xent</b>의 조합이 라벨 없이도 지도학습에 근접한 표현을 만든다는 것이다. ↓ 아래에서 τ를 바꿔 당김/밀침을 직접 보세요.</div>';}}
+];
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== 임베딩 공간 실험실: 당김/밀침 물리 ===== */
+const embSvg=$("emb-svg");
+const CX=160,CY=120;
+let tau=0.5;
+let pts=[];
+function initPts(){
+ /* anchor(빨강), positive(파랑), negatives(회색) */
+ pts=[
+  {type:"anchor",x:CX,y:CY,c:"#8c2f39",r:8},
+  {type:"pos",x:CX+70,y:CY-40,c:"#5b8bb0",r:7},
+  {type:"neg",x:CX-80,y:CY-55,c:"#c9b0b3",r:6},
+  {type:"neg",x:CX-90,y:CY+50,c:"#c9b0b3",r:6},
+  {type:"neg",x:CX+20,y:CY+75,c:"#c9b0b3",r:6},
+  {type:"neg",x:CX+90,y:CY+55,c:"#c9b0b3",r:6},
+  {type:"neg",x:CX-30,y:CY-80,c:"#c9b0b3",r:6}
+ ];
+}
+function drawEmb(){
+ embSvg.innerHTML="";
+ /* 경계 원(정규화된 임베딩 = 단위구 표면 암시) */
+ el("circle",{cx:CX,cy:CY,r:100,fill:"none",stroke:"#eadfd6","stroke-width":1,"stroke-dasharray":"3 4"},embSvg);
+ const anchor=pts[0];
+ /* 연결선 먼저 */
+ pts.forEach(p=>{if(p.type==="pos"){
+   el("line",{x1:anchor.x,y1:anchor.y,x2:p.x,y2:p.y,stroke:"#5b8bb0","stroke-width":2},embSvg);}
+  else if(p.type==="neg"){
+   el("line",{x1:anchor.x,y1:anchor.y,x2:p.x,y2:p.y,stroke:"#e2d4d6","stroke-width":1,"stroke-dasharray":"2 3"},embSvg);}});
+ pts.forEach(p=>{el("circle",{cx:p.x,cy:p.y,r:p.r,fill:p.c},embSvg);});
+}
+function stepPhysics(){
+ const anchor=pts[0];
+ /* 당김: positive를 anchor 쪽으로. 밀침: negative를 anchor에서 멀리.
+    τ 작을수록 가까운 negative에 강하게(날카롭게) 밀침 → 힘을 거리^(-1/τ) 가중 */
+ pts.forEach(p=>{
+  if(p.type==="pos"){
+   p.x+=(anchor.x-p.x)*0.22;p.y+=(anchor.y-p.y)*0.22;
+  }else if(p.type==="neg"){
+   const dx=p.x-anchor.x,dy=p.y-anchor.y;const dist=Math.hypot(dx,dy)||1;
+   /* τ 작을수록 가까운 것에 집중: weight = (1/dist)^(1/τ) 정규화 느낌을 근사 */
+   const sharp=1/tau;
+   const force=Math.pow(80/dist,sharp*0.5)*6;
+   const f=Math.min(force,40);
+   p.x+=dx/dist*f;p.y+=dy/dist*f;
+   /* 경계 원 안에 유지 */
+   const nd=Math.hypot(p.x-CX,p.y-CY);if(nd>100){p.x=CX+(p.x-CX)/nd*100;p.y=CY+(p.y-CY)/nd*100;}
+  }
+ });
+ drawEmb();
+}
+$("d-tau").addEventListener("input",e=>{tau=+e.target.value;$("d-tau-v").textContent=tau.toFixed(2);});
+$("d-step").addEventListener("click",stepPhysics);
+$("d-reset").addEventListener("click",()=>{initPts();drawEmb();});
+
+/* 초기화 */
+initPts();drawEmb();
+setStep(0);
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

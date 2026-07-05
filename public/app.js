@@ -1594,14 +1594,61 @@ function setThinking(el, msg) {
 }
 
 // ---------- 연구 방법론: 재구성 figure들 + 스테퍼 ----------
+/* method_viz_html: 논문당 독립 실행형 HTML 시각화(viz_guideline.md 산출물)를
+   sandboxed iframe(srcdoc)으로 격리 렌더. CSS/JS 충돌 없이, §2.8 리사이즈 호환
+   (width:100% + 내부 SVG viewBox)을 만족한다. 높이는 내부에서 postMessage로 보고. */
+function buildMethodVizFrame(html) {
+  const frame = document.createElement("iframe");
+  frame.className = "method-viz-frame";
+  frame.title = "연구 방법론 인터랙티브 시각화";
+  // allow-scripts만 — 동일출처 미부여(불투명 origin)로 부모 접근 차단. 스크립트/애니메이션은 정상 동작.
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.setAttribute("scrolling", "no");
+  frame.setAttribute("loading", "lazy");
+  frame.style.width = "100%";
+  frame.style.border = "0";
+  frame.style.display = "block";
+  frame.style.height = "620px"; // 초기값 — 로드 후 실측 높이로 교체
+  // 높이 자동조절: 내부에 리포터 스크립트를 주입하고 postMessage 수신
+  const token = "mviz-" + Math.random().toString(36).slice(2);
+  const reporter =
+    "<script>(function(){var T=" + JSON.stringify(token) + ";" +
+    "function h(){var d=document.documentElement,b=document.body;if(!b)return;" +
+    "var ht=Math.max(b.scrollHeight,d.scrollHeight,b.offsetHeight,d.offsetHeight);" +
+    "parent.postMessage({__mvizToken:T,__mvizHeight:ht},'*');}" +
+    "window.addEventListener('load',h);window.addEventListener('resize',h);" +
+    "[120,400,900,1800].forEach(function(t){setTimeout(h,t);});" +
+    "try{if(window.ResizeObserver){new ResizeObserver(h).observe(document.body);}}catch(e){}" +
+    "})();<\/script>";
+  const injected = /<\/body>/i.test(html)
+    ? html.replace(/<\/body>/i, reporter + "</body>")
+    : html + reporter;
+  frame.srcdoc = injected;
+  const onMsg = (e) => {
+    if (e.source !== frame.contentWindow) return; // 이 프레임이 보낸 것만
+    const d = e.data;
+    if (!d || d.__mvizToken !== token) return;
+    const h = Math.max(280, Math.min(6000, Number(d.__mvizHeight) || 0));
+    if (h) frame.style.height = h + "px";
+  };
+  window.addEventListener("message", onMsg);
+  _mvizHtmlCleanup = () => window.removeEventListener("message", onMsg);
+  return frame;
+}
+
 function renderMethod(data) {
   const panel = document.getElementById("panel-method");
   if (activeMethodViz) { activeMethodViz.destroy(); activeMethodViz = null; } // 이전 애니메이션·타이머 정리
+  if (_mvizHtmlCleanup) { try { _mvizHtmlCleanup(); } catch (e) {} _mvizHtmlCleanup = null; } // 이전 iframe 높이 리스너 정리
   panel.innerHTML = "";
 
-  // 신규: 인터랙티브 2.5D 파이프라인 (method_visualization) 우선
+  // 최우선: 타입별 독립 HTML 시각화(method_viz_html) — 있으면 iframe으로 렌더
   let vizEl = null;
-  if (data.method_visualization) {
+  if (data.method_viz_html && typeof data.method_viz_html === "string" && data.method_viz_html.trim()) {
+    try { vizEl = buildMethodVizFrame(data.method_viz_html); } catch (e) { console.error("[method viz HTML 렌더 실패 — 폴백]", e); vizEl = null; }
+  }
+  // 차선: 인터랙티브 2.5D 파이프라인 (method_visualization) JSON 렌더러
+  if (!vizEl && data.method_visualization) {
     try { vizEl = buildMethodViz(data.method_visualization); } catch (e) { console.error("[method viz 렌더 실패 — 폴백]", e); vizEl = null; }
   }
   if (vizEl) {
@@ -1660,6 +1707,7 @@ function renderMethod(data) {
    단일 rAF(입자+스위치, 백그라운드 탭 자동 정지)
    ========================================================================== */
 let activeMethodViz = null; // 현재 애니메이션/타이머 컨트롤러 (논문 전환 시 destroy)
+let _mvizHtmlCleanup = null; // method_viz_html iframe의 높이 메시지 리스너 정리 훅
 const MVNS = "http://www.w3.org/2000/svg";
 function mvE(tag, attrs) { const e = document.createElementNS(MVNS, tag); for (const k in (attrs || {})) e.setAttribute(k, attrs[k]); return e; }
 function mvT(x, y, s, attrs) { const t = mvE("text", Object.assign({ x, y }, attrs || {})); t.textContent = s == null ? "" : String(s); return t; }

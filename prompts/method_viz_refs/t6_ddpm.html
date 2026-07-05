@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T6 · DDPM — 확산 모델[폴백유형], 구조도만 살짝 입체(c))
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: DDPM(2006.11239). forward: 고정 Markov chain, variance schedule β linear β1=1e-4→βT=0.02, q(xt|x0)=N(√ᾱt x0,(1−ᾱt)I). reverse: 학습된 Gaussian transition. 손실 Lsimple=E‖ε−ε_θ(√ᾱt x0+√(1−ᾱt)ε,t)‖² (노이즈 예측). T=1000.
+  주: (c) 채택 — 이미지는 2D 격자, 시간축 체인을 구조도에서만 살짝 입체로 시간흐름 실감. 데이터여정·실험실은 2D. 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DDPM (T6)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --fwd:#c9743e;--fwd-face:#f6e1d2;--rev:#5b8bb0;--rev-face:#dde8f1;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#3f5f7d;
+    background:var(--rev-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 420px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot{filter:drop-shadow(0 0 7px rgba(140,47,57,.4));}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .zlabel{font-size:10px;font-weight:600;fill:#3b3231;}
+  .zsub{font-size:8.5px;fill:#8a7d79;}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .lab-grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;}
+  .lab-col{flex:1;min-width:240px;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .stat{display:inline-block;background:var(--accent-faint);border-radius:8px;padding:6px 13px;text-align:center;margin-right:10px;}
+  .stat .v{font-size:15px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
+  .stat .k{font-size:10px;color:#a06e6e;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>DDPM<span class="type-badge">T6 · 생성 모델 (확산)</span></h1>
+<p class="lead">DDPM은 이미지를 <b>노이즈로 서서히 망가뜨렸다가(forward) 다시 복원하는(reverse)</b> 법을 배워 새 이미지를 생성한다. Forward는 정해진 규칙으로 노이즈를 조금씩 더하는 고정 과정이고, Reverse는 신경망이 <b>"지금 낀 노이즈가 무엇인지"를 예측</b>해 한 단계씩 걷어내는 학습 과정이다. 위 체인은 두 방향을, 아래 실험실은 노이즈 레벨 t를 직접 조작해 이미지가 망가지고 복원되는 걸 보여준다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 420 500" width="100%" role="img" aria-label="DDPM의 forward 확산과 reverse 복원 체인. 이미지가 노이즈로 변했다가 복원된다">
+        <defs>
+          <marker id="ahf" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#c9743e" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+          <marker id="ahr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#5b8bb0" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+        <!-- forward 체인 (위 행): JS가 타일 채움 -->
+        <text x="30" y="40" font-size="10.5" font-weight="600" fill="#9a4e1e">Forward (확산): 노이즈 추가 · 고정</text>
+        <g id="fwd-chain"></g>
+        <!-- reverse 체인 (아래 행) -->
+        <text x="30" y="290" font-size="10.5" font-weight="600" fill="#3f5f7d">Reverse (복원): 노이즈 예측·제거 · 학습</text>
+        <g id="rev-chain"></g>
+        <!-- 손실 배지 -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="90" y="430" width="240" height="44" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="210" y="449" font-size="10" font-weight="600" fill="#8c2f39" text-anchor="middle">학습 목표: 낀 노이즈 ε 예측</text>
+          <text x="210" y="463" font-size="8.5" fill="#a06e6e" text-anchor="middle">L = ‖ε − ε_θ(xₜ, t)‖²</text>
+        </g>
+        <path id="flowpath" d="M50 90 L370 90 L370 240 L50 240 L50 340 L370 340" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>noise level t — 이미지가 망가지고 복원된다</h2>
+    <p class="desc">시점 t를 움직여 보자. t=0은 원본, t=T(=1000)는 완전한 노이즈다. 왼쪽 이미지가 t에 따라 망가진다. 이는 forward의 <b>q(xₜ|x₀) = N(√ᾱₜ x₀, (1−ᾱₜ)I)</b>를 그대로 따른 것 — ᾱₜ가 줄수록 원본 신호는 약해지고(√ᾱₜ) 노이즈는 커진다(√(1−ᾱₜ)). 오른쪽 곡선이 그 ᾱₜ(신호 보존율)를 보여준다. Reverse는 이 과정을 거꾸로 한 단계씩 되돌린다.</p>
+    <div class="lab-grid">
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">시점 t의 이미지 xₜ</div>
+        <svg id="noise-svg" viewBox="0 0 140 140" width="100%" style="max-width:160px;" role="img" aria-label="시점 t에서 노이즈가 낀 이미지"></svg>
+        <div style="margin-top:10px;">
+          <span class="stat"><span class="v" id="st-signal">100%</span><span class="k">신호 √ᾱₜ</span></span>
+          <span class="stat"><span class="v" id="st-noise">0%</span><span class="k">노이즈 √(1−ᾱₜ)</span></span>
+        </div>
+      </div>
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">신호 보존율 ᾱₜ (t에 따라)</div>
+        <svg id="alpha-svg" viewBox="0 0 240 130" width="100%" style="max-width:260px;" role="img" aria-label="ᾱ 곡선"></svg>
+      </div>
+    </div>
+    <div class="dctrl">
+      <label for="d-t">시점 t</label>
+      <input type="range" id="d-t" min="0" max="1000" step="20" value="0">
+      <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:44px;text-align:right;" id="d-t-v">0</span>
+    </div>
+    <p class="note">노이즈 이미지는 색면 위에 무작위 픽셀 노이즈를 √(1−ᾱₜ) 비율로 섞어 forward 과정을 표현한 것이며, 실제 이미지 데이터가 아니다. 수식(q(xₜ|x₀)=N(√ᾱₜx₀,(1−ᾱₜ)I), 손실 ‖ε−ε_θ‖², T=1000, β linear 1e-4→0.02)은 논문(2006.11239)의 실제 정의다. ᾱₜ 곡선은 이 β schedule로 ᾱₜ=∏(1−βₛ)를 실제 계산해 그린 것이다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function miniSvg(vb){return el("svg",{viewBox:vb||"0 0 300 150",width:"100%",style:"max-width:330px;"});}
+
+/* 결정적 난수 */
+function mkRnd(s){let x=s;return()=>(x=(x*1103515245+12345)%2147483648)/2147483648;}
+
+/* 노이즈 이미지 타일: noiseLevel 0(원본)~1(완전노이즈). 색면(피사체) 위에 노이즈 픽셀 */
+function noiseTile(parent,x,y,sz,noiseLevel,seed,cell){
+ const g=el("g",{},parent);
+ const c=cell||8;const px=sz/c;const rnd=mkRnd(seed||7);
+ const sig=1-noiseLevel;
+ for(let i=0;i<c;i++)for(let j=0;j<c;j++){
+  /* 원본 피사체: 가운데 원형 그라데이션 흉내 (초록 계열) */
+  const cx=(i+0.5)/c-0.5, cy=(j+0.5)/c-0.5;const d=Math.hypot(cx,cy);
+  const base= d<0.32? 55 : 82;   /* 피사체 밝기 */
+  const baseHue=145;
+  /* 노이즈 픽셀 */
+  const nz=rnd();
+  const light = base*sig + (nz*100)*noiseLevel;
+  const hue = baseHue*sig + (nz*360)*noiseLevel;
+  const sat = 40*sig + 12*noiseLevel;
+  el("rect",{x:x+i*px,y:y+j*px,width:px+0.5,height:px+0.5,
+    fill:`hsl(${hue.toFixed(0)} ${sat.toFixed(0)}% ${light.toFixed(0)}%)`},g);
+ }
+ el("rect",{x:x,y:y,width:sz,height:sz,rx:4,fill:"none",stroke:"#00000018","stroke-width":1},g);
+ return g;
+}
+
+/* ===== 구조도 체인 (forward 위 / reverse 아래), 살짝 입체(z-오프셋+그림자) ===== */
+const CHAIN_N=5;
+const fwdLevels=[0,0.25,0.5,0.75,1.0];   /* x0 → xT */
+function drawChains(){
+ const fwd=$("fwd-chain"),rev=$("rev-chain");
+ const sz=48,y0=52,gap=(340-sz)/(CHAIN_N-1);
+ const dz=6; /* 살짝 입체: 뒤 타일 z-오프셋 */
+ // forward: 왼(원본)→오른(노이즈)
+ fwdLevels.forEach((lv,i)=>{
+  const x=40+i*gap;const zx=x+ (i-2)*0 ; const oy=y0 - i*0; /* 수평 유지, 개별 타일에 입체 그림자만 */
+  el("ellipse",{cx:x+sz/2+2,cy:y0+sz+4,rx:sz*0.42,ry:3,fill:"#00000010"},fwd);
+  noiseTile(fwd,x,y0,sz,lv,11+i,7);
+  el("text",{x:x+sz/2,y:y0+sz+16,"font-size":8,fill:"#8a7d79","text-anchor":"middle"},fwd).textContent="x"+(i===0?"₀":i===CHAIN_N-1?"_T":("_"+i));
+ });
+ // forward 화살표
+ for(let i=0;i<CHAIN_N-1;i++){const x=40+i*gap+sz;
+  el("line",{x1:x+2,y1:y0+sz/2,x2:x+gap-sz+ -2+sz,y2:y0+sz/2,stroke:"#e2c9b6",class:"flowline"},fwd);}
+ el("line",{x1:40+sz+2,y1:y0+sz/2,x2:40+gap-2,y2:y0+sz/2,stroke:"#c9743e","stroke-width":1.3,"marker-end":"url(#ahf)",fill:"none"},fwd);
+ // reverse: 오른(노이즈)→왼(복원)
+ const yr=302;
+ fwdLevels.forEach((lv,i)=>{
+  const x=40+i*gap;
+  el("ellipse",{cx:x+sz/2+2,cy:yr+sz+4,rx:sz*0.42,ry:3,fill:"#00000010"},rev);
+  noiseTile(rev,x,yr,sz,lv,11+i,7);
+ });
+ // reverse 화살표 (오→왼)
+ el("line",{x1:40+(CHAIN_N-1)*gap-2,y1:yr+sz/2,x2:40+(CHAIN_N-2)*gap+sz+2,y2:yr+sz/2,stroke:"#5b8bb0","stroke-width":1.3,"marker-end":"url(#ahr)",fill:"none"},rev);
+ el("text",{x:40+(CHAIN_N-1)*gap+sz/2,y:yr+sz+16,"font-size":8,fill:"#8a7d79","text-anchor":"middle"},rev).textContent="노이즈에서 시작";
+ el("text",{x:40+sz/2,y:yr+sz+16,"font-size":8,fill:"#8a7d79","text-anchor":"middle"},rev).textContent="복원된 이미지";
+ // reverse 연결선
+ for(let i=CHAIN_N-1;i>0;i--){const x=40+i*gap;
+  el("line",{x1:x-2,y1:yr+sz/2,x2:x-gap+sz+2,y2:yr+sz/2,stroke:"#c9d8e6",class:"flowline"},rev);}
+}
+drawChains();
+
+/* ===== ᾱ schedule 실제 계산 (β linear 1e-4→0.02, T=1000) ===== */
+const T=1000, b1=1e-4, bT=0.02;
+const alphaBar=new Float64Array(T+1);
+(function(){let ab=1;alphaBar[0]=1;for(let t=1;t<=T;t++){const beta=b1+(bT-b1)*(t-1)/(T-1);ab*=(1-beta);alphaBar[t]=ab;}})();
+function abAt(t){return alphaBar[Math.max(0,Math.min(T,Math.round(t)))];}
+
+/* ===== 6스텝 ===== */
+const STEPS=[
+ {phase:"fwd",t:"원본 이미지 x₀",
+  d:"학습 데이터의 깨끗한 이미지에서 출발한다. DDPM의 목표는 이런 이미지를 만들어내는 것 — 그러려면 먼저 이미지를 노이즈로 망가뜨리는 과정을 정의하고, 그 역과정을 배운다.",
+  sh:"x₀ (원본)",v:h=>{const s=miniSvg("0 0 300 150");noiseTile(s,118,20,64,0,7,10);
+   el("text",{x:150,y:105,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="깨끗한 원본";h.appendChild(s);}},
+ {phase:"fwd",t:"Forward — 노이즈 조금씩 추가",
+  d:"forward 과정은 각 단계에서 정해진 양(variance schedule β)만큼 Gaussian 노이즈를 더한다. 이건 학습하는 게 아니라 고정된 규칙이다. β는 β₁=0.0001에서 βT=0.02로 선형 증가한다 — 처음엔 살살, 뒤로 갈수록 세게 망가뜨린다.",
+  sh:"q(xₜ|xₜ₋₁) 반복",v:h=>{const s=miniSvg("0 0 300 150");
+   [0,0.3,0.6].forEach((lv,i)=>{noiseTile(s,40+i*90,25,58,lv,11+i,8);});
+   el("text",{x:150,y:105,"font-size":9.5,fill:"#8a7d79","text-anchor":"middle"},s).textContent="단계마다 노이즈 증가 →";h.appendChild(s);}},
+ {phase:"fwd",t:"임의 시점 t로 한 번에 점프",
+  d:"편리한 성질이 있다. 여러 단계를 거치지 않고도, 원본 x₀에서 임의 시점 t의 노이즈 이미지를 한 번에 만들 수 있다: q(xₜ|x₀) = N(√ᾱₜ x₀, (1−ᾱₜ)I). ᾱₜ는 β들의 누적곱으로, 신호가 얼마나 남았는지를 뜻한다.",
+  sh:"xₜ = √ᾱₜ·x₀ + √(1−ᾱₜ)·ε",v:h=>{const s=miniSvg("0 0 300 150");noiseTile(s,118,20,64,0.7,17,10);
+   el("text",{x:150,y:105,"font-size":9.5,fill:"#8a7d79","text-anchor":"middle"},s).textContent="t가 크면 대부분 노이즈";h.appendChild(s);}},
+ {phase:"rev",t:"Reverse — 노이즈 예측",
+  d:"여기가 학습하는 부분이다. 신경망 ε_θ는 노이즈 낀 이미지 xₜ와 시점 t를 받아 '거기 섞인 노이즈 ε가 무엇인지'를 예측한다. 손실은 진짜 노이즈와 예측 노이즈의 차이 ‖ε − ε_θ(xₜ, t)‖²로, 놀랍도록 단순하다.",
+  sh:"ε_θ(xₜ, t) → 예측 노이즈",v:h=>{const s=miniSvg("0 0 300 150");
+   noiseTile(s,40,25,58,0.7,17,8);
+   el("text",{x:130,y:58,"font-size":16,fill:"#5b8bb0"},s).textContent="→ε̂→";
+   noiseTile(s,180,25,58,0.45,17,8);
+   el("text",{x:150,y:105,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="예측 노이즈를 빼서 한 단계 복원";h.appendChild(s);}},
+ {phase:"rev",t:"한 단계씩 복원 반복",
+  d:"예측한 노이즈를 조금 걷어내 xₜ₋₁을 얻고, 이를 T번 반복한다. 완전한 노이즈에서 시작해 한 단계씩 되돌리면, 학습 데이터에는 없던 새로운 이미지가 만들어진다 — 이것이 생성이다.",
+  sh:"xₜ → xₜ₋₁ → … → x₀",v:h=>{const s=miniSvg("0 0 300 150");
+   [1.0,0.6,0.25].forEach((lv,i)=>{noiseTile(s,40+i*90,25,58,lv,20+i,8);});
+   el("text",{x:150,y:105,"font-size":9.5,fill:"#8a7d79","text-anchor":"middle"},s).textContent="← 노이즈에서 이미지로 복원";h.appendChild(s);}},
+ {phase:"loss",t:"새 이미지 생성 완료",
+  d:"학습이 끝나면, 순수 노이즈 하나를 뽑아 reverse를 T번 돌리는 것만으로 새 이미지를 생성한다. DDPM은 이 단순한 노이즈 예측 목표만으로 GAN에 필적하는 고품질 이미지를 만들어, 확산 모델 시대를 열었다.",
+  sh:"노이즈 → 새 이미지",v:h=>{h.innerHTML='<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;">DDPM의 기여는 <b>"낀 노이즈를 예측하라"는 단순한 목표</b>(‖ε−ε_θ‖²)만으로 고품질 이미지 생성이 가능함을 보인 것이다. forward는 고정, reverse만 학습한다. ↓ 아래에서 노이즈 레벨 t를 조작해 보세요.</div>';}}
+];
+/* ===== 스테퍼 + phase별 하이라이트 ===== */
+let idx=0,playTimer=null;
+const fwdG=$("fwd-chain"),revG=$("rev-chain"),lossZone=document.querySelector('[data-zone="5"]');
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setPhaseHot(phase){
+ fwdG.style.transition="opacity .35s";revG.style.transition="opacity .35s";
+ fwdG.style.opacity = phase==="fwd"?"1":"0.32";
+ revG.style.opacity = phase==="rev"?"1":"0.32";
+ if(lossZone){lossZone.classList.toggle("hot",phase==="loss");lossZone.classList.toggle("dim",phase!=="loss");}
+}
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ setPhaseHot(s.phase);
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== noise level 실험실 ===== */
+const noiseSvg=$("noise-svg"),alphaSvg=$("alpha-svg");
+function renderNoise(t){
+ const ab=abAt(t);
+ const sig=Math.sqrt(ab), noise=Math.sqrt(1-ab);
+ const noiseLevel=noise; /* 0~1 */
+ noiseSvg.innerHTML="";
+ noiseTile(noiseSvg,10,10,120,noiseLevel,7,14);
+ $("st-signal").textContent=(sig*100).toFixed(0)+"%";
+ $("st-noise").textContent=(noise*100).toFixed(0)+"%";
+ $("d-t-v").textContent=t;
+ /* ᾱ 곡선의 현재 t 위치 갱신 */
+ drawAlphaCurve(t);
+}
+function drawAlphaCurve(curT){
+ alphaSvg.innerHTML="";
+ const x0=24,x1=228,y0=16,y1=104;
+ el("line",{x1:x0,y1:y1,x2:x1,y2:y1,stroke:"#dfd3c9","stroke-width":1},alphaSvg);
+ el("line",{x1:x0,y1:y0,x2:x0,y2:y1,stroke:"#dfd3c9","stroke-width":1},alphaSvg);
+ el("text",{x:x0,y:118,"font-size":8,fill:"#b0a49e"},alphaSvg).textContent="t=0";
+ el("text",{x:x1,y:118,"font-size":8,fill:"#b0a49e","text-anchor":"end"},alphaSvg).textContent="t=1000";
+ el("text",{x:x0-3,y:y0+4,"font-size":8,fill:"#b0a49e","text-anchor":"end"},alphaSvg).textContent="1";
+ /* ᾱ 곡선 */
+ let pts=[];for(let i=0;i<=100;i++){const t=i/100*T;const ab=abAt(t);
+  const px=x0+(t/T)*(x1-x0);const py=y1-ab*(y1-y0);pts.push((i===0?"M":"L")+px.toFixed(1)+" "+py.toFixed(1));}
+ el("path",{d:pts.join(" "),fill:"none",stroke:"#c99b4e","stroke-width":2},alphaSvg);
+ el("text",{x:130,y:y0+2,"font-size":8.5,fill:"#a97b4e","text-anchor":"middle"},alphaSvg).textContent="ᾱₜ: 신호 보존율";
+ /* 현재 t 마커 */
+ const px=x0+(curT/T)*(x1-x0);const ab=abAt(curT);const py=y1-ab*(y1-y0);
+ el("line",{x1:px,y1:y0,x2:px,y2:y1,stroke:"#8c2f39","stroke-width":1,"stroke-dasharray":"3 3"},alphaSvg);
+ el("circle",{cx:px,cy:py,r:3.5,fill:"#8c2f39"},alphaSvg);
+}
+$("d-t").addEventListener("input",e=>renderNoise(+e.target.value));
+
+/* 초기화 */
+setStep(0);
+renderNoise(0);
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

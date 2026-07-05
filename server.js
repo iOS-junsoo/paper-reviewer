@@ -1169,7 +1169,7 @@ app.put("/api/library", async (req, res) => {
 const SECTION_FIELDS = {
   background: { keys: ["background", "timeline"], label: "연구 배경(과 분야 타임라인)" },
   problem: { keys: ["problem"], label: "해결하려는 것" },
-  method: { keys: ["method_steps", "method_visualization"], label: "연구 방법론(단계·시각화)" },
+  method: { keys: ["method_steps", "method_visualization", "method_viz_html"], label: "연구 방법론(단계·시각화)" },
   results: { keys: ["experiments"], label: "실험·결과" },
   equations: { keys: ["equations", "equation_flow"], label: "수식 정리(와 수식 흐름도)" },
   figures: { keys: ["figure_guide"], label: "그림 해설" },

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T5 · mixup — 데이터 중심 증강[폴백유형], 2D)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: mixup(1710.09412). x̃=λx_i+(1−λ)x_j, ỹ=λy_i+(1−λ)y_j (one-hot 볼록결합). λ~Beta(α,α), α∈(0,∞), α=0.2/1 사용, α→0이면 ERM. 손실=λ·L(pred,y_a)+(1−λ)·L(pred,y_b).
+  주: 2.5D 미적용 — 두 샘플의 선형 보간(섞임 비율)이 주인공, 부피/층 구조 없음. 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mixup (T5)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --catA:#5b8bb0;--catA-face:#dde8f1;--catB:#c9743e;--catB-face:#f6e1d2;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#3f5f7d;
+    background:var(--catA-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 400px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot .zbox{filter:drop-shadow(0 0 6px rgba(140,47,57,.5));}
+  .zbox{transition:filter .35s;}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .lab-grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;}
+  .lab-col{flex:1;min-width:240px;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .lbar-row{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:12px;}
+  .lbar-row .ln{width:80px;color:var(--ink-soft);}
+  .lbar-wrap{flex:1;height:18px;background:#f0ebe5;border-radius:4px;overflow:hidden;}
+  .lbar{height:100%;transition:width .4s;}
+  .lbar-row .lv{width:44px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>mixup<span class="type-badge">T5 · 데이터 중심 증강</span></h1>
+<p class="lead">mixup은 모델도 손실도 바꾸지 않고 <b>데이터를 섞어</b> 일반화를 높이는 증강 기법이다. 무작위로 뽑은 두 학습 예제를 λ 비율로 선형 결합해 "가상의 예제"를 만드는데, <b>이미지뿐 아니라 라벨도 같은 비율로 섞는다</b>. 이렇게 하면 모델이 데이터 사이 공간에서 부드럽게(선형적으로) 행동하도록 규제된다. 스테퍼로 섞는 과정을 따라가고, 아래에서 λ를 직접 조작해 본다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 400 480" width="100%" role="img" aria-label="mixup 절차: 두 예제를 뽑아 Beta 분포에서 뽑은 λ로 이미지와 라벨을 각각 선형 결합해 가상 예제를 만들고 학습">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+
+        <!-- zone0: 두 예제 (병렬) -->
+        <g class="zone" data-zone="0">
+          <rect class="zbox" x="30" y="24" width="150" height="52" rx="8" fill="var(--catA-face)" stroke="#5b8bb0"/>
+          <text x="105" y="44" font-size="10.5" font-weight="600" fill="#3f5f7d" text-anchor="middle">예제 i</text>
+          <text x="105" y="60" font-size="9" fill="#5b8bb0" text-anchor="middle">(xᵢ, yᵢ) · 라벨 "개"</text>
+          <rect class="zbox" x="220" y="24" width="150" height="52" rx="8" fill="var(--catB-face)" stroke="#c9743e"/>
+          <text x="295" y="44" font-size="10.5" font-weight="600" fill="#9a4e1e" text-anchor="middle">예제 j</text>
+          <text x="295" y="60" font-size="9" fill="#c9743e" text-anchor="middle">(xⱼ, yⱼ) · 라벨 "고양이"</text>
+        </g>
+        <!-- zone1: λ ~ Beta -->
+        <g class="zone" data-zone="1">
+          <rect class="zbox" x="120" y="118" width="160" height="46" rx="8" fill="#f6ead2" stroke="#c99b4e"/>
+          <text x="200" y="136" font-size="10.5" font-weight="600" fill="#7a5a1e" text-anchor="middle">λ ~ Beta(α, α)</text>
+          <text x="200" y="151" font-size="9" fill="#a97b4e" text-anchor="middle">섞는 비율 하나 뽑기 (0~1)</text>
+        </g>
+        <!-- zone2: 이미지 보간 -->
+        <g class="zone" data-zone="2">
+          <rect class="zbox" x="40" y="200" width="150" height="48" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="115" y="218" font-size="10" font-weight="600" fill="#8c2f39" text-anchor="middle">이미지 결합</text>
+          <text x="115" y="233" font-size="8.5" fill="#a06e6e" text-anchor="middle">x̃ = λxᵢ + (1−λ)xⱼ</text>
+        </g>
+        <!-- zone3: 라벨 보간 -->
+        <g class="zone" data-zone="3">
+          <rect class="zbox" x="210" y="200" width="150" height="48" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="285" y="218" font-size="10" font-weight="600" fill="#8c2f39" text-anchor="middle">라벨 결합</text>
+          <text x="285" y="233" font-size="8.5" fill="#a06e6e" text-anchor="middle">ỹ = λyᵢ + (1−λ)yⱼ</text>
+        </g>
+        <!-- zone4: 가상 예제 -->
+        <g class="zone" data-zone="4">
+          <rect class="zbox" x="120" y="290" width="160" height="46" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="200" y="308" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">가상 예제 (x̃, ỹ)</text>
+          <text x="200" y="323" font-size="9" fill="#8a7d79" text-anchor="middle">섞인 이미지 + 섞인 라벨</text>
+        </g>
+        <!-- zone5: 학습 -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="120" y="380" width="160" height="46" rx="8" fill="var(--catA-face)" stroke="#5b8bb0"/>
+          <text x="200" y="398" font-size="10.5" font-weight="600" fill="#3f5f7d" text-anchor="middle">모델 학습</text>
+          <text x="200" y="413" font-size="9" fill="#5b8bb0" text-anchor="middle">기존 망·손실 그대로 사용</text>
+        </g>
+
+        <!-- 흐름선 -->
+        <line class="flowline" x1="105" y1="76" x2="180" y2="120" marker-end="url(#ah)"/>
+        <line class="flowline" x1="295" y1="76" x2="220" y2="120" marker-end="url(#ah)"/>
+        <line class="flowline" x1="170" y1="164" x2="130" y2="198" marker-end="url(#ah)"/>
+        <line class="flowline" x1="230" y1="164" x2="270" y2="198" marker-end="url(#ah)"/>
+        <!-- 두 예제가 이미지/라벨 보간으로 직접 가는 보조선 -->
+        <line class="flowline" x1="105" y1="76" x2="115" y2="198" stroke-dasharray="2 3" opacity="0.5"/>
+        <line class="flowline" x1="295" y1="76" x2="285" y2="198" stroke-dasharray="2 3" opacity="0.5"/>
+        <line class="flowline" x1="115" y1="248" x2="180" y2="288" marker-end="url(#ah)"/>
+        <line class="flowline" x1="285" y1="248" x2="220" y2="288" marker-end="url(#ah)"/>
+        <line class="flowline" x1="200" y1="336" x2="200" y2="378" marker-end="url(#ah)"/>
+
+        <path id="flowpath" d="M105 50 L200 141 L115 224 L200 313 L200 380" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>λ 조작 — 이미지와 라벨이 함께 섞인다</h2>
+    <p class="desc">섞는 비율 λ를 직접 움직여 보자. 왼쪽 결합 이미지와 오른쪽 라벨 막대가 <b>항상 같은 λ로</b> 함께 변한다 — 이것이 mixup의 핵심이다. 아래 Beta 분포는 λ가 어디서 뽑히는지 보여준다: α가 작으면 λ가 0 또는 1 근처(거의 안 섞임, ERM에 가까움), α가 크면 0.5 근처(강하게 섞임)에서 주로 뽑힌다.</p>
+    <div class="lab-grid">
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">결합 이미지 x̃</div>
+        <svg id="mix-svg" viewBox="0 0 200 140" width="100%" style="max-width:220px;" role="img" aria-label="두 이미지가 λ 비율로 겹쳐진 결과"></svg>
+      </div>
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">결합 라벨 ỹ (soft label)</div>
+        <div class="lbar-row"><span class="ln" style="color:#3f5f7d;">개 (yᵢ)</span><span class="lbar-wrap"><span class="lbar" id="lbar-a" style="background:#5b8bb0;"></span></span><span class="lv" id="lv-a">—</span></div>
+        <div class="lbar-row"><span class="ln" style="color:#9a4e1e;">고양이 (yⱼ)</span><span class="lbar-wrap"><span class="lbar" id="lbar-b" style="background:#c9743e;"></span></span><span class="lv" id="lv-b">—</span></div>
+        <div class="dctrl">
+          <label for="d-lam">λ</label>
+          <input type="range" id="d-lam" min="0" max="1" step="0.05" value="0.5">
+          <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:36px;text-align:right;" id="d-lam-v">0.50</span>
+        </div>
+      </div>
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">λ의 출처: Beta(α, α)</div>
+        <svg id="beta-svg" viewBox="0 0 220 130" width="100%" style="max-width:240px;" role="img" aria-label="Beta 분포 곡선"></svg>
+        <div class="dctrl">
+          <label for="d-alpha">α</label>
+          <input type="range" id="d-alpha" min="0.1" max="2" step="0.1" value="0.4">
+          <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:36px;text-align:right;" id="d-alpha-v">0.4</span>
+        </div>
+      </div>
+    </div>
+    <p class="note">결합 이미지는 두 색면의 α-blend로 선형 보간을 표현한 것이며, 실제 이미지 데이터가 아니다. 수식(x̃=λxᵢ+(1−λ)xⱼ, ỹ=λyᵢ+(1−λ)yⱼ, λ~Beta(α,α)), α→0이면 ERM 수렴, α=0.2/1 사용은 논문(1710.09412)의 실제 정의다. Beta 곡선은 해당 α의 실제 확률밀도를 계산해 그린 것이다.</p>
+
+    <div style="margin-top:22px;padding-top:18px;border-top:1px dashed var(--line);">
+      <div style="font-size:13px;font-weight:600;color:var(--ink);margin-bottom:4px;">왜 잘 될까 — 결정경계가 부드러워진다</div>
+      <p class="desc" style="margin-bottom:12px;">논문 Fig.2의 핵심. 두 클래스(파랑·주황) 사이 경계를 비교하면, ERM은 훈련점에 딱 맞춰 <b>급격하고 불규칙한 경계</b>를 그어 데이터 사이·바깥에서 진동한다. mixup은 데이터 사이를 선형 보간해 학습하므로 <b>부드럽고 넓은 전이대</b>를 만들어, 처음 보는 입력에도 안정적으로 반응한다.</p>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;">
+          <div style="font-size:11.5px;font-weight:600;color:#8c2f39;margin-bottom:6px;">ERM (일반 학습)</div>
+          <svg id="db-erm" viewBox="0 0 220 150" width="100%" style="max-width:240px;" role="img" aria-label="ERM의 급격한 결정경계"></svg>
+        </div>
+        <div style="flex:1;min-width:200px;">
+          <div style="font-size:11.5px;font-weight:600;color:#3e6b4c;margin-bottom:6px;">mixup</div>
+          <svg id="db-mix" viewBox="0 0 220 150" width="100%" style="max-width:240px;" role="img" aria-label="mixup의 부드러운 결정경계"></svg>
+        </div>
+      </div>
+      <p class="note">두 점 집합의 위치는 고정 예시이며, 경계 형태(ERM=급격/진동, mixup=부드러운 전이대)는 논문 Fig.2가 보고한 정성적 경향을 표현한 것이다. 특정 데이터셋의 실제 학습 경계가 아니다.</p>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function miniSvg(vb){return el("svg",{viewBox:vb||"0 0 300 150",width:"100%",style:"max-width:330px;"});}
+
+/* 두 색면 이미지 타일(피사체 암시) */
+function imgTile(s,x,y,sz,hue,label){
+ const g=el("g",{},s);
+ el("rect",{x:x,y:y,width:sz,height:sz,rx:6,fill:`hsl(${hue} 45% 85%)`,stroke:`hsl(${hue} 40% 62%)`},g);
+ el("circle",{cx:x+sz*0.5,cy:y+sz*0.52,r:sz*0.26,fill:`hsl(${hue} 50% 60%)`},g);
+ el("circle",{cx:x+sz*0.4,cy:y+sz*0.42,r:sz*0.06,fill:`hsl(${hue} 50% 35%)`},g);
+ el("circle",{cx:x+sz*0.6,cy:y+sz*0.42,r:sz*0.06,fill:`hsl(${hue} 50% 35%)`},g);
+ if(label)el("text",{x:x+sz/2,y:y+sz+14,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},g).textContent=label;
+}
+/* 두 이미지 α-blend (opacity로 겹침) */
+function blendTile(s,x,y,sz,lam){
+ imgTile(s,x,y,sz,210,null);
+ const g=el("g",{opacity:1-lam},s);
+ el("rect",{x:x,y:y,width:sz,height:sz,rx:6,fill:"hsl(25 45% 85%)"},g);
+ el("circle",{cx:x+sz*0.5,cy:y+sz*0.52,r:sz*0.26,fill:"hsl(25 50% 60%)"},g);
+ el("circle",{cx:x+sz*0.4,cy:y+sz*0.42,r:sz*0.06,fill:"hsl(25 50% 35%)"},g);
+ el("circle",{cx:x+sz*0.6,cy:y+sz*0.42,r:sz*0.06,fill:"hsl(25 50% 35%)"},g);
+}
+function labelBars(s,x,y,lam){
+ el("text",{x:x,y:y-6,"font-size":9,fill:"#3f5f7d"},s).textContent="개";
+ el("rect",{x:x+30,y:y-14,width:lam*90,height:11,rx:2,fill:"#5b8bb0"},s);
+ el("text",{x:x+30+lam*90+4,y:y-5,"font-size":8.5,fill:"#8a7d79"},s).textContent=lam.toFixed(2);
+ el("text",{x:x,y:y+14,"font-size":9,fill:"#9a4e1e"},s).textContent="고양이";
+ el("rect",{x:x+30,y:y+6,width:(1-lam)*90,height:11,rx:2,fill:"#c9743e"},s);
+ el("text",{x:x+30+(1-lam)*90+4,y:y+15,"font-size":8.5,fill:"#8a7d79"},s).textContent=(1-lam).toFixed(2);
+}
+
+const STEPS=[
+ {zone:"0",t:"두 예제를 무작위로 뽑기",
+  d:"학습 데이터에서 아무 두 예제 (xᵢ, yᵢ)와 (xⱼ, yⱼ)를 뽑는다. 서로 다른 클래스여도 상관없다 — 여기서는 '개'와 '고양이'를 예로 든다. mixup은 이 둘을 섞어 그 사이의 가상 예제를 만든다.",
+  sh:"(xᵢ,yᵢ), (xⱼ,yⱼ)",v:h=>{const s=miniSvg();imgTile(s,45,35,64,210,"예제 i (개)");imgTile(s,190,35,64,25,"예제 j (고양이)");h.appendChild(s);}},
+ {zone:"1",t:"섞는 비율 λ 뽑기",
+  d:"Beta(α, α) 분포에서 섞는 비율 λ ∈ [0,1]을 하나 뽑는다. α는 하이퍼파라미터로, 얼마나 강하게 섞을지를 정한다. α가 0에 가까우면 λ는 거의 0 아니면 1이라 사실상 안 섞이고(기존 학습=ERM), 커지면 0.5 근처로 강하게 섞인다.",
+  sh:"λ ~ Beta(α, α)",v:h=>{const s=miniSvg();
+   /* Beta 곡선 미니 */
+   el("path",{d:betaPath(0.4,40,200,110,60),fill:"none",stroke:"#c99b4e","stroke-width":2},s);
+   el("text",{x:150,y:130,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="α=0.4일 때 λ 분포 (양 끝 선호)";
+   el("text",{x:44,y:125,"font-size":8,fill:"#b0a49e"},s).textContent="0";
+   el("text",{x:196,y:125,"font-size":8,fill:"#b0a49e"},s).textContent="1";
+   h.appendChild(s);}},
+ {zone:"2",t:"이미지 선형 결합",
+  d:"두 이미지를 λ : (1−λ) 비율로 픽셀 단위 선형 결합한다. x̃ = λxᵢ + (1−λ)xⱼ. λ=0.5면 두 이미지가 반투명하게 겹친 모습이 된다 — 개도 고양이도 아닌 '그 사이'의 이미지다.",
+  sh:"x̃ = λxᵢ + (1−λ)xⱼ",v:h=>{const s=miniSvg();blendTile(s,118,25,64,0.5);
+   el("text",{x:150,y:105,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="λ=0.5: 두 이미지가 반씩 겹침";h.appendChild(s);}},
+ {zone:"3",t:"라벨도 같은 비율로 결합",
+  d:"핵심은 라벨도 똑같이 섞는다는 것이다. one-hot 라벨을 같은 λ로 결합해 ỹ = λyᵢ + (1−λ)yⱼ를 만든다. 즉 정답이 '개 100%'가 아니라 '개 λ, 고양이 (1−λ)'인 soft label이 된다.",
+  sh:"ỹ = λyᵢ + (1−λ)yⱼ",v:h=>{const s=miniSvg();labelBars(s,60,70,0.5);
+   el("text",{x:150,y:130,"font-size":9.5,fill:"#8a7d79","text-anchor":"middle"},s).textContent="λ=0.5: 개 0.5 / 고양이 0.5 (soft)";h.appendChild(s);}},
+ {zone:"4",t:"가상 예제 완성",
+  d:"섞인 이미지 x̃와 섞인 라벨 ỹ가 하나의 가상 학습 예제가 된다. 이런 예제를 학습에 쓰면, 모델은 '입력을 조금씩 섞으면 출력도 그만큼 섞여야 한다'는 선형적 규칙을 배우게 되어 더 부드럽게 일반화한다.",
+  sh:"(x̃, ỹ)",v:h=>{const s=miniSvg();blendTile(s,40,30,58,0.5);labelBars(s,140,60,0.5);
+   el("text",{x:150,y:130,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="이미지 + 라벨이 한 쌍으로";h.appendChild(s);}},
+ {zone:"5",t:"기존 학습에 그대로 투입",
+  d:"mixup은 모델 구조도 손실 함수도 바꾸지 않는다. 단지 학습 배치를 이 가상 예제로 대체할 뿐이다 — 몇 줄의 코드로 어떤 모델에도 붙일 수 있다. 그럼에도 CIFAR·ImageNet에서 일반화·강건성을 크게 높였다.",
+  sh:"기존 파이프라인 재사용",v:h=>{h.innerHTML='<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;">mixup의 기여는 <b>데이터를 선형 결합하는 몇 줄</b>만으로 일반화·강건성·라벨 노이즈 저항을 높인다는 것이다. 모델·손실은 그대로다. ↓ 아래에서 λ와 α를 직접 조작해 보세요.</div>';}}
+];
+
+/* Beta 분포 PDF 근사 → SVG path */
+function betaPDF(x,a,b){if(x<=0||x>=1)return 0;return Math.pow(x,a-1)*Math.pow(1-x,b-1);}
+function betaPath(alpha,x0,x1,ybase,h){
+ const a=alpha,b=alpha;const N=60;let pts=[];let maxv=0;
+ for(let i=0;i<=N;i++){const x=i/N;const v=betaPDF(Math.min(0.999,Math.max(0.001,x)),a,b);maxv=Math.max(maxv,Math.min(v,8));}
+ for(let i=0;i<=N;i++){const x=i/N;let v=betaPDF(Math.min(0.999,Math.max(0.001,x)),a,b);v=Math.min(v,8);
+  const px=x0+x*(x1-x0);const py=ybase-(v/maxv)*h;pts.push((i===0?"M":"L")+px.toFixed(1)+" "+py.toFixed(1));}
+ return pts.join(" ");
+}
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== λ·α 실험실 ===== */
+const mixSvg=$("mix-svg"),betaSvg=$("beta-svg");
+let lam=0.5,alpha=0.4;
+
+function renderMix(){
+ /* 결합 이미지: 개(파랑 210) 위에 고양이(주황 25)를 opacity=1-lam로 */
+ mixSvg.innerHTML="";
+ const sz=100,x=50,y=15;
+ /* 개 */
+ el("rect",{x:x,y:y,width:sz,height:sz,rx:8,fill:"hsl(210 45% 82%)"},mixSvg);
+ el("circle",{cx:x+sz*0.5,cy:y+sz*0.54,r:sz*0.28,fill:"hsl(210 50% 58%)"},mixSvg);
+ el("circle",{cx:x+sz*0.38,cy:y+sz*0.42,r:sz*0.07,fill:"hsl(210 50% 34%)"},mixSvg);
+ el("circle",{cx:x+sz*0.62,cy:y+sz*0.42,r:sz*0.07,fill:"hsl(210 50% 34%)"},mixSvg);
+ /* 고양이 (opacity=1-lam) */
+ const g=el("g",{opacity:(1-lam).toFixed(2)},mixSvg);
+ el("rect",{x:x,y:y,width:sz,height:sz,rx:8,fill:"hsl(25 48% 80%)"},g);
+ el("polygon",{points:`${x+sz*0.35},${y+sz*0.3} ${x+sz*0.5},${y+sz*0.55} ${x+sz*0.65},${y+sz*0.3}`,fill:"hsl(25 52% 55%)"},g);
+ el("circle",{cx:x+sz*0.5,cy:y+sz*0.6,r:sz*0.2,fill:"hsl(25 52% 55%)"},g);
+ el("text",{x:x+sz/2,y:y+sz+18,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},mixSvg).textContent="λ="+lam.toFixed(2)+" 개 / "+(1-lam).toFixed(2)+" 고양이";
+}
+function renderLabels(){
+ $("d-lam-v").textContent=lam.toFixed(2);
+ $("lv-a").textContent=lam.toFixed(2);$("lv-b").textContent=(1-lam).toFixed(2);
+ /* 2단계 애니메이션: 0폭 → 최종폭 */
+ const ba=$("lbar-a"),bb=$("lbar-b");
+ ba.style.width="0%";bb.style.width="0%";
+ requestAnimationFrame(()=>{ba.style.width=(lam*100)+"%";bb.style.width=((1-lam)*100)+"%";});
+}
+function renderBeta(){
+ $("d-alpha-v").textContent=alpha.toFixed(1);
+ betaSvg.innerHTML="";
+ /* 축 */
+ el("line",{x1:20,y1:105,x2:205,y2:105,stroke:"#dfd3c9","stroke-width":1},betaSvg);
+ el("text",{x:20,y:120,"font-size":8,fill:"#b0a49e"},betaSvg).textContent="0";
+ el("text",{x:110,y:120,"font-size":8,fill:"#b0a49e","text-anchor":"middle"},betaSvg).textContent="λ";
+ el("text",{x:200,y:120,"font-size":8,fill:"#b0a49e","text-anchor":"end"},betaSvg).textContent="1";
+ el("path",{d:betaPath(alpha,20,205,105,80),fill:"none",stroke:"#c99b4e","stroke-width":2},betaSvg);
+ /* 현재 λ 위치 표시 */
+ const px=20+lam*185;
+ el("line",{x1:px,y1:25,x2:px,y2:105,stroke:"#8c2f39","stroke-width":1,"stroke-dasharray":"3 3"},betaSvg);
+ el("circle",{cx:px,cy:105,r:3,fill:"#8c2f39"},betaSvg);
+ const desc=alpha<0.5?"양 끝 선호 (거의 안 섞임, ERM에 가까움)":alpha<1.2?"완만 (다양한 비율)":"가운데 선호 (강하게 섞임)";
+ el("text",{x:112,y:16,"font-size":8.5,fill:"#8a7d79","text-anchor":"middle"},betaSvg).textContent="α="+alpha.toFixed(1)+": "+desc;
+}
+$("d-lam").addEventListener("input",e=>{lam=+e.target.value;renderMix();renderLabels();renderBeta();});
+$("d-alpha").addEventListener("input",e=>{alpha=+e.target.value;renderBeta();});
+
+/* ===== 결정경계 비교 (ERM vs mixup) ===== */
+(function decisionBoundary(){
+ const ptsA=[[40,45],[62,70],[45,95],[75,50],[55,120],[85,88]];
+ const ptsB=[[175,55],[150,85],[168,110],[140,60],[185,95],[158,125]];
+ function dots(svg){
+  ptsA.forEach(p=>el("circle",{cx:p[0],cy:p[1],r:4.5,fill:"#5b8bb0",stroke:"#fff","stroke-width":1},svg));
+  ptsB.forEach(p=>el("circle",{cx:p[0],cy:p[1],r:4.5,fill:"#c9743e",stroke:"#fff","stroke-width":1},svg));
+ }
+ const erm=$("db-erm");
+ el("path",{d:"M110 4 L98 28 L120 50 L102 73 L124 96 L100 118 L116 140",fill:"none",stroke:"#8c2f39","stroke-width":2},erm);
+ dots(erm);
+ el("text",{x:110,y:148,"font-size":8,fill:"#a06e6e","text-anchor":"middle"},erm).textContent="급격·진동";
+ const mix=$("db-mix");
+ const grad='<defs><linearGradient id="tzone" x1="0" x2="1"><stop offset="0%" stop-color="#5b8bb0" stop-opacity="0.12"/><stop offset="50%" stop-color="#b0a49e" stop-opacity="0.18"/><stop offset="100%" stop-color="#c9743e" stop-opacity="0.12"/></linearGradient></defs>';
+ mix.insertAdjacentHTML("afterbegin",grad);
+ el("rect",{x:88,y:0,width:44,height:150,fill:"url(#tzone)"},mix);
+ el("path",{d:"M110 4 C 106 40, 114 60, 110 75 C 106 90, 114 110, 110 140",fill:"none",stroke:"#3e6b4c","stroke-width":2},mix);
+ dots(mix);
+ el("text",{x:110,y:148,"font-size":8,fill:"#3e6b4c","text-anchor":"middle"},mix).textContent="부드러운 전이대";
+})();
+
+/* 초기화 */
+setStep(0);
+renderMix();renderLabels();renderBeta();
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

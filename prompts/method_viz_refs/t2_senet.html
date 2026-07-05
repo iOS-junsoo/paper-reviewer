@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T2 · SE-Net — 2.5D isometric 특징맵 볼륨 + 스테퍼)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: SE Networks(1709.01507). Squeeze=GAP(HxWxC->1x1xC), Excitation=FC(C->C/r,ReLU)->FC(C/r->C,sigmoid), Scale=채널곱, r=16.
+  주: 2.5D 채택 = 특징맵 볼륨이 주인공, 공간을 눌러 채널만 남김을 부피로 표현. 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SE-Net (T2)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --teal:#4d9e8a;--teal-face:#dcefe9;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#2f6b5a;
+    background:var(--teal-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 440px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot{filter:drop-shadow(0 0 7px rgba(140,47,57,.4));}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .zlabel{font-size:10.5px;font-weight:600;fill:#3b3231;}
+  .zsub{font-size:9px;fill:#8a7d79;}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .ro{display:inline-block;background:var(--accent-faint);border-radius:8px;padding:6px 13px;text-align:center;margin-right:10px;}
+  .ro .v{font-size:15px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;}
+  .ro .k{font-size:10px;color:#a06e6e;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>SE-Net<span class="type-badge">T2 · 모듈 제안</span></h1>
+<p class="lead">SE(Squeeze-and-Excitation) 블록은 기존 CNN에 <b>끼워 넣는 부품</b>이다. 특징맵의 채널마다 "얼마나 중요한지"를 학습해 채널별로 다시 강조/억제한다. 왼쪽 입체 구조도에서 <b>H×W×C 특징맵 볼륨</b>이 어떻게 눌리고(Squeeze) 채널 가중치로 바뀌어(Excitation) 다시 곱해지는지(Scale) 스테퍼로 따라간다. 아래에서 reduction ratio r을 조작할 수 있다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 440 560" width="100%" role="img" aria-label="SE 블록 2.5D 구조: 특징맵 볼륨이 Squeeze로 눌리고 Excitation으로 채널 가중치가 되어 Scale로 재조정된다">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+        <text x="220" y="24" font-size="11" font-weight="600" fill="#2f6b5a" text-anchor="middle">SE 블록 — 특징맵 볼륨의 여정</text>
+        <!-- 존 그룹: 큐보이드는 JS가 채움. 라벨 위치만 예약 -->
+        <g class="zone" data-zone="0" id="z0"></g>
+        <g class="zone" data-zone="1" id="z1"></g>
+        <g class="zone" data-zone="2" id="z2"></g>
+        <g class="zone" data-zone="3" id="z3"></g>
+        <g class="zone" data-zone="4" id="z4"></g>
+        <g class="zone" data-zone="5" id="z5"></g>
+        <!-- 흐름선 (JS가 배치 후 그리기 어려우므로 정적 세로선) -->
+        <line class="flowline" x1="125" y1="500" x2="125" y2="446" marker-end="url(#ah)"/>
+        <line class="flowline" x1="125" y1="432" x2="125" y2="370" marker-end="url(#ah)"/>
+        <line class="flowline" x1="125" y1="358" x2="125" y2="296" marker-end="url(#ah)"/>
+        <line class="flowline" x1="125" y1="284" x2="125" y2="248" marker-end="url(#ah)"/>
+        <line class="flowline" x1="125" y1="204" x2="125" y2="174" marker-end="url(#ah)"/>
+        <!-- 원본 U가 Scale로 가는 우회 (초록 점선): 큐보이드 왼쪽으로 크게 돌아 Scale 진입 -->
+        <path class="flowline" d="M90 527 C 46 527 46 225 88 225" fill="none" stroke="#4d9e8a" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+        <text x="40" y="380" font-size="8.5" fill="#4d9e8a" text-anchor="middle" transform="rotate(-90 40 380)">원본 U 그대로</text>
+        <path id="flowpath" d="M125 527 L125 170" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>reduction ratio r — 용량 vs 연산량</h2>
+    <p class="desc">Excitation의 병목 크기를 정하는 r을 조작해 본다. r이 작으면 중간층(C/r)이 커져 표현력은 늘지만 파라미터도 늘고, r이 크면 반대다. 논문은 <b>r=16이 정확도와 연산량의 균형점</b>이라고 보고했다. 아래 채널 볼륨은 SE 블록이 학습한 채널별 가중치 s로, 어떤 채널을 강조/억제할지를 높이로 나타낸다(예시 패턴).</p>
+    <div style="margin-bottom:12px;">
+      <span class="ro"><span class="v" id="ro-mid">32</span><span class="k">중간층 C/r (C=512)</span></span>
+      <span class="ro"><span class="v" id="ro-param">~66K</span><span class="k">SE 추가 파라미터(예시)</span></span>
+    </div>
+    <svg id="lab-svg" viewBox="0 0 640 150" width="100%" style="max-width:640px;" role="img" aria-label="채널별 가중치 볼륨"></svg>
+    <div class="dctrl">
+      <label for="d-r">reduction ratio r</label>
+      <input type="range" id="d-r" min="2" max="64" step="1" value="16">
+      <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:34px;text-align:right;" id="d-r-v">16</span>
+    </div>
+    <p class="note">채널 가중치 s는 SE 블록의 동작(채널 재조정)을 보여주는 정성적 예시값이며, 특정 이미지의 실제 학습값이 아니다. 파라미터 수는 2·C²/r 근사(C=512)로 계산한 예시다. r=16 균형점만 논문 §6.1의 실제 결론이다. r이 클수록 가중치가 평탄해지는 것은 병목 축소의 일반적 경향을 반영한 정성적 표현이다(논문이 직접 측정한 값 아님).</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+
+/* ===== isometric 큐보이드 ===== */
+/* (x,y)=정면 좌상단, w=너비(=공간 W), fh=정면높이(=공간 H), d=깊이(=채널 C) */
+const IX=0.86, IY=0.5;  /* 깊이 투영 계수 */
+function cuboid(g,x,y,w,fh,d,faceF,topF,sideF,opacity){
+ const o=opacity!==undefined?opacity:1;
+ /* 윗면 */
+ el("polygon",{points:`${x},${y} ${x+w},${y} ${x+w+d*IX},${y-d*IY} ${x+d*IX},${y-d*IY}`,
+   fill:topF,stroke:"#00000018","stroke-width":.5,opacity:o},g);
+ /* 옆면(오른쪽) */
+ el("polygon",{points:`${x+w},${y} ${x+w+d*IX},${y-d*IY} ${x+w+d*IX},${y+fh-d*IY} ${x+w},${y+fh}`,
+   fill:sideF,stroke:"#00000018","stroke-width":.5,opacity:o},g);
+ /* 정면 */
+ el("rect",{x:x,y:y,width:w,height:fh,fill:faceF,stroke:"#00000022","stroke-width":.6,opacity:o},g);
+}
+/* 채널 슬래브 스택: 깊이 방향으로 얇은 판 n개 (채널 강조) */
+function slabStack(g,x,y,w,fh,n,slabD,gap,colorFn){
+ for(let i=n-1;i>=0;i--){
+  const off=i*(slabD+gap);
+  const fx=x+off*IX, fy=y-off*IY;
+  cuboid(g,fx,fy,w,fh,slabD,colorFn(i,'face'),colorFn(i,'top'),colorFn(i,'side'));
+ }
+}
+
+/* 존별 볼륨 배치 (구조도) */
+function drawStructure(){
+ /* z0: 입력 볼륨 H×W×C (큰 큐보이드) */
+ /* 라벨은 큐보이드 오른쪽 여백(x=300~)에 왼쪽정렬로 배치해 볼륨과 겹치지 않게 함 */
+ const LX=300;
+ const g0=$("z0");
+ cuboid(g0,90,500,70,54,40,"#cfeae0","#a8dccb","#7fc4b0");
+ el("text",{x:LX,y:522,class:"zlabel"},g0).textContent="특징맵 U";
+ el("text",{x:LX,y:535,class:"zsub"},g0).textContent="H × W × C";
+ /* z1: Squeeze → 얇은 판 1×1×C */
+ const g1=$("z1");
+ cuboid(g1,90,432,70,12,40,"#e7f4ef","#c8e8dd","#9fd3c2");
+ el("text",{x:LX,y:428,class:"zlabel"},g1).textContent="Squeeze (GAP)";
+ el("text",{x:LX,y:441,class:"zsub"},g1).textContent="1×1×C · 공간 압축";
+ /* z2: Excitation FC1 (병목, 얇고 짧음) */
+ const g2=$("z2");
+ cuboid(g2,110,358,32,10,26,"#ece3f5","#d6c9ea","#b7a6d4");
+ el("text",{x:LX,y:354,class:"zlabel"},g2).textContent="FC1 + ReLU";
+ el("text",{x:LX,y:367,class:"zsub"},g2).textContent="C → C/r (병목)";
+ /* z3: Excitation FC2 (다시 C, 가중치) */
+ const g3=$("z3");
+ cuboid(g3,90,284,70,10,40,"#e0d3f0","#c9b7e2","#a68fc9");
+ el("text",{x:LX,y:280,class:"zlabel"},g3).textContent="FC2 + Sigmoid";
+ el("text",{x:LX,y:293,class:"zsub"},g3).textContent="채널 가중치 s";
+ /* z4: Scale → 재조정 볼륨 */
+ const g4=$("z4");
+ cuboid(g4,90,204,70,42,40,"#f4e0e3","#e8bcc2","#d89aa2");
+ el("text",{x:LX,y:222,class:"zlabel"},g4).textContent="Scale (⊗)";
+ el("text",{x:LX,y:235,class:"zsub"},g4).textContent="채널별 U × s";
+ /* z5: 출력 */
+ const g5=$("z5");
+ cuboid(g5,94,150,62,22,36,"#f4e6e4","#e6c9c6","#d5a8a2");
+ el("text",{x:LX,y:150,class:"zlabel"},g5).textContent="재조정된";
+ el("text",{x:LX,y:163,class:"zsub"},g5).textContent="특징맵 출력";
+}
+drawStructure();
+
+/* SE-ResNet 삽입 인셋: SE 블록이 잔차 분기에 놓여 identity와 합산 전 재조정 */
+(function insertInset(){
+ const svg=document.querySelector(".col-struct svg");
+ const g=document.createElementNS("http://www.w3.org/2000/svg","g");
+ svg.appendChild(g);
+ function box(x,y,w,h,fill,stroke,txt,sub){
+  el("rect",{x:x,y:y,width:w,height:h,rx:5,fill:fill,stroke:stroke,"stroke-width":0.8},g);
+  el("text",{x:x+w/2,y:sub?y+h/2-2:y+h/2+3,"font-size":8,"font-weight":600,fill:stroke,"text-anchor":"middle"},g).textContent=txt;
+  if(sub)el("text",{x:x+w/2,y:y+h/2+9,"font-size":6.5,fill:stroke,"text-anchor":"middle"},g).textContent=sub;
+ }
+ /* 인셋 테두리 + 제목 */
+ el("rect",{x:250,y:34,width:185,height:104,rx:8,fill:"#fbf8f4",stroke:"#e2d5c9","stroke-width":0.8},g);
+ el("text",{x:342,y:47,"font-size":8.5,"font-weight":600,fill:"#7a4a1d","text-anchor":"middle"},g).textContent="SE 블록은 어디에 꽂히나";
+ el("text",{x:342,y:57,"font-size":7,fill:"#a97b4e","text-anchor":"middle"},g).textContent="SE-ResNet: 잔차 분기 안, 합산 전";
+ /* 세로 흐름: 입력 → conv → SE → ⊕ */
+ box(300,64,84,15,"#eef4f9","#5b8bb0","입력 X");
+ box(300,86,84,15,"#fdfbf9","#b56a70","conv 블록","특징맵 U");
+ box(300,112,84,15,"#f4e0e3","#8c2f39","SE 재조정","U → Ũ");
+ /* 화살표 */
+ el("line",{x1:342,y1:79,x2:342,y2:85,stroke:"#c9bab0","stroke-width":1,"marker-end":"url(#ah)"},g);
+ el("line",{x1:342,y1:101,x2:342,y2:111,stroke:"#c9bab0","stroke-width":1,"marker-end":"url(#ah)"},g);
+ /* identity skip + ⊕ 합산 */
+ el("path",{d:"M300 71 C 272 71, 272 120, 296 120",fill:"none",stroke:"#5b8bb0","stroke-width":1,"stroke-dasharray":"3 2"},g);
+ el("text",{x:266,y:97,"font-size":6.5,fill:"#5b8bb0","text-anchor":"middle",transform:"rotate(-90 266 97)"},g).textContent="identity";
+ el("circle",{cx:389,cy:119,r:6,fill:"#fff",stroke:"#8c2f39","stroke-width":1},g);
+ el("text",{x:389,y:122,"font-size":9,fill:"#8c2f39","text-anchor":"middle"},g).textContent="⊕";
+ el("line",{x1:384,y1:119,x2:395,y2:119,stroke:"none"},g);
+ el("path",{d:"M300 119 C 292 130, 383 132, 389 126",fill:"none",stroke:"#c9bab0","stroke-width":0.8,"stroke-dasharray":"2 2"},g);
+})();
+/* ===== 데이터 여정용 미니 isometric 헬퍼 (독립 SVG) ===== */
+function miniSvg(){const s=el("svg",{viewBox:"0 0 300 165",width:"100%",style:"max-width:320px;"});return s;}
+/* 데이터 막대용: baseline(BL) 고정 + 위로 자람 */
+const BL=118;
+function bar3d(s,x,bw,val,maxH,faceF,topF,sideF){
+ const hgt=6+val*maxH;
+ cuboid(s,x,BL-hgt,bw,hgt,10,faceF,topF,sideF);
+ return hgt;
+}
+
+let seed=8;const rnd=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648;
+const CH_ACT=[0.3,0.85,0.5,0.2,0.7,0.95,0.4,0.6];
+const CH_S  =[0.25,0.9,0.55,0.15,0.75,0.98,0.35,0.62];
+
+const STEPS=[
+ {zone:"0",t:"입력 특징맵 볼륨 U",
+  d:"conv 층이 만든 특징맵이 들어온다. 가로·세로(H×W) 공간 정보를 가진 채널이 C개(예: 512) 깊이 방향으로 쌓인 하나의 볼륨이다. 문제는 이 채널들이 중요도 구분 없이 다음 층으로 넘어간다는 점이다.",
+  sh:"H × W × C",v:h=>{const s=miniSvg();seed=8;
+   /* 채널 슬래브 스택으로 볼륨 표현. 위쪽에 배치해 캡션과 분리 */
+   slabStack(s,70,88,64,40,8,9,3,(i,f)=>({face:"#cfeae0",top:"#a8dccb",side:"#7fc4b0"}[f]));
+   el("text",{x:150,y:158,class:"zsub","text-anchor":"middle"},s).textContent="채널이 깊이로 쌓인 볼륨 (8개만 표시)";
+   h.appendChild(s);}},
+ {zone:"1",t:"Squeeze — 전역 평균 풀링",
+  d:"각 채널의 H×W 공간 전체를 하나의 숫자로 압축한다(global average pooling). 볼륨의 가로·세로가 사라지고 깊이(채널)만 남는다 — 채널 하나당 스칼라 하나, 즉 '이 채널이 이미지 전반에서 얼마나 활성화됐나'를 요약한다.",
+  sh:"H × W × C → 1 × 1 × C",v:h=>{const s=miniSvg();
+   /* 눌리는 과정: 볼륨 → 얇은 판. 채널별 활성 높이 막대 */
+   const bw=22,gap=6,ox=40;
+   CH_ACT.forEach((a,i)=>{const x=ox+i*(bw+gap);bar3d(s,x,bw,a,34,"#4d9e8a","#7bc2b0","#3a7d6d");});
+   el("text",{x:150,y:148,class:"zsub","text-anchor":"middle"},s).textContent="채널별 평균 활성 z (공간이 눌려 사라짐)";
+   h.appendChild(s);}},
+ {zone:"2",t:"Excitation ① — FC + ReLU (병목)",
+  d:"채널 서술자를 C→C/r로 줄이는 완전연결층에 통과시킨다. 이 병목이 채널 간 관계를 압축해 학습하게 하고 파라미터도 절약한다. r이 reduction ratio다. ReLU 비선형이 붙는다.",
+  sh:"1 × 1 × C/r",v:h=>{const s=miniSvg();const mid=[0.5,0.75,0.35,0.6];const bw=26,gap=8,ox=70;
+   mid.forEach((a,i)=>{const x=ox+i*(bw+gap);bar3d(s,x,bw,a,34,"#9a86bd","#b7a6d4","#7a68a0");});
+   el("text",{x:150,y:148,class:"zsub","text-anchor":"middle"},s).textContent="C/r로 압축된 병목 (8→4 축약 표시)";
+   h.appendChild(s);}},
+ {zone:"3",t:"Excitation ② — FC + Sigmoid",
+  d:"병목을 다시 C로 되돌리고 sigmoid를 씌운다. 결과는 채널마다 0~1 사이 가중치 s다 — 각 채널을 얼마나 강조(1에 가까움)하거나 억제(0에 가까움)할지를 나타내는 채널 중요도다.",
+  sh:"1 × 1 × C (가중치 s)",v:h=>{const s=miniSvg();const bw=22,gap=6,ox=40;
+   CH_S.forEach((w,i)=>{const x=ox+i*(bw+gap);const c=80-w*35;
+    bar3d(s,x,bw,w,34,`hsl(275 35% ${c}%)`,`hsl(275 35% ${c+12}%)`,`hsl(275 30% ${c-12}%)`);
+    el("text",{x:x+bw/2,y:132,"font-size":8,fill:"#8a7d79","text-anchor":"middle"},s).textContent=w.toFixed(2);});
+   el("text",{x:150,y:150,class:"zsub","text-anchor":"middle"},s).textContent="채널 가중치 s (높을수록 강조, 예시)";
+   h.appendChild(s);}},
+ {zone:"4",t:"Scale — 채널별 재조정",
+  d:"원본 볼륨 U의 각 채널에 그 채널의 가중치 s를 곱한다. 중요한 채널 슬래브는 살아남고 덜 중요한 슬래브는 눌린다. 공간(H×W)은 그대로 두고 채널 축만 재조정하는 것이 SE 블록의 핵심이다.",
+  sh:"H × W × C (재조정됨)",v:h=>{const s=miniSvg();const bw=22,gap=6,ox=40;
+   CH_ACT.forEach((a,i)=>{const after=a*CH_S[i];const x=ox+i*(bw+gap);
+    const strong=CH_S[i]>0.6;
+    bar3d(s,x,bw,after,34,strong?"#8c2f39":"#e0cbcd",strong?"#a84551":"#ecdcdd",strong?"#6e2530":"#d1b9bb");});
+   el("text",{x:150,y:148,class:"zsub","text-anchor":"middle"},s).textContent="ch2·ch6 강조, ch1·ch4 억제 (예시)";
+   h.appendChild(s);}},
+ {zone:"5",t:"다음 층으로 (부품 완성)",
+  d:"재조정된 볼륨이 다음 conv 층으로 넘어간다. SE 블록은 기존 네트워크 어디에나 끼워 넣을 수 있는 부품이라, ResNet·Inception 등 여러 백본에 이식돼 정확도를 높였다(ILSVRC 2017 우승).",
+  sh:"H × W × C",v:h=>{h.innerHTML='<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;">SE 블록은 채널 간 <b>상호 의존성</b>을 명시적으로 모델링하는 작은 부품이다. 계산 비용은 거의 안 늘면서 여러 백본에서 일관되게 성능을 올렸다. ↓ 아래에서 r을 조작해 보세요.</div>';}}
+];
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3000);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== reduction ratio 실험실 (2.5D 채널 볼륨) ===== */
+const C_TOTAL=512;
+const labSvg=$("lab-svg");
+const BASE_S=[0.2,0.9,0.55,0.15,0.75,0.98,0.35,0.62,0.45,0.8,0.3,0.7];
+function renderRatio(r){
+ const mid=Math.max(1,Math.round(C_TOTAL/r));
+ $("ro-mid").textContent=mid;
+ const params=Math.round(2*C_TOTAL*C_TOTAL/r);
+ $("ro-param").textContent="~"+(params/1000).toFixed(0)+"K";
+ $("d-r-v").textContent=r;
+ const sharp=Math.min(1,16/r);
+ labSvg.innerHTML="";
+ const bw=34,gap=8,ox=30;
+ BASE_S.forEach((s0,i)=>{
+  const s=0.55+(s0-0.55)*sharp;
+  const x=ox+i*(bw+gap);
+  const g=el("g",{},labSvg);
+  const c=80-s*38;
+  /* 초기 높이 0 → 다음 프레임에 최종 높이로 (2단계 애니메이션) */
+  const targetH=6+s*90;
+  const rect=el("rect",{x:x,y:130,width:bw,height:0,fill:`hsl(275 35% ${c}%)`,rx:2,style:"transition:height .45s,y .45s;"},g);
+  const top=el("polygon",{points:`${x},130 ${x+bw},130 ${x+bw+8},122 ${x+8},122`,fill:`hsl(275 35% ${c+12}%)`,opacity:0,style:"transition:opacity .45s;"},g);
+  el("text",{x:x+bw/2,y:145,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},g).textContent=s.toFixed(2);
+  requestAnimationFrame(()=>{rect.setAttribute("y",130-targetH);rect.setAttribute("height",targetH);
+   top.setAttribute("points",`${x},${130-targetH} ${x+bw},${130-targetH} ${x+bw+8},${122-targetH} ${x+8},${122-targetH}`);
+   top.setAttribute("opacity",1);});
+ });
+}
+$("d-r").addEventListener("input",e=>renderRatio(+e.target.value));
+
+/* 초기화 */
+setStep(0);
+renderRatio(16);
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

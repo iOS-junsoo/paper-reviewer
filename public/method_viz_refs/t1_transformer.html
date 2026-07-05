@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T1 · Transformer — 전체 전개 구조도 + 스테퍼, 드릴인 없음)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: Attention Is All You Need(1706.03762). N=6, d_model=512, h=8, d_k=d_v=64, d_ff=2048, PE=sin/cos, scaled=√d_k.
+  주: 드릴인(클릭 확장) 없음. 구조는 처음부터 전부 표시, 스테퍼가 서브층을 순서대로 하이라이트.
+  파일: t1_transformer.html
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Transformer — Attention Is All You Need (T1)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --tan:#dfa878;--tan-face:#f5e2ca;--tan-side:#c8905e;
+    --purple:#9a86bd;--purple-face:#ece3f5;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#7a5a1e;
+    background:var(--tan-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 430px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.26;}
+  .zone.hot .zbox{filter:drop-shadow(0 0 6px rgba(140,47,57,.5));}
+  .zbox{transition:filter .35s;}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:150px;}
+  .cell{display:inline-block;width:12px;height:12px;border-radius:2px;margin:1px;}
+  .tokchip{display:inline-block;font-size:12.5px;font-weight:600;border:1px solid var(--accent-soft);
+    border-radius:8px;padding:5px 11px;margin:3px;background:#fff;}
+
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .dtok{display:inline-flex;flex-direction:column;align-items:center;margin:2px;cursor:pointer;}
+  .dtok .bar{width:66%;background:var(--accent-soft);border-radius:2px 2px 0 0;margin-top:5px;
+    transition:height .3s;height:2px;}
+  .dtok .chip{font-size:11.5px;font-weight:600;border:1px solid var(--line);border-radius:7px;
+    padding:4px 8px;background:#fff;margin-top:5px;}
+  .dtok.q .chip{border:2px solid var(--accent);color:var(--accent);}
+  .dtok .w{font-size:9.5px;color:var(--ink-soft);margin-top:2px;font-variant-numeric:tabular-nums;}
+  .drow{display:flex;align-items:flex-end;flex-wrap:wrap;margin-top:8px;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Transformer<span class="type-badge">T1 · 아키텍처 제안</span></h1>
+<p class="lead">Transformer는 순환·합성곱 없이 <b>어텐션만으로</b> 시퀀스를 처리하는 아키텍처다. 인코더·디코더의 모든 서브층이 왼쪽에 펼쳐져 있고, 스테퍼로 단계를 넘기면 해당 서브층이 활성화되며 데이터가 그리로 흐른다. 오른쪽에는 "I love you → 나는 너를 사랑해" 번역 한 건이 각 단계에서 어떻게 변하는지 나오고, 아래에서 셀프 어텐션을 직접 조작할 수 있다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 430 560" width="100%" role="img" aria-label="Transformer 전체 구조. 인코더·디코더의 모든 서브층이 펼쳐져 있고 스테퍼로 하나씩 활성화된다">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+
+        <!-- 인코더 ×6: 슬랩 6장 스택 (뒤 층일수록 위-오른쪽). 맨 앞 슬랩이 서브층을 담음 -->
+        <g id="enc-stack"></g>
+        <text x="100" y="120" font-size="11" font-weight="600" fill="#8c2f39" text-anchor="middle">인코더 × 6</text>
+        <!-- 디코더 ×6 슬랩 스택 -->
+        <g id="dec-stack"></g>
+        <text x="318" y="58" font-size="11" font-weight="600" fill="#8c2f39" text-anchor="middle">디코더 × 6</text>
+
+        <!-- zone0: 입력 임베딩 + PE -->
+        <g class="zone" data-zone="0">
+          <rect class="zbox" x="45" y="466" width="140" height="34" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="115" y="486" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">입력 임베딩 + PE</text>
+        </g>
+        <!-- zone1: 인코더 self-attn -->
+        <g class="zone" data-zone="1">
+          <rect class="zbox" x="45" y="388" width="140" height="42" rx="8" fill="var(--tan-face)" stroke="#c8905e"/>
+          <text x="115" y="405" font-size="10.5" font-weight="600" fill="#7a4a1d" text-anchor="middle">Multi-Head Attn</text>
+          <text x="115" y="420" font-size="9" fill="#a97b4e" text-anchor="middle">self · h=8, d_k=64</text>
+        </g>
+        <!-- zone2: 인코더 FFN -->
+        <g class="zone" data-zone="2">
+          <rect class="zbox" x="45" y="322" width="140" height="42" rx="8" fill="var(--tan-face)" stroke="#c8905e"/>
+          <text x="115" y="339" font-size="10.5" font-weight="600" fill="#7a4a1d" text-anchor="middle">Feed Forward</text>
+          <text x="115" y="354" font-size="9" fill="#a97b4e" text-anchor="middle">512→2048→512</text>
+        </g>
+        <text x="115" y="306" font-size="8.5" fill="#b56a70" text-anchor="middle">각 서브층: + 잔차 · LayerNorm</text>
+
+        <!-- zone3: 디코더 masked self-attn -->
+        <g class="zone" data-zone="3">
+          <rect class="zbox" x="263" y="388" width="140" height="42" rx="8" fill="var(--tan-face)" stroke="#c8905e"/>
+          <text x="333" y="405" font-size="10.5" font-weight="600" fill="#7a4a1d" text-anchor="middle">Masked Self-Attn</text>
+          <text x="333" y="420" font-size="9" fill="#a97b4e" text-anchor="middle">미래 토큰 차단</text>
+        </g>
+        <!-- zone4: cross-attn -->
+        <g class="zone" data-zone="4">
+          <rect class="zbox" x="263" y="306" width="140" height="46" rx="8" fill="var(--purple-face)" stroke="#9a86bd"/>
+          <text x="333" y="324" font-size="10.5" font-weight="600" fill="#574578" text-anchor="middle">Cross-Attention</text>
+          <text x="333" y="339" font-size="8.5" fill="#9a86bd" text-anchor="middle">Q=디코더 · K,V=인코더</text>
+        </g>
+        <!-- zone5: 디코더 FFN -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="263" y="240" width="140" height="42" rx="8" fill="var(--tan-face)" stroke="#c8905e"/>
+          <text x="333" y="257" font-size="10.5" font-weight="600" fill="#7a4a1d" text-anchor="middle">Feed Forward</text>
+          <text x="333" y="272" font-size="9" fill="#a97b4e" text-anchor="middle">512→2048→512</text>
+        </g>
+        <!-- zone6: linear+softmax -->
+        <g class="zone" data-zone="6">
+          <rect class="zbox" x="263" y="160" width="140" height="30" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="333" y="179" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">Linear + Softmax</text>
+        </g>
+        <!-- zone7: 출력 -->
+        <g class="zone" data-zone="7">
+          <rect class="zbox" x="263" y="112" width="140" height="30" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="333" y="131" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">다음 토큰 확률</text>
+        </g>
+
+        <!-- 흐름선 -->
+        <line class="flowline" x1="115" y1="466" x2="115" y2="432" marker-end="url(#ah)"/>
+        <line class="flowline" x1="115" y1="388" x2="115" y2="366" marker-end="url(#ah)"/>
+        <path class="flowline" d="M115 322 L115 210 L246 210" marker-end="url(#ah)"/>
+        <text x="168" y="204" font-size="9" font-weight="600" fill="#8c2f39">K,V</text>
+        <path class="flowline" d="M246 210 L224 210 L224 329 L261 329" marker-end="url(#ah)" opacity="0.5"/>
+        <line class="flowline" x1="333" y1="388" x2="333" y2="354" marker-end="url(#ah)"/>
+        <line class="flowline" x1="333" y1="306" x2="333" y2="284" marker-end="url(#ah)"/>
+        <line class="flowline" x1="333" y1="240" x2="333" y2="192" marker-end="url(#ah)"/>
+        <line class="flowline" x1="333" y1="160" x2="333" y2="144" marker-end="url(#ah)"/>
+        <!-- 입력 라벨 -->
+        <text x="115" y="520" font-size="9.5" fill="#3b3231" text-anchor="middle" font-weight="600">소스: I love you</text>
+        <text x="333" y="466" font-size="9.5" fill="#3b3231" text-anchor="middle" font-weight="600">타깃(생성 중)</text>
+        <line class="flowline" x1="333" y1="466" x2="333" y2="432" marker-end="url(#ah)"/>
+
+        <path id="flowpath" d="M115 500 L115 210 L224 210 L224 329 L333 329 L333 112" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 8</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 8</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>셀프 어텐션 실험실</h2>
+    <p class="desc">Transformer의 심장인 셀프 어텐션이다. 쿼리 토큰을 클릭하면 그 토큰이 다른 토큰에 배분하는 어텐션 가중치가 막대로 보인다. 슬라이더는 논문의 <b>1/√d_k 스케일링</b>(d_k=64)이 분포의 뾰족함에 주는 효과를 조절한다 — 스케일이 없으면 분포가 과하게 한쪽으로 쏠려 gradient가 작아진다는 것이 논문의 지적이다.</p>
+    <p style="font-size:12px;color:var(--ink-soft);">쿼리 토큰을 클릭하세요:</p>
+    <div class="drow" id="d-toks"></div>
+    <div class="dctrl">
+      <label for="d-temp">스케일 (1/√d_k 효과)</label>
+      <input type="range" id="d-temp" min="0.4" max="3" step="0.1" value="1">
+      <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:34px;text-align:right;" id="d-temp-v">1.0</span>
+    </div>
+    <p class="note">가중치는 논문의 대표 예시("it"이 지시 대상을 참조)를 재현한 정성적 예시값이며, 실제 학습된 값이 아니다. 구조 수치(N=6, d_model=512, h=8, d_k=64, d_ff=2048)는 논문의 base model 설정이다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const SRC=["I","love","you"];
+let seed=5;const rnd=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648;
+function cellRow(host,n,hue){const line=document.createElement("div");
+ for(let c=0;c<n;c++){const el=document.createElement("span");el.className="cell";
+  el.style.background=`hsl(${hue} 45% ${88-rnd()*45}%)`;line.appendChild(el);}
+ host.appendChild(line);}
+function labeledRows(host,hue,rs,toks){seed=rs;const w=document.createElement("div");
+ (toks||SRC).forEach(t=>{const row=document.createElement("div");
+  row.style.cssText="display:flex;align-items:center;gap:8px;margin:2px 0;";
+  row.innerHTML='<span style="font-size:11px;width:36px;color:#8a7d79;">'+t+'</span>';
+  const g=document.createElement("span");cellRow(g,20,hue);row.appendChild(g);w.appendChild(row);});
+ host.appendChild(w);}
+
+/* ===== 8스텝 (zone과 1:1, 서브층 단위) ===== */
+const STEPS=[
+ {zone:"0",t:"임베딩 + 위치 부호화",
+  d:"소스 토큰이 각각 512차원 벡터가 되고, 사인·코사인 위치 신호(PE)가 더해진다. 순환 구조가 없어 순서 정보를 이렇게 주입한다. 이후 모든 연산은 이 3×512 행렬 위에서 일어난다.",
+  sh:"3 × 512",v:h=>labeledRows(h,24,5)},
+ {zone:"1",t:"인코더 · 셀프 어텐션",
+  d:"세 토큰이 서로를 참조한다. QKᵀ를 √d_k(=8)로 나눠 3×3 유사도 행렬을 만들고 softmax로 확률화 — 'love'가 'I'와 'you'를 얼마나 보는지가 정해진다 (값은 예시). 8개 헤드가 병렬로 서로 다른 관계를 본다.",
+  sh:"3 × 3 어텐션 (헤드당)",v:h=>{const W=[[.62,.24,.14],[.20,.48,.32],[.15,.35,.50]];
+   const tb=document.createElement("div");tb.style.cssText="display:grid;grid-template-columns:38px repeat(3,42px);gap:3px;font-size:10.5px;";
+   tb.innerHTML='<span></span>'+SRC.map(t=>'<span style="text-align:center;color:#8a7d79;">'+t+'</span>').join("");
+   W.forEach((row,i)=>{tb.innerHTML+='<span style="color:#8a7d79;">'+SRC[i]+'</span>'+row.map(v=>'<span style="text-align:center;border-radius:4px;padding:7px 0;background:hsl(354 55% '+(92-v*50)+'%);color:#5a2229;font-weight:600;">'+v.toFixed(2)+'</span>').join("");});
+   h.appendChild(tb);}},
+ {zone:"2",t:"인코더 · FFN (+ 잔차·정규화)",
+  d:"토큰별로 동일한 2층 완전연결(512→2048→512)을 지난다. 어텐션이 토큰 간 정보를 섞었다면, FFN은 각 위치의 표현을 비선형으로 변환한다. 잔차 연결과 LayerNorm이 붙고, 이 블록 전체가 6번 반복된다.",
+  sh:"3 × 512 (표현 갱신)",v:h=>{labeledRows(h,354,21);
+   const cap=document.createElement("div");cap.style.cssText="font-size:10.5px;color:#8a7d79;margin-top:6px;";
+   cap.textContent="색 변화 = 문맥이 섞인 표현 (예시)";h.appendChild(cap);}},
+ {zone:"3",t:"디코더 · 마스크드 셀프 어텐션",
+  d:"생성 중인 타깃 토큰끼리 참조하되, 아직 만들지 않은 미래 토큰은 마스킹으로 가린다. 자기회귀 생성에서 정답을 미리 훔쳐보지 못하게 하는 장치다.",
+  sh:"t × t 하삼각 마스크",v:h=>{
+   const tb=document.createElement("div");tb.style.cssText="display:grid;grid-template-columns:repeat(4,30px);gap:3px;";
+   for(let r=0;r<4;r++)for(let c=0;c<4;c++){const on=c<=r;const el=document.createElement("span");
+    el.style.cssText="width:30px;height:22px;border-radius:3px;background:"+(on?"hsl(354 55% 72%)":"#efe8e0")+";";tb.appendChild(el);}
+   const wrap=document.createElement("div");wrap.appendChild(tb);
+   const cap=document.createElement("div");cap.style.cssText="font-size:10.5px;color:#8a7d79;margin-top:6px;";
+   cap.textContent="진한 칸 = 참조 허용, 흐린 칸 = 미래(차단)";wrap.appendChild(cap);h.appendChild(wrap);}},
+ {zone:"4",t:"디코더 · 크로스 어텐션",
+  d:"타깃 토큰(쿼리)이 인코더 출력(키·밸류)을 참조한다. '사랑해'를 생성할 때 소스의 어느 단어를 볼지 여기서 정해진다 — 번역의 정렬이 일어나는 지점이다 (값은 예시).",
+  sh:"1 × 3 (생성 토큰 → 소스)",v:h=>{const w=[.08,.71,.21];const box=document.createElement("div");
+   box.innerHTML='<div style="font-size:12px;font-weight:600;margin-bottom:8px;">"사랑해" 생성 시 소스 참조:</div>';
+   const row=document.createElement("div");row.style.cssText="display:flex;gap:16px;align-items:flex-end;height:84px;";
+   SRC.forEach((t,i)=>{const c=document.createElement("div");c.style.cssText="text-align:center;font-size:11px;color:#574578;";
+    c.innerHTML='<div style="width:42px;height:'+(w[i]*64)+'px;background:#9a86bd;border-radius:3px 3px 0 0;margin:0 auto;"></div><div style="margin-top:4px;">'+t+'</div><div style="color:#8a7d79;">'+w[i].toFixed(2)+'</div>';row.appendChild(c);});
+   box.appendChild(row);h.appendChild(box);}},
+ {zone:"5",t:"디코더 · FFN (× 6)",
+  d:"인코더와 동일한 구조의 완전연결층. 소스 참조까지 반영된 타깃 표현을 다듬는다. 디코더 블록도 6번 반복된다.",
+  sh:"t × 512",v:h=>labeledRows(h,354,33,["<s>","나는","너를"])},
+ {zone:"6",t:"Linear + Softmax",
+  d:"디코더 출력을 어휘 크기만큼의 로짓으로 투영하고 softmax로 확률을 만든다. 전체 어휘 각각에 대한 다음-토큰 확률이 된다.",
+  sh:"1 × |V| (어휘 크기)",v:h=>{const cand=[["사랑해",.64],["좋아해",.22],["사랑",.08],["원해",.04],["…",.02]];
+   const box=document.createElement("div");cand.forEach(([t,p])=>{const row=document.createElement("div");
+    row.style.cssText="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:11.5px;";
+    row.innerHTML='<span style="width:52px;color:#3b3231;">'+t+'</span><span style="height:12px;width:'+(p*240)+'px;background:'+(p>.5?"#8c2f39":"#d9b8ba")+';border-radius:3px;"></span><span style="color:#8a7d79;">'+p.toFixed(2)+'</span>';box.appendChild(row);});
+   h.appendChild(box);}},
+ {zone:"7",t:"다음 토큰 출력 → 반복",
+  d:"가장 확률 높은 '사랑해'가 출력되고, 이 토큰이 다시 디코더 입력이 되어 다음 단어를 생성한다. 문장이 끝날 때까지 자기회귀적으로 반복된다.",
+  sh:"토큰 1개 → 입력으로 재귀",v:h=>{const box=document.createElement("div");box.style.cssText="text-align:center;";
+   box.innerHTML='<span class="tokchip" style="font-size:14px;border:2px solid var(--accent);color:var(--accent);">사랑해</span>'
+    +'<div style="font-size:11px;color:#8a7d79;margin-top:10px;">→ 디코더 입력에 추가되어 다음 토큰 생성</div>'
+    +'<div style="font-size:12.5px;color:#3b3231;margin-top:8px;">나는 너를 <b>사랑해</b></div>';h.appendChild(box);}}
+];
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;
+ const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 8";
+ $("s-cnt").textContent=(idx+1)+" / 8";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{
+ if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";
+ playTimer=setInterval(()=>setStep(idx+1),3000);
+});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");
+const totalLen=flowPath.getTotalLength();
+const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{
+ const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+ c.setAttribute("r",3.4);c.setAttribute("class","particle");
+ $("particles").appendChild(c);particles.push({el:c,off:off});
+});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){
+ for(const p of particles){
+  p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);
+  p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));
+ }
+ requestAnimationFrame(tick);
+}
+/* ===== 어텐션 실험실 ===== */
+const D_TOKS=["The","animal","didn't","cross","the","street","because","it","was","tired"];
+const D_BASE={
+ 7:[.04,.52,.03,.05,.02,.14,.03,.06,.04,.07],
+ 9:[.03,.30,.04,.06,.02,.05,.04,.34,.05,.07],
+ 5:[.10,.08,.04,.16,.28,.18,.05,.04,.03,.04]
+};
+let dQ=7,dT=1;
+function dW(q){if(D_BASE[q])return D_BASE[q].slice();
+ return D_TOKS.map((_,i)=>Math.exp(-Math.abs(i-q)*0.55)+(i===q?0.4:0));}
+function dRender(){
+ const raw=dW(dQ).map(w=>Math.pow(Math.max(w,1e-4),dT));
+ const sum=raw.reduce((a,b)=>a+b,0);const w=raw.map(x=>x/sum);
+ const host=$("d-toks");host.innerHTML="";
+ D_TOKS.forEach((t,i)=>{const d=document.createElement("div");d.className="dtok"+(i===dQ?" q":"");
+  d.innerHTML='<div class="bar" style="height:'+Math.max(2,w[i]*84)+'px;'+(i===dQ?"background:#8c2f39;":"")+'"></div><div class="chip">'+t+'</div><div class="w">'+w[i].toFixed(2)+'</div>';
+  d.addEventListener("click",()=>{dQ=i;dRender();});host.appendChild(d);});
+}
+$("d-temp").addEventListener("input",e=>{dT=+e.target.value;$("d-temp-v").textContent=dT.toFixed(1);dRender();});
+
+/* 초기화 */
+/* 인코더/디코더 ×6 슬랩 스택: 뒤 층일수록 위-오른쪽 오프셋 */
+(function drawStacks(){
+ const NS="http://www.w3.org/2000/svg";
+ function slab(g,x,y,w,h,front){
+  const r=document.createElementNS(NS,"rect");
+  r.setAttribute("x",x);r.setAttribute("y",y);r.setAttribute("width",w);r.setAttribute("height",h);
+  r.setAttribute("rx",12);
+  r.setAttribute("fill",front?"#fdfaf6":"#f6efe7");
+  r.setAttribute("stroke",front?"#d8c8bd":"#e2d5c9");
+  r.setAttribute("stroke-width",front?1:0.8);
+  g.appendChild(r);
+ }
+ function stack(gid,x,y,w,h){
+  const g=document.getElementById(gid);if(!g)return;
+  const N=6,dx=4,dy=-5;
+  for(let i=N-1;i>=0;i--){ /* 뒤(i=5)부터 그려 앞이 위에 오게 */
+   slab(g,x+i*dx,y+i*dy,w,h,i===0);
+  }
+ }
+ /* 맨 앞 슬랩(i=0)이 원래 컨테이너 위치가 되도록 x,y 지정. w는 뒤 슬랩이 viewBox(430) 안에 오도록 */
+ stack("enc-stack",30,150,160,300);
+ stack("dec-stack",248,88,158,362);
+})();
+
+setStep(0);
+dRender();
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

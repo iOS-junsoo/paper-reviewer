@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T7 · RAG — 검색증강생성, 시스템/파이프라인, 2D)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: RAG(2005.11401). parametric(BART seq2seq generator) + non-parametric(Wikipedia dense vector index, DPR retriever). 흐름: 질의x→Query Encoder→MIPS top-K 문서 zi→generator가 문서 조건 생성→z 잠재변수 marginalize. RAG-Sequence(전체 출력에 같은 문서) vs RAG-Token(토큰마다 다른 문서).
+  주: 2.5D 미적용 — 시스템 파이프라인이 주인공(부피/층 없음). 검색 부분만 임베딩 산점도로 MIPS 표현. 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG (T7)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --ret:#5b8bb0;--ret-face:#dde8f1;--gen:#7a9e6b;--gen-face:#dfeee3;
+    --doc:#c99b4e;--doc-face:#f6ead2;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#3f5f7d;
+    background:var(--ret-face);border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 420px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot .zbox{filter:drop-shadow(0 0 6px rgba(140,47,57,.5));}
+  .zbox{transition:filter .35s;}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .lab-grid{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;}
+  .lab-col{flex:1;min-width:240px;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .doc-item{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:11.5px;padding:6px 10px;
+    border-radius:6px;background:var(--doc-face);opacity:0;transform:translateX(-8px);
+    transition:opacity .35s,transform .35s;}
+  .doc-item .score{margin-left:auto;font-variant-numeric:tabular-nums;font-weight:600;color:#7a5a1e;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>RAG<span class="type-badge">T7 · 시스템 · 파이프라인</span></h1>
+<p class="lead">RAG는 언어모델의 <b>기억(parametric)</b>에 <b>외부 문서 검색(non-parametric)</b>을 결합한다. 질문이 들어오면 위키피디아 같은 문서 색인에서 관련 문서 몇 개를 찾아(retriever), 그 문서들을 참고해 답을 생성한다(generator). 모델 파라미터에 다 넣지 않고 필요할 때 찾아보므로, 지식 갱신과 근거 제시가 쉬워진다. 스테퍼로 검색→생성 흐름을 따라가고, 아래에서 검색 문서 수 K를 조작한다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 420 500" width="100%" role="img" aria-label="RAG 파이프라인: 질의가 쿼리 인코더를 거쳐 MIPS로 top-K 문서를 검색하고, generator가 각 문서를 조건으로 답을 생성해 marginalize한다">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+
+        <!-- zone0: 질의 -->
+        <g class="zone" data-zone="0">
+          <rect class="zbox" x="130" y="24" width="160" height="42" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="210" y="41" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">질의 x</text>
+          <text x="210" y="55" font-size="9" fill="#8a7d79" text-anchor="middle">"에펠탑 높이는?"</text>
+        </g>
+        <!-- zone1: 쿼리 인코더 -->
+        <g class="zone" data-zone="1">
+          <rect class="zbox" x="130" y="98" width="160" height="44" rx="8" fill="var(--ret-face)" stroke="#5b8bb0"/>
+          <text x="210" y="116" font-size="10.5" font-weight="600" fill="#3f5f7d" text-anchor="middle">Query Encoder</text>
+          <text x="210" y="130" font-size="9" fill="#5b8bb0" text-anchor="middle">질의 → 벡터 (DPR)</text>
+        </g>
+        <!-- zone2: MIPS 검색 (문서 인덱스) -->
+        <g class="zone" data-zone="2">
+          <rect class="zbox" x="90" y="174" width="240" height="52" rx="8" fill="var(--ret-face)" stroke="#5b8bb0"/>
+          <!-- 문서 더미: 수백만 문서 색인 규모감 (뒤로 겹쳐 쌓임) -->
+          <g opacity="0.9">
+            <rect x="106" y="184" width="20" height="26" rx="2" fill="#eaf1f8" stroke="#9cc0e0" stroke-width="0.6"/>
+            <rect x="103" y="187" width="20" height="26" rx="2" fill="#eaf1f8" stroke="#9cc0e0" stroke-width="0.6"/>
+            <rect x="100" y="190" width="20" height="26" rx="2" fill="#dde8f1" stroke="#5b8bb0" stroke-width="0.7"/>
+            <line x1="103" y1="196" x2="117" y2="196" stroke="#9cc0e0" stroke-width="0.8"/>
+            <line x1="103" y1="200" x2="117" y2="200" stroke="#9cc0e0" stroke-width="0.8"/>
+            <line x1="103" y1="204" x2="113" y2="204" stroke="#9cc0e0" stroke-width="0.8"/>
+          </g>
+          <text x="228" y="192" font-size="10.5" font-weight="600" fill="#3f5f7d" text-anchor="middle">MIPS 검색</text>
+          <text x="228" y="206" font-size="8.5" fill="#5b8bb0" text-anchor="middle">위키 dense index (수백만)</text>
+          <text x="228" y="217" font-size="8.5" fill="#5b8bb0" text-anchor="middle">내적 최대 → 가까운 문서</text>
+        </g>
+        <!-- zone3: top-K 문서 -->
+        <g class="zone" data-zone="3">
+          <rect class="zbox" x="110" y="258" width="200" height="48" rx="8" fill="var(--doc-face)" stroke="#c99b4e"/>
+          <text x="210" y="276" font-size="10.5" font-weight="600" fill="#7a5a1e" text-anchor="middle">top-K 문서 z₁…z_K</text>
+          <text x="210" y="290" font-size="9" fill="#a97b4e" text-anchor="middle">관련도 높은 K개 (잠재변수)</text>
+        </g>
+        <!-- zone4: generator -->
+        <g class="zone" data-zone="4">
+          <rect class="zbox" x="110" y="338" width="200" height="48" rx="8" fill="var(--gen-face)" stroke="#7a9e6b"/>
+          <text x="210" y="356" font-size="10.5" font-weight="600" fill="#3e6b4c" text-anchor="middle">Generator (seq2seq)</text>
+          <text x="210" y="370" font-size="8.5" fill="#6b9e7a" text-anchor="middle">각 문서 + 질의 → 답 후보 (BART)</text>
+        </g>
+        <!-- zone5: marginalize → 답 -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="130" y="418" width="160" height="46" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="210" y="436" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">Marginalize → 답 y</text>
+          <text x="210" y="450" font-size="8.5" fill="#a06e6e" text-anchor="middle">문서별 확률 가중 합산</text>
+        </g>
+
+        <!-- 흐름선 -->
+        <line class="flowline" x1="210" y1="66" x2="210" y2="96" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="142" x2="210" y2="172" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="226" x2="210" y2="256" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="306" x2="210" y2="336" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="386" x2="210" y2="416" marker-end="url(#ah)"/>
+        <!-- 질의가 generator에도 직접 (질의+문서 결합) -->
+        <path class="flowline" d="M130 45 C 40 45 40 362 108 362" fill="none" stroke="#b0a49e" stroke-dasharray="3 3" marker-end="url(#ah)"/>
+        <text x="34" y="210" font-size="8.5" fill="#a89a9c" text-anchor="middle" transform="rotate(-90 34 210)">질의 x 도 함께</text>
+
+        <path id="flowpath" d="M210 24 L210 464" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>검색 문서 수 K — MIPS로 가까운 문서 찾기</h2>
+    <p class="desc">검색할 문서 수 K를 조작해 보자. 왼쪽 임베딩 공간에서 <b>질의 벡터(빨강)에 내적이 큰=가까운 순서</b>로 문서가 선택된다(MIPS). K를 늘리면 더 많은 문서를 참고하지만 관련도 낮은 것도 섞이고, 줄이면 정밀하지만 근거가 부족할 수 있다. 오른쪽은 선택된 문서 목록이다. RAG는 이 K개 문서를 잠재변수로 두고 답 확률을 <b>가중 합산(marginalize)</b>한다.</p>
+    <div class="lab-grid">
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">문서 임베딩 공간 (MIPS)</div>
+        <svg id="mips-svg" viewBox="0 0 240 200" width="100%" style="max-width:280px;" role="img" aria-label="질의 벡터 주변의 문서들, 가까운 K개가 선택됨"></svg>
+      </div>
+      <div class="lab-col">
+        <div style="font-size:11.5px;font-weight:600;color:var(--ink-soft);margin-bottom:8px;">선택된 top-K 문서</div>
+        <div id="doc-list"></div>
+        <div class="dctrl">
+          <label for="d-k">문서 수 K</label>
+          <input type="range" id="d-k" min="1" max="8" step="1" value="3">
+          <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:24px;text-align:right;" id="d-k-v">3</span>
+        </div>
+      </div>
+    </div>
+    <p class="note">문서 임베딩 위치와 관련도 점수는 MIPS 검색(내적 최대) 동작을 보여주는 정성적 예시이며, 특정 코퍼스의 실제 임베딩·점수가 아니다. 구조(parametric BART generator + non-parametric 위키피디아 dense index, DPR retriever, MIPS top-K, z를 marginalize, RAG-Sequence/Token 두 변형)는 논문(2005.11401)의 실제 정의다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function miniSvg(vb){return el("svg",{viewBox:vb||"0 0 300 150",width:"100%",style:"max-width:330px;"});}
+
+/* 문서 후보(예시): 관련도 높은 순 */
+const DOCS=[
+ {t:"에펠탑 (위키피디아)",s:0.94,rel:true},
+ {t:"에펠탑 건축사",s:0.88,rel:true},
+ {t:"파리의 랜드마크",s:0.71,rel:true},
+ {t:"귀스타브 에펠",s:0.63,rel:false},
+ {t:"프랑스 관광",s:0.52,rel:false},
+ {t:"철골 구조물",s:0.44,rel:false},
+ {t:"1889 만국박람회",s:0.38,rel:false},
+ {t:"파리 지하철",s:0.29,rel:false}
+];
+
+const STEPS=[
+ {zone:"0",t:"질의 입력",
+  d:"사용자가 질문을 던진다. 여기서는 '에펠탑 높이는?'을 예로 든다. 일반 언어모델은 이 답을 파라미터 안 기억에만 의존해 생성하지만, RAG는 먼저 외부 문서를 찾아본다.",
+  sh:"질의 x",v:h=>{const s=miniSvg("0 0 300 120");
+   el("rect",{x:60,y:35,width:180,height:44,rx:10,fill:"#fdfbf9",stroke:"#b56a70"},s);
+   el("text",{x:150,y:62,"font-size":13,fill:"#8c2f39","text-anchor":"middle","font-weight":600},s).textContent="\"에펠탑 높이는?\"";
+   h.appendChild(s);}},
+ {zone:"1",t:"질의를 벡터로 (Query Encoder)",
+  d:"DPR의 쿼리 인코더가 질의를 dense 벡터로 바꾼다. 이 벡터가 문서 색인에서 '어떤 문서와 가까운지'를 재는 기준이 된다. 문서들도 미리 같은 공간의 벡터로 색인돼 있다.",
+  sh:"질의 벡터 (dense)",v:h=>{const s=miniSvg("0 0 300 120");
+   for(let i=0;i<12;i++){const v=0.3+Math.abs(Math.sin(i*1.3))*0.6;
+    el("rect",{x:50+i*16,y:70-v*40,width:12,height:v*40,rx:1,fill:"#5b8bb0"},s);}
+   el("text",{x:150,y:100,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="질의 임베딩 (예시)";
+   h.appendChild(s);}},
+ {zone:"2",t:"MIPS로 가까운 문서 검색",
+  d:"Maximum Inner Product Search(MIPS)로 질의 벡터와 내적이 가장 큰 문서들을 찾는다. 내적이 클수록 관련도가 높다. 위키피디아 전체가 벡터 색인으로 있어, 수백만 문서 중 가까운 것을 빠르게 고른다.",
+  sh:"내적 상위 문서",v:h=>{const s=miniSvg("0 0 240 140");
+   /* 질의 중심 + 문서 점들 */
+   el("circle",{cx:120,cy:70,r:7,fill:"#8c2f39"},s);
+   el("text",{x:120,y:55,"font-size":9,fill:"#8c2f39","text-anchor":"middle"},s).textContent="질의";
+   const seed=[[70,45],[95,90],[150,55],[175,95],[60,100],[190,50]];
+   seed.forEach((p,i)=>{const near=i<3;el("line",{x1:120,y1:70,x2:p[0],y2:p[1],stroke:near?"#c99b4e":"#e6dcd4","stroke-width":near?1.5:0.7,"stroke-dasharray":near?"none":"2 2"},s);
+    el("circle",{cx:p[0],cy:p[1],r:5,fill:near?"#c99b4e":"#d8cdbe"},s);});
+   el("text",{x:120,y:132,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent="가까운(내적 큰) 문서 = 주황";
+   h.appendChild(s);}},
+ {zone:"3",t:"top-K 문서 확보",
+  d:"관련도 상위 K개 문서를 가져온다. 이 문서들은 '정답이 여기 있을 수 있다'는 후보이지 확정된 근거가 아니다 — RAG는 이들을 잠재변수 z로 두고, 어느 문서가 옳은지까지 확률적으로 다룬다.",
+  sh:"z₁ … z_K",v:h=>{const box=document.createElement("div");
+   DOCS.slice(0,3).forEach((d,i)=>{const r=document.createElement("div");
+    r.style.cssText="display:flex;align-items:center;gap:8px;margin:6px 0;font-size:12px;padding:7px 11px;border-radius:6px;background:#f6ead2;";
+    r.innerHTML='<span style="font-weight:600;color:#7a5a1e;">z'+(i+1)+'</span><span>'+d.t+'</span><span style="margin-left:auto;font-weight:600;color:#7a5a1e;">'+d.s.toFixed(2)+'</span>';
+    box.appendChild(r);});
+   h.appendChild(box);}},
+ {zone:"4",t:"문서마다 답 생성 (Generator)",
+  d:"seq2seq 생성기(BART)가 각 문서를 질의와 함께 받아 답을 생성한다. 문서마다 답 후보와 확률이 나온다. RAG-Sequence는 문서 하나로 전체 답을 쓰고, RAG-Token은 토큰마다 다른 문서를 골라 쓸 수 있다(아래 색 참조).",
+  sh:"각 z로 p(y|x,z)",v:h=>{const box=document.createElement("div");
+   [["z₁ 에펠탑","330m",0.7],["z₂ 건축사","324m",0.2],["z₃ 랜드마크","약 300m",0.1]].forEach(([z,ans,p])=>{
+    const r=document.createElement("div");r.style.cssText="display:flex;align-items:center;gap:8px;margin:5px 0;font-size:11.5px;";
+    r.innerHTML='<span style="width:70px;color:#6b9e7a;font-weight:600;">'+z+'</span><span style="width:56px;">→ '+ans+'</span><span style="height:12px;width:'+(p*120)+'px;background:#7a9e6b;border-radius:2px;"></span><span style="color:#8a7d79;">'+p.toFixed(2)+'</span>';
+    box.appendChild(r);});
+   /* RAG-Token: 답 토큰마다 참조 문서가 다를 수 있음 (색=문서) */
+   const zc={z1:"#5b8bb0",z2:"#c9743e",z3:"#9a86bd"};
+   const toks=[["The",""],["Eiffel","z1"],["Tower","z1"],["is","z2"],["330","z1"],["metres","z2"],["tall",""]];
+   const tw=document.createElement("div");tw.style.cssText="margin-top:12px;padding-top:10px;border-top:1px dashed #e8ddd4;";
+   tw.innerHTML='<div style="font-size:10.5px;color:#8a7d79;margin-bottom:6px;">RAG-Token 예시: 답 토큰마다 참조 문서가 달라질 수 있다 (색=문서)</div>';
+   const line=document.createElement("div");line.style.cssText="display:flex;flex-wrap:wrap;gap:4px;";
+   toks.forEach(([t,z])=>{const sp=document.createElement("span");
+    const col=z?zc[z]:"#d8cdbe";
+    sp.style.cssText="font-size:11.5px;padding:2px 7px;border-radius:4px;border-bottom:2.5px solid "+col+";background:#faf6f0;";
+    sp.textContent=t;line.appendChild(sp);});
+   tw.appendChild(line);
+   const lg=document.createElement("div");lg.style.cssText="display:flex;gap:12px;margin-top:8px;font-size:10px;color:#8a7d79;";
+   lg.innerHTML='<span style="border-bottom:2.5px solid #5b8bb0;">z₁ 에펠탑</span><span style="border-bottom:2.5px solid #c9743e;">z₂ 건축사</span><span style="border-bottom:2.5px solid #9a86bd;">z₃ 랜드마크</span>';
+   tw.appendChild(lg);box.appendChild(tw);
+   h.appendChild(box);}},
+ {zone:"5",t:"Marginalize → 최종 답",
+  d:"문서별 답 확률을 문서 관련도로 가중해 합산(marginalize)하면 최종 답이 나온다. 여러 문서가 '330m'를 지지하면 그 답의 확률이 높아진다. 근거 문서를 함께 제시할 수 있어 신뢰성과 갱신성이 크게 좋아진다.",
+  sh:"답 y (가중 합산)",v:h=>{const s=document.createElement("div");
+   s.innerHTML='<div style="text-align:center;margin-bottom:10px;"><span style="font-size:15px;font-weight:700;color:#8c2f39;border:2px solid #8c2f39;border-radius:10px;padding:6px 16px;">답: 330m</span></div>'
+    +'<div style="font-size:11px;color:#8a7d79;text-align:center;">근거: 에펠탑 위키피디아 등 K개 문서</div>'
+    +'<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;margin-top:10px;">RAG의 기여는 <b>검색된 문서를 잠재변수로 marginalize</b>해, 파라미터 기억만 쓰는 모델보다 정확하고 갱신 가능한 생성을 한다는 것이다. ↓ 아래에서 K를 조작해 보세요.</div>';
+   h.appendChild(s);}}
+];
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== top-K 실험실 (MIPS 산점도 + 문서 리스트) ===== */
+const mipsSvg=$("mips-svg"),docList=$("doc-list");
+const QX=120,QY=100;
+/* 문서 점: 점수(=내적) 높을수록 질의에 가깝게. 거리순=점수순이 되도록
+   각 문서에 점수 기반 목표거리를 주고, 각도만 분산 배치(거리는 목표값으로 고정) */
+const DOC_ANGLE=[-0.5,0.7,1.7,2.6,-1.4,3.5,4.3,-2.3];
+const DOC_POS=DOCS.map((d,i)=>{
+ const target=20+(1-d.s)*80;      /* 점수순 목표 거리 */
+ const ang=DOC_ANGLE[i];
+ /* y를 0.75 압축하므로, 실제 유클리드 거리가 target이 되도록 보정 */
+ const cx=Math.cos(ang), cy=Math.sin(ang)*0.75;
+ const norm=Math.hypot(cx,cy);
+ return [QX+cx/norm*target, QY+cy/norm*target];
+});
+let curK=3;
+function dist(p){return Math.hypot(p[0]-QX,p[1]-QY);}
+function renderMips(K){
+ mipsSvg.innerHTML="";
+ /* 반경 원(참고) */
+ el("circle",{cx:QX,cy:QY,r:60,fill:"none",stroke:"#eadfd6","stroke-width":1,"stroke-dasharray":"3 4"},mipsSvg);
+ /* 거리 순 정렬 인덱스 */
+ const order=DOC_POS.map((p,i)=>({i,d:dist(p)})).sort((a,b)=>a.d-b.d);
+ const selected=new Set(order.slice(0,K).map(o=>o.i));
+ /* 연결선 + 점 */
+ DOC_POS.forEach((p,i)=>{
+  const sel=selected.has(i);
+  el("line",{x1:QX,y1:QY,x2:p[0],y2:p[1],stroke:sel?"#c99b4e":"#ece3d6","stroke-width":sel?1.5:0.6,"stroke-dasharray":sel?"none":"2 3"},mipsSvg);
+ });
+ DOC_POS.forEach((p,i)=>{
+  const sel=selected.has(i);
+  el("circle",{cx:p[0],cy:p[1],r:sel?6:4.5,fill:sel?"#c99b4e":"#dcd0c0",stroke:sel?"#fff":"none","stroke-width":1},mipsSvg);
+ });
+ /* 질의 */
+ el("circle",{cx:QX,cy:QY,r:7.5,fill:"#8c2f39"},mipsSvg);
+ el("text",{x:QX,y:QY-13,"font-size":9.5,fill:"#8c2f39","text-anchor":"middle","font-weight":600},mipsSvg).textContent="질의";
+ return order.slice(0,K).map(o=>o.i);
+}
+function renderDocList(K){
+ docList.innerHTML="";
+ const order=DOC_POS.map((p,i)=>({i,d:dist(p)})).sort((a,b)=>a.d-b.d);
+ const sel=order.slice(0,K).map(o=>o.i);
+ sel.forEach((di,rank)=>{
+  const d=DOCS[di];
+  const item=document.createElement("div");item.className="doc-item";
+  item.innerHTML='<span style="font-weight:700;color:#7a5a1e;">'+(rank+1)+'</span><span>'+d.t+'</span><span class="score">'+d.s.toFixed(2)+'</span>';
+  docList.appendChild(item);
+  /* 2단계: 다음 프레임에 나타남 */
+  requestAnimationFrame(()=>{item.style.opacity="1";item.style.transform="translateX(0)";});
+ });
+}
+function renderK(K){
+ curK=K;$("d-k-v").textContent=K;
+ renderMips(K);renderDocList(K);
+}
+$("d-k").addEventListener("input",e=>renderK(+e.target.value));
+
+/* 초기화 */
+setStep(0);
+renderK(3);
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

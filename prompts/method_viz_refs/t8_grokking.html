@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T8 · Grokking — 이론/현상[폴백유형], 학습곡선 2D)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: Grokking(2201.02177). 훈련acc는 <10^3 스텝에 거의 완벽, 검증acc는 ~10^6 스텝에야 도달(10^5까지 일반화 거의 없음). 과적합 한참 뒤 검증acc가 무작위→완벽 급상승="grokking". division mod 97, 50% 훈련데이터, 작은 transformer, a∘b=c 이항연산표. weight decay가 일반화에 특히 효과적.
+  주: 2.5D 미적용 — 로그스케일 학습곡선(2D 함수)이 주인공. 파이프라인/구조도 아닌 현상 유형이라 곡선 자체가 중심. 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grokking (T8)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-faint:#f4e6e4;
+    --train:#b85c4a;--train-face:#f4ddd6;--val:#5a8a5e;--val-face:#dcecdd;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#7a5a1e;
+    background:#f6ead2;border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-chart{flex:0 0 460px;}
+  .col-explain{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-explain h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-explain p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .metrics{display:flex;gap:10px;margin-top:14px;}
+  .metric{flex:1;border-radius:8px;padding:8px 10px;text-align:center;}
+  .metric.train{background:var(--train-face);}
+  .metric.val{background:var(--val-face);}
+  .metric .v{font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;}
+  .metric .k{font-size:10px;margin-top:2px;}
+  .jviz{margin-top:14px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .lab-ctrls{display:flex;gap:20px;flex-wrap:wrap;align-items:center;margin-top:14px;}
+  .dctrl{display:flex;align-items:center;gap:12px;flex:1;min-width:260px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .toggle{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;cursor:pointer;}
+  .toggle input{width:16px;height:16px;accent-color:var(--val);}
+  .legend{display:flex;gap:16px;font-size:11px;color:var(--ink-soft);margin-top:6px;}
+  .legend span{display:inline-flex;align-items:center;gap:5px;}
+  .swatch{width:14px;height:3px;border-radius:2px;display:inline-block;}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Grokking<span class="type-badge">T8 · 이론 · 현상</span></h1>
+<p class="lead">Grokking은 신경망이 <b>훈련 데이터를 완전히 외운 한참 뒤에, 갑자기 일반화하는</b> 놀라운 현상이다. 작은 대수 문제(예: 97로 나눈 나머지 연산)에서, 훈련 정확도는 금방 100%가 되지만 검증 정확도는 오랫동안 무작위 수준에 머물다가 — 훨씬 뒤에 — 급격히 완벽에 도달한다. "외우기"와 "이해하기"가 시간적으로 분리되는 셈이다. 스테퍼로 학습의 네 국면을 따라가고, 아래에서 스텝을 직접 진행해 본다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-chart">
+      <svg viewBox="0 0 460 340" width="100%" role="img" aria-label="Grokking 학습곡선: 로그 스케일 스텝 축에서 훈련 정확도는 일찍 100%에 도달하지만 검증 정확도는 훨씬 뒤에 급상승한다">
+        <!-- 축·격자·곡선은 JS가 그림 -->
+        <g id="chart"></g>
+        <!-- 현재 스텝 마커 -->
+        <line id="step-marker" x1="0" y1="0" x2="0" y2="0" stroke="#8c2f39" stroke-width="1.3" stroke-dasharray="4 3" opacity="0"/>
+      </svg>
+      <div class="legend">
+        <span><span class="swatch" style="background:#b85c4a;"></span> 훈련 정확도</span>
+        <span><span class="swatch" style="background:#5a8a5e;"></span> 검증 정확도</span>
+        <span style="color:#b0a49e;">x축: 최적화 스텝 (로그)</span>
+      </div>
+    </div>
+    <div class="col-explain">
+      <span class="jtag" id="j-tag">국면 1 / 4</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <div class="metrics">
+        <div class="metric train"><div class="v" style="color:#b85c4a;" id="m-train">—</div><div class="k" style="color:#b85c4a;">훈련 정확도</div></div>
+        <div class="metric val"><div class="v" style="color:#5a8a5e;" id="m-val">—</div><div class="k" style="color:#5a8a5e;">검증 정확도</div></div>
+      </div>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 4</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 조작</span>스텝 진행 · weight decay의 효과</h2>
+    <p class="desc">스텝을 직접 움직여 두 곡선이 벌어졌다 만나는 걸 보자. 훈련 곡선(빨강)은 일찍 100%에 닿지만 검증 곡선(초록)은 한참 뒤에야 따라온다 — 그 사이가 "외웠지만 이해 못한" 구간이다. <b>weight decay</b>를 끄면 일반화(grokking)가 훨씬 늦게 오거나 잘 안 온다. 논문은 weight decay가 이 대수 문제들의 일반화에 특히 효과적이라고 보고했다.</p>
+    <div class="lab-ctrls">
+      <div class="dctrl">
+        <label for="d-step">스텝 (log₁₀)</label>
+        <input type="range" id="d-step" min="1" max="6" step="0.05" value="1">
+        <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:60px;text-align:right;" id="d-step-v">10¹</span>
+      </div>
+      <label class="toggle"><input type="checkbox" id="d-wd" checked> weight decay 사용</label>
+      <button id="d-anim">▶ 학습 재생</button>
+    </div>
+    <p class="note">곡선 형태는 논문 Figure 1의 grokking 패턴(훈련acc 조기 포화, 검증acc 지연 급상승)을 정성적으로 재현한 모델이며, 특정 실험의 실제 측정 곡선이 아니다. 현상 정의(훈련acc는 &lt;10³ 스텝에 포화, 검증acc는 ~10⁶ 스텝에 도달, 과적합 후 지연 일반화), 실험 설정(division mod 97, 50% 훈련데이터, 작은 transformer), weight decay의 효과는 논문(2201.02177)의 실제 내용이다. weight decay 유무에 따른 시점 변화 폭은 정성적 표현이다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+
+/* ===== 차트 좌표계 (로그 x축: log10 스텝 1~6) ===== */
+const PLOT={x0:44,x1:436,y0:24,y1:288, lxMin:1,lxMax:6};
+function px(lx){return PLOT.x0+(lx-PLOT.lxMin)/(PLOT.lxMax-PLOT.lxMin)*(PLOT.x1-PLOT.x0);}
+function py(acc){return PLOT.y1-acc*(PLOT.y1-PLOT.y0);} /* acc 0~1 */
+
+/* ===== 정확도 곡선 모델 (정성적, 논문 Figure1 형태) =====
+   훈련: 전이점 ~log10=2.7 (수백~천 스텝) 근처에서 급상승
+   검증(wd on): 전이점 ~log10=5.0 (10^5) 근처
+   검증(wd off): 전이점 ~log10=6.0+ (훨씬 늦거나 미도달) */
+function sig(x,center,sharp){return 1/(1+Math.exp(-(x-center)*sharp));}
+function trainAcc(lx){return 0.02+0.98*sig(lx,2.7,4.5);}
+function valAcc(lx,wd){
+ const chance=0.02;
+ if(wd){const g=sig(lx,5.0,4.2);return chance+(0.98)*g;}
+ else{const g=sig(lx,6.4,3.0);return chance+(0.98)*g;} /* wd off: 훨씬 늦게, 창 안에선 거의 안 옴 */
+}
+
+/* ===== 4국면 스텝 정의 ===== */
+const STEPS=[
+ {phase:0,lxMark:2.0,t:"국면 1 — 초기 학습",
+  d:"학습 초반. 훈련·검증 정확도 모두 무작위 수준(대수 문제라 정답 확률이 낮다)에서 시작한다. 네트워크는 아직 데이터의 어떤 패턴도 잡지 못했다.",
+  train:()=>trainAcc(2.0),val:(wd)=>valAcc(2.0,wd)},
+ {phase:1,lxMark:3.0,t:"국면 2 — 암기 (과적합)",
+  d:"훈련 정확도가 급상승해 곧 100%에 도달한다. 하지만 검증 정확도는 여전히 바닥이다 — 네트워크가 훈련 예제를 '외웠을' 뿐, 규칙을 '이해'하지 못한 전형적 과적합 상태다. 보통 학습은 여기서 멈춘다.",
+  train:()=>trainAcc(3.0),val:(wd)=>valAcc(3.0,wd)},
+ {phase:2,lxMark:4.3,t:"국면 3 — 정체 (외웠지만 이해 못함)",
+  d:"핵심 구간. 훈련 정확도는 100%로 완벽하지만 검증 정확도는 오랫동안 무작위에 머문다. 겉보기엔 학습이 끝난 것 같지만, 내부에서는 weight decay 등의 압력이 서서히 표현을 '단순한 규칙' 쪽으로 밀고 있다.",
+  train:()=>trainAcc(4.3),val:(wd)=>valAcc(4.3,wd)},
+ {phase:3,lxMark:5.4,t:"국면 4 — Grokking (지연된 일반화)",
+  d:"과적합 한참 뒤, 검증 정확도가 갑자기 무작위에서 완벽으로 급상승한다. 네트워크가 마침내 규칙을 '이해'해 처음 보는 예제도 맞힌다. 이 지연된 도약이 grokking이다 — weight decay가 있으면 훨씬 빨리 온다.",
+  train:()=>trainAcc(5.4),val:(wd)=>valAcc(5.4,wd)}
+];
+/* ===== 차트 렌더러 ===== */
+const chart=$("chart");
+let showWd=true, curLx=null;
+function drawChart(){
+ chart.innerHTML="";
+ /* 축 */
+ el("line",{x1:PLOT.x0,y1:PLOT.y1,x2:PLOT.x1,y2:PLOT.y1,stroke:"#c9bab0","stroke-width":1},chart);
+ el("line",{x1:PLOT.x0,y1:PLOT.y0,x2:PLOT.x0,y2:PLOT.y1,stroke:"#c9bab0","stroke-width":1},chart);
+ /* x 눈금 (10^1 ~ 10^6) */
+ for(let lx=1;lx<=6;lx++){const x=px(lx);
+  el("line",{x1:x,y1:PLOT.y0,x2:x,y2:PLOT.y1,stroke:"#f0e9e1","stroke-width":1},chart);
+  el("text",{x:x,y:PLOT.y1+14,"font-size":8.5,fill:"#b0a49e","text-anchor":"middle"},chart).textContent="10"+["¹","²","³","⁴","⁵","⁶"][lx-1];}
+ el("text",{x:(PLOT.x0+PLOT.x1)/2,y:PLOT.y1+28,"font-size":9.5,fill:"#8a7d79","text-anchor":"middle"},chart).textContent="최적화 스텝 (로그 스케일)";
+ /* y 눈금 */
+ [0,0.5,1].forEach(a=>{const y=py(a);
+  el("line",{x1:PLOT.x0,y1:y,x2:PLOT.x1,y2:y,stroke:"#f0e9e1","stroke-width":1},chart);
+  el("text",{x:PLOT.x0-6,y:y+3,"font-size":8.5,fill:"#b0a49e","text-anchor":"end"},chart).textContent=(a*100)+"%";});
+ /* 곡선 그리기 */
+ function curve(fn,color,dash){let pts=[];
+  for(let i=0;i<=120;i++){const lx=PLOT.lxMin+(PLOT.lxMax-PLOT.lxMin)*i/120;
+   pts.push((i===0?"M":"L")+px(lx).toFixed(1)+" "+py(fn(lx)).toFixed(1));}
+  el("path",{d:pts.join(" "),fill:"none",stroke:color,"stroke-width":2.2,"stroke-dasharray":dash||"none"},chart);}
+ curve(l=>trainAcc(l),"#b85c4a");
+ curve(l=>valAcc(l,showWd),"#5a8a5e");
+ if(!showWd){/* wd on 검증을 흐린 참조선으로 */
+  curve(l=>valAcc(l,true),"#a8c9ab","3 3");}
+ /* grokking 영역 음영 (과적합~일반화 사이). plot 경계 내로 클램프 */
+ const gx0=px(3.3),gx1=Math.min(PLOT.x1,px(showWd?5.0:6.2));
+ el("rect",{x:gx0,y:PLOT.y0,width:Math.max(0,gx1-gx0),height:PLOT.y1-PLOT.y0,fill:"#8c2f39",opacity:0.05},chart);
+ el("text",{x:(gx0+gx1)/2,y:PLOT.y0+12,"font-size":8,fill:"#b58",opacity:0.8,"text-anchor":"middle"},chart).textContent="외웠지만 이해 못한 구간";
+}
+
+/* ===== 스테퍼 ===== */
+let idx=0,playTimer=null;
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setMarker(lx){
+ const m=$("step-marker");
+ m.setAttribute("x1",px(lx));m.setAttribute("x2",px(lx));
+ m.setAttribute("y1",PLOT.y0);m.setAttribute("y2",PLOT.y1);m.setAttribute("opacity","1");
+}
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ setMarker(s.lxMark);
+ $("j-tag").textContent="국면 "+(idx+1)+" / 4";$("s-cnt").textContent=(idx+1)+" / 4";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;
+ const tr=s.train(),va=s.val(showWd);
+ $("m-train").textContent=(tr*100).toFixed(0)+"%";
+ $("m-val").textContent=(va*100).toFixed(0)+"%";
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ $("j-viz").innerHTML='<div style="font-size:11px;color:#8a7d79;background:#f7efe4;border-radius:8px;padding:9px 12px;line-height:1.5;">현재 위치: 약 10<tspan>'+["¹","²","³","⁴","⁵","⁶"][Math.round(s.lxMark)-1]+'</tspan> 스텝 부근 (차트의 세로 점선)</div>';
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+/* ===== 실험실 ===== */
+const supNum=["¹","²","³","⁴","⁵","⁶","⁷"];
+function fmtStep(lx){
+ const whole=Math.floor(lx);const frac=lx-whole;
+ const mant=Math.pow(10,frac).toFixed(1);
+ return mant+"×10"+supNum[whole-1];
+}
+let animTimer=null;
+function labUpdate(lx){
+ curLx=lx;
+ $("d-step-v").textContent=fmtStep(lx);
+ setMarker(lx);
+ const tr=trainAcc(lx),va=valAcc(lx,showWd);
+ $("m-train").textContent=(tr*100).toFixed(0)+"%";
+ $("m-val").textContent=(va*100).toFixed(0)+"%";
+}
+$("d-step").addEventListener("input",e=>{stopAnim();labUpdate(+e.target.value);});
+$("d-wd").addEventListener("change",e=>{showWd=e.target.checked;drawChart();
+ const lx=curLx!=null?curLx:+$("d-step").value;labUpdate(lx);});
+function stopAnim(){if(animTimer){cancelAnimationFrame(animTimer);animTimer=null;$("d-anim").textContent="▶ 학습 재생";}}
+$("d-anim").addEventListener("click",()=>{
+ if(animTimer){stopAnim();return;}
+ $("d-anim").textContent="⏸ 정지";
+ let lx=1;const slider=$("d-step");
+ function frame(){
+  lx+=0.025;
+  if(lx>6){lx=6;stopAnim();}
+  slider.value=lx;labUpdate(lx);
+  if(animTimer)animTimer=requestAnimationFrame(frame);
+ }
+ animTimer=requestAnimationFrame(frame);
+});
+
+/* 초기화 */
+drawChart();
+setStep(0);
+labUpdate(1);
+})();
+</script>
+</div>
+</body>
+</html>

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<!--
+PROGRESS (T4 · FairGRAPE — 공정성 인식 gradient 프루닝, 2D)
+  [x] 블록1: head + CSS
+  [x] 블록2
+  [x] 블록3
+  [x] 블록4
+  [x] 블록5
+  [x] 블록6 — 완료
+  근거: FairGRAPE(2207.10888). per-group importance(1차 Taylor/gradient)→그룹간 총중요도 비율 유지하며 edge 선택→작은 중요도 프루닝→fine-tune→반복. sparsity c, step r. FairFace 7 race groups. 최대 90% prune. weight/edge 프루닝(채널 아님).
+  주: 2.5D 미적용 — 개별 가중치 프루닝 + 그룹별 중요도 균형이 주인공(채널 슬래브 부피 아님). direction=remove_top(비율↑=더 많이 제거). 드릴인 없음.
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FairGRAPE (T4)</title>
+<style>
+  :root{
+    --bg:#faf6f0;--card:#fff;--ink:#3b3231;--ink-soft:#8a7d79;
+    --accent:#8c2f39;--accent-soft:#b56a70;--accent-faint:#f4e6e4;
+    --g1:#6b8caf;--g2:#7a9e6b;--g3:#c99b4e;--g4:#9a86bd;
+    --fair-face:#dfeee3;--reg-face:#f0e4e4;--line:#e8ddd4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,"Pretendard","Noto Sans KR",sans-serif;padding:24px;}
+  .wrap{max-width:1180px;margin:0 auto;}
+  h1{font-family:Georgia,"Noto Serif KR",serif;font-size:20px;font-weight:600;}
+  .type-badge{display:inline-block;font-size:11px;font-weight:700;color:#7a5a1e;
+    background:#f6ead2;border-radius:999px;padding:3px 12px;margin-left:8px;vertical-align:3px;}
+  .lead{font-size:12.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6;}
+  .frame{background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin-top:16px;}
+  svg text{font-family:inherit;}
+  .cols{display:flex;gap:24px;align-items:stretch;}
+  .col-struct{flex:0 0 420px;}
+  .col-journey{flex:1;min-width:0;border-left:1px solid var(--line);padding-left:24px;}
+  .zone{transition:opacity .35s;}
+  .zone.dim{opacity:.28;}
+  .zone.hot .zbox{filter:drop-shadow(0 0 6px rgba(140,47,57,.5));}
+  .zbox{transition:filter .35s;}
+  .flowline{stroke:#c9bab0;stroke-width:1.3;fill:none;}
+  .particle{fill:var(--accent);}
+  .jtag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;}
+  .col-journey h3{font-size:15px;font-weight:600;margin:10px 0 6px;font-family:Georgia,"Noto Serif KR",serif;}
+  .col-journey p{font-size:12px;color:var(--ink-soft);line-height:1.6;}
+  .shape{display:inline-block;font-size:11px;font-weight:700;color:#6b5a3e;
+    background:#f7efe4;border-radius:6px;padding:3px 10px;margin-top:8px;font-variant-numeric:tabular-nums;}
+  .jviz{margin-top:14px;min-height:160px;}
+  .stepper{display:flex;gap:10px;align-items:center;justify-content:center;
+    margin-top:18px;padding-top:16px;border-top:1px solid var(--line);}
+  .stepper .cnt{font-size:12.5px;color:var(--ink-soft);min-width:52px;text-align:center;font-variant-numeric:tabular-nums;}
+  .dots{display:flex;gap:5px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:#dfd3c9;cursor:pointer;transition:background .2s;}
+  .dot.on{background:var(--accent);}
+  button{border:1px solid var(--accent);border-radius:999px;padding:6px 15px;font-size:12.5px;
+    font-weight:600;background:#fff;color:var(--accent);cursor:pointer;}
+  button.primary{background:var(--accent);color:#fff;}
+  button:hover{opacity:.85;}
+  .lab{margin-top:18px;padding-top:20px;border-top:1px solid var(--line);}
+  .lab h2{font-family:Georgia,"Noto Serif KR",serif;font-size:15px;font-weight:600;}
+  .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);
+    background:var(--accent-faint);border-radius:999px;padding:3px 12px;margin-right:8px;vertical-align:2px;}
+  .desc{font-size:12px;color:var(--ink-soft);margin:6px 0 14px;line-height:1.6;}
+  .cmp2{display:flex;gap:18px;flex-wrap:wrap;}
+  .cmp-card{flex:1;min-width:220px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;}
+  .cmp-card.reg{background:var(--reg-face);}
+  .cmp-card.fair{background:var(--fair-face);}
+  .cmp-card h4{font-size:12.5px;font-weight:700;margin-bottom:8px;}
+  .gap-label{font-size:11px;color:var(--ink-soft);margin-top:8px;}
+  .gap-val{font-weight:700;font-variant-numeric:tabular-nums;}
+  .dctrl{display:flex;align-items:center;gap:12px;margin-top:16px;}
+  .dctrl label{font-size:12.5px;font-weight:600;white-space:nowrap;}
+  input[type=range]{flex:1;accent-color:var(--accent);}
+  .note{margin-top:10px;font-size:11px;color:#b0a49e;line-height:1.5;}
+  @media (prefers-reduced-motion:reduce){.particle{display:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>FairGRAPE<span class="type-badge">T4 · 압축·경량화 (공정성)</span></h1>
+<p class="lead">일반적인 프루닝은 가중치를 크기 순으로 잘라 전체 정확도는 지키지만, 특정 집단(예: 소수 인종)에 중요한 가중치를 더 많이 없애 <b>편향을 키운다</b>. FairGRAPE는 각 가중치의 <b>집단별 중요도</b>를 gradient로 재고, 집단 간 중요도 비율이 유지되도록 잘라 <b>집단 간 성능 격차</b>를 줄인다. 스테퍼로 이 프루닝 절차를 따라가고, 아래에서 일반 프루닝과 격차를 직접 비교한다.</p>
+
+<div class="frame">
+  <div class="cols">
+    <div class="col-struct">
+      <svg viewBox="0 0 420 520" width="100%" role="img" aria-label="FairGRAPE 절차: 학습된 망에서 집단별 중요도를 재고 비율 유지하며 선택, 프루닝, 파인튜닝을 반복">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5.5" markerHeight="5.5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#b56a70" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+          <marker id="ahl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="#8c2f39" stroke-width="1.6" stroke-linecap="round"/>
+          </marker>
+        </defs>
+
+        <!-- zone0: 학습된 망 -->
+        <g class="zone" data-zone="0">
+          <rect class="zbox" x="130" y="24" width="160" height="42" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="210" y="41" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">학습된 망 (밀집)</text>
+          <text x="210" y="55" font-size="9" fill="#8a7d79" text-anchor="middle">얼굴 속성 분류기</text>
+        </g>
+        <!-- zone1: 집단별 중요도 계산 -->
+        <g class="zone" data-zone="1">
+          <rect class="zbox" x="110" y="98" width="200" height="48" rx="8" fill="#f6ead2" stroke="#c99b4e"/>
+          <text x="210" y="116" font-size="10.5" font-weight="600" fill="#7a5a1e" text-anchor="middle">집단별 중요도 계산</text>
+          <text x="210" y="131" font-size="8.5" fill="#a97b4e" text-anchor="middle">각 가중치의 그룹 k 기여도 (1차 Taylor)</text>
+        </g>
+        <!-- zone2: 비율 유지 선택 -->
+        <g class="zone" data-zone="2">
+          <rect class="zbox" x="110" y="178" width="200" height="48" rx="8" fill="var(--accent-faint)" stroke="#8c2f39"/>
+          <text x="210" y="196" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">집단 간 비율 유지 선택</text>
+          <text x="210" y="211" font-size="8.5" fill="#a06e6e" text-anchor="middle">그룹 총 중요도 비율을 보존하는 부분집합</text>
+        </g>
+        <!-- zone3: 프루닝 -->
+        <g class="zone" data-zone="3">
+          <rect class="zbox" x="130" y="258" width="160" height="44" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="210" y="276" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">작은 중요도 edge 제거</text>
+          <text x="210" y="290" font-size="9" fill="#8a7d79" text-anchor="middle">sparsity c까지</text>
+        </g>
+        <!-- zone4: fine-tune -->
+        <g class="zone" data-zone="4">
+          <rect class="zbox" x="130" y="334" width="160" height="42" rx="8" fill="var(--fair-face)" stroke="#7a9e6b"/>
+          <text x="210" y="351" font-size="10.5" font-weight="600" fill="#3e6b4c" text-anchor="middle">fine-tune</text>
+          <text x="210" y="365" font-size="9" fill="#6b9e7a" text-anchor="middle">남은 가중치 재학습</text>
+        </g>
+        <!-- zone5: 반복 완료 -->
+        <g class="zone" data-zone="5">
+          <rect class="zbox" x="130" y="440" width="160" height="42" rx="8" fill="#fdfbf9" stroke="#b56a70"/>
+          <text x="210" y="457" font-size="10.5" font-weight="600" fill="#8c2f39" text-anchor="middle">공정하게 압축된 망</text>
+          <text x="210" y="471" font-size="9" fill="#8a7d79" text-anchor="middle">집단 격차 최소화</text>
+        </g>
+
+        <!-- 흐름선 -->
+        <line class="flowline" x1="210" y1="66" x2="210" y2="96" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="146" x2="210" y2="176" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="226" x2="210" y2="256" marker-end="url(#ah)"/>
+        <line class="flowline" x1="210" y1="302" x2="210" y2="332" marker-end="url(#ah)"/>
+        <!-- 반복 루프: fine-tune → 다시 중요도 계산 (updating importance) -->
+        <path class="flowline" d="M310 355 C 380 355 380 122 312 122" fill="none" stroke="#8c2f39" stroke-dasharray="4 3" marker-end="url(#ahl)"/>
+        <text x="374" y="240" font-size="8.5" fill="#8c2f39" text-anchor="middle" transform="rotate(90 374 240)">반복: 중요도 갱신</text>
+        <!-- fine-tune → 완료 (sparsity 도달 시) -->
+        <line class="flowline" x1="210" y1="376" x2="210" y2="438" marker-end="url(#ah)"/>
+        <text x="230" y="410" font-size="8" fill="#8a7d79">c 도달 시</text>
+
+        <path id="flowpath" d="M210 24 L210 355" fill="none" stroke="none"/>
+        <g id="particles"></g>
+      </svg>
+    </div>
+    <div class="col-journey">
+      <span class="jtag" id="j-tag">STEP 1 / 6</span>
+      <h3 id="j-title"></h3>
+      <p id="j-desc"></p>
+      <span class="shape" id="j-shape"></span>
+      <div class="jviz" id="j-viz"></div>
+    </div>
+  </div>
+  <div class="stepper">
+    <button id="s-prev">◀ 이전</button>
+    <div class="dots" id="s-dots"></div>
+    <span class="cnt" id="s-cnt">1 / 6</span>
+    <button id="s-next" class="primary">다음 ▶</button>
+    <button id="s-play">▶ 자동</button>
+  </div>
+  <div class="lab">
+    <h2><span class="tag">직접 비교</span>일반 프루닝 vs FairGRAPE — 집단 격차</h2>
+    <p class="desc">프루닝 비율을 올려 두 방법의 집단별 정확도를 비교한다. 일반 프루닝은 전체 정확도만 보고 잘라서 <b>비율이 높아질수록 소수 집단이 크게 무너지고 격차가 벌어진다</b>. FairGRAPE는 집단별 중요도 비율을 유지해 격차를 억제한다. 슬라이더를 올릴수록 <b>더 많은 가중치가 제거</b>된다.</p>
+    <div class="cmp2">
+      <div class="cmp-card reg">
+        <h4 style="color:#8c2f39;">일반 프루닝 (크기 기반)</h4>
+        <svg id="reg-svg" viewBox="0 0 300 130" width="100%" role="img" aria-label="일반 프루닝의 집단별 정확도"></svg>
+        <div class="gap-label">집단 간 격차: <span class="gap-val" id="reg-gap" style="color:#8c2f39;">—</span></div>
+      </div>
+      <div class="cmp-card fair">
+        <h4 style="color:#3e6b4c;">FairGRAPE</h4>
+        <svg id="fair-svg" viewBox="0 0 300 130" width="100%" role="img" aria-label="FairGRAPE의 집단별 정확도"></svg>
+        <div class="gap-label">집단 간 격차: <span class="gap-val" id="fair-gap" style="color:#3e6b4c;">—</span></div>
+      </div>
+    </div>
+    <div class="dctrl">
+      <label for="d-prune">pruning ratio</label>
+      <input type="range" id="d-prune" min="0" max="90" step="5" value="30">
+      <span style="font-size:12.5px;font-weight:700;color:var(--accent);min-width:40px;text-align:right;" id="d-prune-v">30%</span>
+    </div>
+    <p class="note">집단별 정확도 값과 격차는 FairGRAPE의 핵심 주장(고압축에서 일반 프루닝은 격차 확대, FairGRAPE는 격차 억제)을 보여주는 정성적 시뮬레이션이며, 특정 데이터셋의 실제 측정 수치가 아니다. 방법(집단별 중요도=1차 Taylor gradient, 비율 유지 선택, iterative prune+fine-tune, 최대 90% sparsity, FairFace 7개 인종 집단)은 논문(2207.10888)의 실제 정의다. 실제 정량 결과는 논문 Table을 참조해야 한다.</p>
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const NS="http://www.w3.org/2000/svg";
+function el(tag,attrs,parent){const e=document.createElementNS(NS,tag);
+ for(const k in attrs)e.setAttribute(k,attrs[k]);if(parent)parent.appendChild(e);return e;}
+function miniSvg(){return el("svg",{viewBox:"0 0 300 160",width:"100%",style:"max-width:340px;"});}
+
+/* 7개 인종 집단(FairFace) 축약 색 */
+const GROUPS=["A","B","C","D","E","F","G"];
+const GCOL=["#6b8caf","#7a9e6b","#c99b4e","#9a86bd","#b0685e","#5b9ea0","#b58bb0"];
+
+/* 그룹별 중요도 막대 (baseline 고정 위로) */
+function groupBars(s,imp,capText,highlight){
+ const BL=118,bw=26,gap=8,ox=30;
+ imp.forEach((v,i)=>{
+  const x=ox+i*(bw+gap);const hgt=6+v*80;
+  el("rect",{x:x,y:BL-hgt,width:bw,height:hgt,rx:2,fill:GCOL[i],
+    opacity:(highlight&&highlight.indexOf(i)<0)?0.35:1},s);
+  el("text",{x:x+bw/2,y:BL+13,"font-size":9,fill:"#8a7d79","text-anchor":"middle"},s).textContent=GROUPS[i];
+ });
+ if(capText)el("text",{x:150,y:150,"font-size":10,class:"cap",fill:"#8a7d79","text-anchor":"middle"},s).textContent=capText;
+}
+
+/* 망 그래프(노드+엣지), pruned 표시 */
+function netGraph(s,prunedFrac,fair){
+ /* 층별 z축 오프셋(iso)으로 살짝 입체감: 뒤 층일수록 위-오른쪽으로 밀어 원근 암시 */
+ const dz=14; /* 층 간 깊이 오프셋 */
+ const base={L:[[46,52],[46,90],[46,128]],M:[[150,44],[150,80],[150,116],[150,152]],R:[[250,70],[250,110]]};
+ /* 각 층에 깊이 오프셋 적용: L(앞)=0, M(중간)=1, R(뒤)=2 단계만큼 위-오른쪽 */
+ const off=(depth)=>[depth*dz*0.86, -depth*dz*0.5];
+ const L=base.L.map(p=>[p[0]+off(0)[0],p[1]+off(0)[1]]);
+ const M=base.M.map(p=>[p[0]+off(1)[0],p[1]+off(1)[1]]);
+ const R=base.R.map(p=>[p[0]+off(2)[0],p[1]+off(2)[1]]);
+ let seed=fair?7:3;const rnd=()=>(seed=(seed*1103515245+12345)%2147483648)/2147483648;
+ // edges
+ L.forEach(a=>M.forEach(b=>{const pr=rnd()<prunedFrac;
+  el("line",{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:pr?"#e6dcd4":"#c9bab0","stroke-width":pr?0.5:1,
+   "stroke-dasharray":pr?"2 3":"none",opacity:pr?0.5:1},s);}));
+ M.forEach(a=>R.forEach(b=>{const pr=rnd()<prunedFrac;
+  el("line",{x1:a[0],y1:a[1],x2:b[0],y2:b[1],stroke:pr?"#e6dcd4":"#c9bab0","stroke-width":pr?0.5:1,
+   "stroke-dasharray":pr?"2 3":"none",opacity:pr?0.5:1},s);}));
+ /* 노드: 그림자(아래 타원) + 본체로 살짝 떠 있는 느낌 */
+ [...L,...M,...R].forEach(p=>{
+  el("ellipse",{cx:p[0]+1.5,cy:p[1]+5,rx:5,ry:2.2,fill:"#00000012"},s);
+  el("circle",{cx:p[0],cy:p[1],r:5,fill:"#b56a70",stroke:"#fff","stroke-width":0.8},s);
+ });
+ /* 층 라벨 (앞뒤 깊이감 보조) */
+ el("text",{x:L[2][0],y:L[2][1]+18,"font-size":8,fill:"#b0a49e","text-anchor":"middle"},s).textContent="입력층";
+ el("text",{x:R[1][0],y:R[1][1]+18,"font-size":8,fill:"#b0a49e","text-anchor":"middle"},s).textContent="출력층";
+}
+
+const STEPS=[
+ {zone:"0",t:"학습된 밀집 망",
+  d:"얼굴 속성(예: 웃음, 성별)을 분류하도록 학습된, 아직 압축 안 된 망에서 시작한다. 목표는 이 망을 가볍게 만들되 특정 인종·성별 집단만 손해 보지 않게 하는 것이다.",
+  sh:"밀집 망 W",v:h=>{const s=miniSvg();netGraph(s,0,true);
+   el("text",{x:150,y:155,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="모든 연결 살아있음";h.appendChild(s);}},
+ {zone:"1",t:"집단별 중요도 계산",
+  d:"각 가중치가 집단 k의 예측에 얼마나 기여하는지를 gradient의 1차 Taylor 근사로 잰다. 핵심은 '전체'가 아니라 집단마다 따로 재는 것 — 어떤 가중치는 다수 집단엔 사소해도 소수 집단엔 결정적일 수 있다.",
+  sh:"집단별 중요도 Iₖ",v:h=>{const s=miniSvg();
+   groupBars(s,[0.7,0.5,0.85,0.4,0.6,0.55,0.45],"집단 A~G별 총 중요도 (예시)");h.appendChild(s);}},
+ {zone:"2",t:"집단 간 비율 유지 선택",
+  d:"여기가 FairGRAPE의 심장이다. 남길 가중치를 고를 때, 집단 간 총 중요도의 '비율'이 원본과 최대한 같게 유지되도록 부분집합을 선택한다. 즉 어느 집단도 상대적으로 더 많이 희생되지 않게 한다.",
+  sh:"비율 보존 부분집합",v:h=>{const s=miniSvg();
+   groupBars(s,[0.63,0.45,0.77,0.36,0.54,0.5,0.4],"비율 유지하며 축소 (모든 집단 비례 감소)");h.appendChild(s);}},
+ {zone:"3",t:"작은 중요도 edge 제거",
+  d:"선택 기준에 따라 중요도가 낮은 연결을 잘라낸다. 일반 프루닝이 '가중치 크기'만 봤다면, 여기서는 '집단별 중요도'를 반영한 기준으로 자르므로 소수 집단에 중요한 연결이 과도하게 잘리지 않는다.",
+  sh:"sparsity c까지 제거",v:h=>{const s=miniSvg();netGraph(s,0.4,true);
+   el("text",{x:150,y:155,"font-size":10,fill:"#8a7d79","text-anchor":"middle"},s).textContent="점선 = 제거된 연결";h.appendChild(s);}},
+ {zone:"4",t:"fine-tune 후 반복",
+  d:"프루닝으로 잃은 성능을 남은 가중치 재학습(fine-tune)으로 회복한다. 그리고 중요도를 다시 계산해 절차를 반복한다 — 한 번에 크게 자르지 않고, step size r만큼씩 목표 sparsity c까지 점진적으로 압축한다.",
+  sh:"prune+fine-tune 반복",v:h=>{const s=miniSvg();
+   groupBars(s,[0.6,0.44,0.72,0.35,0.52,0.48,0.4],"fine-tune 후 중요도 재계산 → 반복");h.appendChild(s);}},
+ {zone:"5",t:"공정하게 압축된 망",
+  d:"목표 압축률에 도달하면 완료. 결과는 전체 정확도를 지키면서도 집단 간 성능 격차가 일반 프루닝보다 작은 압축 망이다. 논문은 최대 90%의 높은 압축률에서 특히 효과가 크다고 보고한다.",
+  sh:"공정 압축 망",v:h=>{h.innerHTML='<div style="font-size:12px;color:#6b5a3e;background:#f7efe4;border-radius:8px;padding:10px 13px;line-height:1.55;">FairGRAPE의 기여는 <b>집단별 중요도를 gradient로 재고 집단 간 비율을 유지하며 자르는 것</b>만으로, 압축이 특정 집단에 주는 피해를 줄인다는 것이다. ↓ 아래에서 일반 프루닝과 격차를 직접 비교해 보세요.</div>';}}
+];
+/* ===== 스테퍼 + 존 하이라이트 ===== */
+let idx=0,playTimer=null;
+const zones=[...document.querySelectorAll(".zone")];
+const dotsHost=$("s-dots");
+STEPS.forEach((_,i)=>{const d=document.createElement("span");d.className="dot";
+ d.addEventListener("click",()=>{stopPlay();setStep(i);});dotsHost.appendChild(d);});
+function setStep(i){
+ idx=(i+STEPS.length)%STEPS.length;const s=STEPS[idx];
+ zones.forEach(z=>{const zi=z.dataset.zone;
+  z.classList.toggle("hot",zi===s.zone);z.classList.toggle("dim",zi!==s.zone);});
+ $("j-tag").textContent="STEP "+(idx+1)+" / 6";$("s-cnt").textContent=(idx+1)+" / 6";
+ $("j-title").textContent=s.t;$("j-desc").textContent=s.d;$("j-shape").textContent="shape: "+s.sh;
+ [...dotsHost.children].forEach((d,j)=>d.classList.toggle("on",j===idx));
+ const vh=$("j-viz");vh.innerHTML="";const holder=document.createElement("div");holder.style.width="100%";vh.appendChild(holder);s.v(holder);
+}
+$("s-prev").addEventListener("click",()=>{stopPlay();setStep(idx-1);});
+$("s-next").addEventListener("click",()=>{stopPlay();setStep(idx+1);});
+function stopPlay(){if(playTimer){clearInterval(playTimer);playTimer=null;$("s-play").textContent="▶ 자동";}}
+$("s-play").addEventListener("click",()=>{if(playTimer){stopPlay();return;}
+ $("s-play").textContent="⏸ 정지";playTimer=setInterval(()=>setStep(idx+1),3200);});
+
+/* ===== 입자: 전체 경로 상시, 4개, 중간 속도 ===== */
+const flowPath=$("flowpath");const totalLen=flowPath.getTotalLength();const particles=[];
+[0,0.25,0.5,0.75].forEach(off=>{const c=el("circle",{r:3.4,class:"particle"},$("particles"));particles.push({el:c,off:off});});
+const reduced=matchMedia("(prefers-reduced-motion:reduce)").matches;
+function tick(){for(const p of particles){p.off+=0.0021;if(p.off>1)p.off-=1;
+  const pt=flowPath.getPointAtLength(p.off*totalLen);p.el.setAttribute("cx",pt.x);p.el.setAttribute("cy",pt.y);
+  p.el.setAttribute("opacity",Math.min(1,Math.min(p.off,1-p.off)*6));}requestAnimationFrame(tick);}
+/* ===== pruning ratio 비교 실험실 (일반 vs FairGRAPE) ===== */
+const regSvg=$("reg-svg"),fairSvg=$("fair-svg");
+/* 집단별 초기 정확도(예시, 압축 0%) — 소수집단 D가 약간 낮게 시작 */
+const ACC0=[0.92,0.90,0.93,0.86,0.91,0.89,0.88];
+function accBars(svg,accs){
+ svg.innerHTML="";
+ const BL=100,bw=30,gap=8,ox=18;
+ const minA=Math.min(...accs),maxA=Math.max(...accs);
+ accs.forEach((a,i)=>{
+  const x=ox+i*(bw+gap);
+  const norm=Math.max(0.05,(a-0.4)/0.6);   /* 0.4~1.0 → 0~1 */
+  const targetH=norm*78;
+  const isMin=(a===minA);
+  const rect=el("rect",{x:x,y:BL,width:bw,height:0,rx:2,
+    fill:GCOL[i],opacity:isMin?1:0.9,
+    style:"transition:height .45s,y .45s;"},svg);
+  el("text",{x:x+bw/2,y:BL+13,"font-size":8.5,fill:"#8a7d79","text-anchor":"middle"},svg).textContent=GROUPS[i];
+  requestAnimationFrame(()=>{rect.setAttribute("y",BL-targetH);rect.setAttribute("height",targetH);});
+ });
+}
+function computeAccs(prune,fair){
+ /* prune: 0~90(%) → frac */
+ const f=prune/100;
+ return ACC0.map((a0,i)=>{
+  if(fair){
+   /* FairGRAPE: 모든 집단이 비슷한 비율로 완만히 하락 (격차 유지) */
+   return a0-f*f*0.18;
+  }else{
+   /* 일반 프루닝: 낮게 시작한 집단(소수)이 더 급격히 하락 → 격차 확대 */
+   const vuln=(0.93-a0)*4;   /* 원래 낮을수록 취약 */
+   return a0 - f*f*(0.12+vuln*0.9);
+  }
+ });
+}
+function gapStr(accs){
+ const g=(Math.max(...accs)-Math.min(...accs))*100;
+ return g.toFixed(1)+"%p";
+}
+function renderPrune(prune){
+ $("d-prune-v").textContent=prune+"%";
+ const reg=computeAccs(prune,false).map(a=>Math.max(0.4,a));
+ const fair=computeAccs(prune,true).map(a=>Math.max(0.4,a));
+ accBars(regSvg,reg);accBars(fairSvg,fair);
+ $("reg-gap").textContent=gapStr(reg);
+ $("fair-gap").textContent=gapStr(fair);
+}
+$("d-prune").addEventListener("input",e=>renderPrune(+e.target.value));
+
+/* 초기화 */
+setStep(0);
+renderPrune(30);
+if(!reduced)requestAnimationFrame(tick);
+})();
+</script>
+</div>
+</body>
+</html>

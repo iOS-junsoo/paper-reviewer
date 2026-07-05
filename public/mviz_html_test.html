@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>method_viz_html iframe 렌더 테스트</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body{margin:0;background:#f4efe6;color:#211d19;font-family:system-ui,-apple-system,sans-serif}
+  #th{padding:10px 16px;font-weight:700;border-bottom:1px solid #d8cfbc;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  #th button{font:inherit;padding:4px 10px;border:1px solid #b7a680;background:#fff;border-radius:6px;cursor:pointer}
+  /* 리사이즈 호환 검증용: 폭 조절 가능한 컨테이너 */
+  #host{padding:18px;margin:0 auto;max-width:1180px}
+  #panel-method{background:#fff;border:1px solid #e8ddd4;border-radius:12px;padding:8px}
+  .stub{display:none!important}
+</style>
+</head><body>
+<div class="app stub"></div>
+<div id="th">
+  <span>method_viz_html iframe 테스트</span>
+  <button onclick="loadRef('t1_transformer')">T1 Transformer</button>
+  <button onclick="loadRef('t4_fairgrape')">T4 FairGRAPE</button>
+  <button onclick="loadRef('t9_bold')">T9 BOLD</button>
+  <button onclick="setW(1180)">폭 1180</button>
+  <button onclick="setW(760)">폭 760</button>
+  <button onclick="setW(460)">폭 460</button>
+  <span id="th-note"></span>
+</div>
+<div id="host">
+  <div id="panel-method"></div>
+</div>
+<div class="stub">
+<div id="bm-add"></div><div id="cache-badge"></div><div id="cancel-analysis"></div><div id="chat-close"></div><div id="chat-drawer"></div><div id="chat-fab"></div><div id="chat-form"></div><div id="chat-input"></div><div id="chat-messages"></div><div id="chat-resize"></div><div id="chat-send"></div><div id="contributions"></div><div id="dropzone"></div><div id="error"></div><div id="file-input"></div><div id="folder-new"></div><div id="glossary-card"></div><div id="glossary-close"></div><div id="glossary-list"></div><div id="glossary-search"></div><div id="history-list"></div><div id="history-search"></div><div id="kbd-help"></div><div id="kbd-help-close"></div><div id="loading"></div><div id="loading-fill"></div><div id="loading-log"></div><div id="loading-pct"></div><div id="loading-text"></div><div id="notes-bookmarks"></div><div id="notes-card"></div><div id="notes-close"></div><div id="notes-status"></div><div id="notes-text"></div><div id="one-liner"></div><div id="panel-background"></div><div id="panel-equations"></div><div id="panel-figures"></div><div id="panel-problem"></div><div id="panel-results"></div><div id="panel-seminar"></div><div id="paper-title"></div><div id="pdf-jump-flag"></div><div id="pdf-missing"></div><div id="pdf-pane"></div><div id="pdf-scroll"></div><div id="pdf-toggle"></div><div id="pdf-zoom-in"></div><div id="pdf-zoom-out"></div><div id="pdf-zoom-reset"></div><div id="pick-btn"></div><div id="qa-list"></div><div id="qa-prep"></div><div id="reanalyze-banner"></div><div id="rebar-cancel"></div><div id="rebar-fill"></div><div id="rebar-pct"></div><div id="rebar-text"></div><div id="related"></div><div id="related-list"></div><div id="sb-active"></div><div id="sb-active-prog"></div><div id="sb-active-title"></div><div id="sb-collapse"></div><div id="sb-foldermenu"></div><div id="sb-new"></div><div id="sb-open"></div><div id="tabs"></div><div id="theme-toggle"></div><div id="tool-cheatsheet"></div><div id="tool-copy"></div><div id="tool-download"></div><div id="tool-glossary"></div><div id="tool-notes"></div><div id="tool-regen"></div><div id="workspace"></div>
+</div>
+<script>
+  const _f = window.fetch;
+  window.fetch = (u, o) => {
+    if (typeof u === "string" && u.indexOf("/api/") === 0)
+      return Promise.resolve(new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }));
+    return _f ? _f(u, o) : Promise.reject(new Error("no fetch"));
+  };
+  window.setW = function (w) { document.getElementById("host").style.maxWidth = w + "px"; };
+  window.loadRef = function (name) {
+    return fetch("/method_viz_refs/" + name + ".html").then(r => r.text()).then(html => {
+      window.renderMethod({ method_viz_html: html });
+      document.getElementById("th-note").textContent = name + " 렌더 요청됨";
+      return true;
+    });
+  };
+</script>
+<script src="app.js"></script>
+</body></html>

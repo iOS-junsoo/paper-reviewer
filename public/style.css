@@ -731,6 +731,18 @@ mark {
 /* ── 연구 방법론: 스테퍼 ─────────────────────────────────────────── */
 #panel-method { white-space: normal; }
 
+/* 타입별 독립 HTML 시각화(iframe). 폭은 패널을 100% 채우고(리사이즈 호환),
+   높이는 JS가 내부 실측값으로 설정한다. 고정 px 폭 금지(§2.8). */
+.method-viz-frame {
+  width: 100%;
+  max-width: 100%;
+  border: 0;
+  display: block;
+  margin: 0 0 4px;
+  background: transparent;
+  color-scheme: light;
+}
+
 .stepper {
   list-style: none;
   counter-reset: step;
