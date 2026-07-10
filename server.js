@@ -3,6 +3,7 @@ require("dotenv").config();
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const zlib = require("zlib");
 const { execFile } = require("child_process");
 const express = require("express");
 const multer = require("multer");
@@ -70,6 +71,7 @@ if (fs.existsSync(serviceAccountPath)) {
   const chats = db.collection("chats");
   const notes = db.collection("notes");
   const library = db.collection("library");
+  const extras = db.collection("extras"); // 파생 산출물 캐시(비교·발표 대본 등) — key 임의 문자열
   store = {
     kind: "firestore",
     async getLibrary() {
@@ -97,6 +99,16 @@ if (fs.existsSync(serviceAccountPath)) {
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     },
+    async getExtra(key) {
+      const doc = await extras.doc(key).get();
+      return doc.exists ? JSON.parse(doc.data().dataJson || "null") : null;
+    },
+    async setExtra(key, data) {
+      await extras.doc(key).set({
+        dataJson: JSON.stringify(data),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    },
     async getNotes(hash) {
       const doc = await notes.doc(hash).get();
       return doc.exists ? JSON.parse(doc.data().notesJson || "{}") : { notes: "", bookmarks: [] };
@@ -113,19 +125,31 @@ if (fs.existsSync(serviceAccountPath)) {
       const data = doc.data();
       // analysis는 JSON 문자열로 저장됨 (Firestore는 중첩 배열을 허용하지 않음
       // — 예: heatmap inner_viz의 matrix: [[...]]). 구버전 객체 저장 레코드도 호환.
-      if (typeof data.analysisJson === "string") {
+      if (typeof data.analysisGz === "string") {
+        // 대형 분석: gzip+base64로 저장된 레코드 (아래 set 참고)
+        data.analysis = JSON.parse(zlib.gunzipSync(Buffer.from(data.analysisGz, "base64")).toString("utf8"));
+      } else if (typeof data.analysisJson === "string") {
         data.analysis = JSON.parse(data.analysisJson);
       }
       return data;
     },
     async set(hash, record) {
       const { analysis, ...rest } = record;
-      await analyses.doc(hash).set({
+      const json = JSON.stringify(analysis);
+      const payload = {
         ...rest,
-        analysisJson: JSON.stringify(analysis),
         // 호출자가 createdAt을 넘기면 보존(섹션 재생성 등) — 없으면 지금 시각
         createdAt: rest.createdAt ?? admin.firestore.FieldValue.serverTimestamp(),
-      });
+      };
+      // Firestore 문서 한도 1MiB — 긴 분석(세미나+시각화 HTML)은 넘길 수 있어 900KB부터 gzip.
+      // set()은 문서 전체 교체라 이전 analysisJson/analysisGz 중 안 쓴 쪽은 자연 소거된다.
+      if (Buffer.byteLength(json) > 900_000) {
+        payload.analysisGz = zlib.gzipSync(json).toString("base64");
+        console.log(`[저장 압축] ${rest.title || hash.slice(0, 8)}: ${Buffer.byteLength(json)}B → ${payload.analysisGz.length}B`);
+      } else {
+        payload.analysisJson = json;
+      }
+      await analyses.doc(hash).set(payload);
     },
     async delete(hash) {
       await analyses.doc(hash).delete();
@@ -162,6 +186,7 @@ if (!firestoreReady) {
   const mem = new Map();
   const chatMem = new Map();
   const notesMem = new Map();
+  const extraMem = new Map();
   let libMem = { folders: [], assignments: {} };
   store = {
     kind: "memory",
@@ -176,6 +201,13 @@ if (!firestoreReady) {
     },
     async setChat(hash, messages) {
       chatMem.set(hash, messages);
+    },
+    async getExtra(key) {
+      return extraMem.get(key) ?? null;
+    },
+    async setExtra(key, data) {
+      extraMem.set(key, data);
+      if (extraMem.size > 300) extraMem.delete(extraMem.keys().next().value);
     },
     async getNotes(hash) {
       return notesMem.get(hash) || { notes: "", bookmarks: [] };
@@ -588,6 +620,14 @@ function sseInit(res) {
   // 클라이언트가 끊긴 뒤 발생하는 비동기 소켓 오류(ECONNRESET 등)를 국소적으로 흡수한다.
   // 핸들러가 없으면 process 레벨 uncaughtException으로 올라가 로그를 어지럽힌다.
   res.on("error", () => {});
+  // 하트비트: 시각화 생성 같은 무이벤트 구간(~5분)에도 20초마다 SSE 주석을 흘려
+  // 중간 장비(프록시·Tailscale)의 유휴 종료를 막고, 끊김을 클라가 빨리 감지하게 한다.
+  // 주석 프레임(":ping")은 클라 파서가 "data: " 접두사만 읽으므로 무해하게 무시된다.
+  const hb = setInterval(() => {
+    if (res.writableEnded || res.destroyed) return clearInterval(hb);
+    try { res.write(": ping\n\n"); } catch (e) { clearInterval(hb); }
+  }, 20000);
+  res.on("close", () => clearInterval(hb));
 }
 function sseSend(res, obj) {
   if (res.writableEnded || res.destroyed) return; // 이미 닫힌 응답에는 쓰지 않음
@@ -681,6 +721,26 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
 
   const analysisMs = Date.now() - tA0; // 실측 분석 소요(재시도 포함)
   let vizMs = 0;
+  analysis.analysis_mode = mode; // 프론트가 간단/정밀을 구분(탭 잠금·배지·업그레이드 버튼)
+  const saveRecord = () =>
+    store.set(hash, {
+      hash,
+      title: analysis.title || fallbackTitle,
+      one_liner: analysis.one_liner || "",
+      venue: typeof analysis.venue === "string" ? analysis.venue.slice(0, 40) : null,
+      year: Number.isFinite(Number(analysis.year)) ? Number(analysis.year) : null,
+      analysis_mode: mode,
+      // 업그레이드(간단→정밀)면 기존 분석 시각 보존 — 히스토리 순서가 튀지 않게
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      analysis,
+    });
+  // P1 부분 선렌더: 텍스트 분석이 끝난 시점(바 ~50%)에 먼저 저장·전송 — 사용자는
+  // 시각화(~5분)가 구워지는 동안 세미나·배경·문제를 먼저 읽는다. 선저장 덕분에
+  // 시각화 중 취소해도 텍스트 분석은 남는다(최종 저장이 나중에 덮어씀).
+  if (mode !== "simple" && !aborted()) {
+    try { await saveRecord(); } catch (e) { console.warn(`[선저장 실패 — 진행 계속] ${e.message}`); }
+    sseSend(res, { type: "partial", data: { cached: false, hash, ...analysis, viz_pending: true } });
+  }
   // 방법론 타입 기반 HTML 시각화 생성(§8 자가검증 루프) — 메인 분석 뒤 이어서.
   // 실패·미검증이어도 분석은 그대로 저장(기존 JSON method_visualization이 폴백).
   // 간단 모드는 시각화 파이프라인 전체 생략(−약 5.5분·사용량 절약) — [정밀 업그레이드]로 채운다.
@@ -715,22 +775,12 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
   // ETA 자가학습: 성공 실행의 실측 소요를 모드별로 적재해 다음 예측을 보정한다.
   if (analysisMs > 0) appendDuration({ pages: pageCount, analysis_ms: analysisMs, viz_ms: vizMs > 0 ? vizMs : null, mode });
 
-  analysis.analysis_mode = mode; // 프론트가 간단/정밀을 구분(탭 잠금·배지·업그레이드 버튼)
   try {
-    await store.set(hash, {
-      hash,
-      title: analysis.title || fallbackTitle,
-      one_liner: analysis.one_liner || "",
-      venue: typeof analysis.venue === "string" ? analysis.venue.slice(0, 40) : null,
-      year: Number.isFinite(Number(analysis.year)) ? Number(analysis.year) : null,
-      analysis_mode: mode,
-      // 업그레이드(간단→정밀)면 기존 분석 시각 보존 — 히스토리 순서가 튀지 않게
-      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
-      analysis,
-    });
+    await saveRecord(); // 최종 저장 — 선저장본(텍스트만)을 시각화 포함본으로 덮어쓴다
   } catch (e) {
-    // 저장 실패(예: Firestore 1MB 문서 한도)로 완성된 분석을 버리지 않는다 — 화면엔 전달하고 로그만
+    // 저장 실패로 완성된 분석을 버리지 않는다 — 화면엔 전달하되 사용자에게도 알린다(새로고침 시 소실)
     console.error(`[저장 실패 — 결과는 화면에 전달] ${analysis.title || fallbackTitle}: ${e.message}`);
+    analysis.save_failed = true;
   }
   console.log(`[분석 완료] ${analysis.title || fallbackTitle}`);
   sseSend(res, { type: "result", data: { cached: false, hash, ...analysis } });
@@ -796,70 +846,128 @@ app.post("/api/analyze", (req, res) => {
         return res.status(400).json({ error: "PDF 파일이 첨부되지 않았습니다." });
       }
 
-      const buffer = req.file.buffer;
-
-      // 페이지 수 검사 (텍스트 추출이 아니라 PDF 구조 파싱만 수행)
-      let pageCount;
-      try {
-        const doc = await PDFDocument.load(buffer, { updateMetadata: false });
-        pageCount = doc.getPageCount();
-      } catch (e) {
-        return res.status(400).json({
-          error:
-            "PDF를 읽을 수 없습니다. 손상되었거나 암호화(password-protected)된 파일은 지원되지 않습니다.",
-        });
-      }
-      if (pageCount > MAX_PDF_PAGES) {
-        return res.status(400).json({
-          error: `PDF가 ${pageCount}페이지로 최대 ${MAX_PDF_PAGES}페이지 제한을 초과합니다.`,
-        });
-      }
-
-      // SHA-256 해시 → 원문 저장 → 캐시 조회
-      const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-      await fs.promises.writeFile(path.join(PDF_DIR, `${hash}.pdf`), buffer); // 뷰어·재분석·질문용
-
-      if (hashBusy(hash)) {
-        return res.status(409).json({
-          error: "이 논문은 이미 분석이 진행 중입니다. 잠시 후 히스토리에서 확인하세요.",
-        });
-      }
       // 분석 모드: multer가 멀티파트 텍스트 필드를 req.body에 채운다. 기본 full(하위호환).
       const mode = req.body && req.body.mode === "simple" ? "simple" : "full";
-      inFlight.add(hash); // 검사 직후 등록 — 아래 await 사이 동시 진입(중복 분석·사용량 이중 소모) 방지
-      try {
-        const cached = await store.get(hash);
-        const cachedMode = cached
-          ? cached.analysis_mode || (cached.analysis && cached.analysis.analysis_mode) || "full"
-          : null;
-        sseInit(res); // 여기부터는 SSE 스트림으로 진행 상황 전달
-        // 캐시 반환 조건: 정밀 캐시는 어떤 요청이든 충족(full ⊇ simple), 간단 캐시는 간단 요청만.
-        // 간단 캐시 + 정밀 요청 = 업그레이드 → 정밀 분석을 돌려 덮어쓴다(분석 시각 보존).
-        if (cached && !(cachedMode === "simple" && mode === "full")) {
-          sseSend(res, { type: "result", data: { cached: true, hash, ...cached.analysis } });
-          return res.end();
-        }
-        // 클라이언트가 탭을 닫거나 "분석 취소"하면 연결이 끊긴다 → 에이전트 실행 중단(사용량 절약)
-        const ac = new AbortController();
-        abortOnDisconnect(res, ac, req.file.originalname);
-        await runAnalysisJob(res, hash, pageCount, req.file.originalname, ac, {
-          mode,
-          createdAt: cached ? cached.createdAt : undefined,
-        });
-      } finally {
-        inFlight.delete(hash); // runAnalysisJob 내부 finally와 중복 삭제는 무해(Set)
-      }
+      await analyzeBufferSSE(res, req.file.buffer, req.file.originalname, mode);
     } catch (e) {
       console.error("[/api/analyze 오류]", e);
       if (res.headersSent) {
         sseSend(res, { type: "error", error: `분석 중 오류: ${e.message || "알 수 없는 오류"}` });
         return res.end();
       }
-      return res.status(500).json({
-        error: `분석 중 오류가 발생했습니다: ${e.message || "알 수 없는 오류"}`,
+      return res.status(e.status || 500).json({
+        error: e.status ? e.message : `분석 중 오류가 발생했습니다: ${e.message || "알 수 없는 오류"}`,
       });
     }
   });
+});
+
+// 업로드/URL 공용: PDF 버퍼 검사 → 저장 → 캐시 확인 → 분석(SSE 스트림).
+// 헤더 전송 전 오류는 err.status를 달아 throw — 라우트가 JSON으로 응답한다.
+async function analyzeBufferSSE(res, buffer, fallbackName, mode) {
+  const fail = (status, msg) => { const e = new Error(msg); e.status = status; return e; };
+  // 페이지 수 검사 (텍스트 추출이 아니라 PDF 구조 파싱만 수행)
+  let pageCount;
+  try {
+    const doc = await PDFDocument.load(buffer, { updateMetadata: false });
+    pageCount = doc.getPageCount();
+  } catch (e) {
+    throw fail(400, "PDF를 읽을 수 없습니다. 손상되었거나 암호화(password-protected)된 파일은 지원되지 않습니다.");
+  }
+  if (pageCount > MAX_PDF_PAGES) {
+    throw fail(400, `PDF가 ${pageCount}페이지로 최대 ${MAX_PDF_PAGES}페이지 제한을 초과합니다.`);
+  }
+
+  // SHA-256 해시 → 원문 저장 → 캐시 조회
+  const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+  await fs.promises.writeFile(path.join(PDF_DIR, `${hash}.pdf`), buffer); // 뷰어·재분석·질문용
+
+  if (hashBusy(hash)) {
+    throw fail(409, "이 논문은 이미 분석이 진행 중입니다. 잠시 후 히스토리에서 확인하세요.");
+  }
+  inFlight.add(hash); // 검사 직후 등록 — 아래 await 사이 동시 진입(중복 분석·사용량 이중 소모) 방지
+  try {
+    const cached = await store.get(hash);
+    const cachedMode = cached
+      ? cached.analysis_mode || (cached.analysis && cached.analysis.analysis_mode) || "full"
+      : null;
+    sseInit(res); // 여기부터는 SSE 스트림으로 진행 상황 전달
+    // 캐시 반환 조건: 정밀 캐시는 어떤 요청이든 충족(full ⊇ simple), 간단 캐시는 간단 요청만.
+    // 간단 캐시 + 정밀 요청 = 업그레이드 → 정밀 분석을 돌려 덮어쓴다(분석 시각 보존).
+    if (cached && !(cachedMode === "simple" && mode === "full")) {
+      sseSend(res, { type: "result", data: { cached: true, hash, ...cached.analysis } });
+      return res.end();
+    }
+    // 클라이언트가 탭을 닫거나 "분석 취소"하면 연결이 끊긴다 → 에이전트 실행 중단(사용량 절약)
+    const ac = new AbortController();
+    abortOnDisconnect(res, ac, fallbackName);
+    await runAnalysisJob(res, hash, pageCount, fallbackName, ac, {
+      mode,
+      createdAt: cached ? cached.createdAt : undefined,
+    });
+  } finally {
+    inFlight.delete(hash); // runAnalysisJob 내부 finally와 중복 삭제는 무해(Set)
+  }
+}
+
+// --- POST /api/analyze-url — arXiv 링크로 바로 분석 (관련 논문 원클릭·URL 붙여넣기) --
+// SSRF 방지: arxiv.org 계열 https 화이트리스트만 허용, 리다이렉트 최종 호스트도 재검증.
+const ARXIV_HOSTS = new Set(["arxiv.org", "www.arxiv.org", "export.arxiv.org"]);
+function normalizeArxivUrl(raw) {
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`); } catch (e) { return null; }
+  if (!ARXIV_HOSTS.has(u.hostname.toLowerCase())) return null;
+  // /abs/<id> · /pdf/<id>(.pdf) → /pdf/<id> (신형 2301.12345v2 / 구형 cs/0301001 모두 허용)
+  const m = u.pathname.match(/^\/(?:abs|pdf)\/(.+?)(?:\.pdf)?$/);
+  if (!m || !/^[a-z-]*\/?\d{4}[.\d]*(?:v\d+)?$/i.test(m[1])) return null;
+  return { pdfUrl: `https://arxiv.org/pdf/${m[1]}`, id: m[1] };
+}
+app.post("/api/analyze-url", async (req, res) => {
+  try {
+    const { url, mode: rawMode } = req.body || {};
+    const mode = rawMode === "simple" ? "simple" : "full";
+    const norm = normalizeArxivUrl(String(url || "").trim());
+    if (!norm) return res.status(400).json({ error: "arXiv 링크만 지원합니다 (예: https://arxiv.org/abs/1706.03762)." });
+
+    // 다운로드 (크기 상한 스트리밍 — 초과 시 즉시 중단)
+    const r = await fetch(norm.pdfUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(60000),
+      headers: { "User-Agent": "PaperReviewer/1.0 (local research tool)" },
+    });
+    if (!r.ok) return res.status(502).json({ error: `arXiv에서 PDF를 받지 못했습니다 (HTTP ${r.status}).` });
+    if (!ARXIV_HOSTS.has(new URL(r.url).hostname.toLowerCase())) {
+      return res.status(400).json({ error: "리다이렉트가 arXiv 밖으로 벗어나 중단했습니다." });
+    }
+    const chunks = [];
+    let total = 0;
+    const reader = r.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_PDF_BYTES) {
+        reader.cancel().catch(() => {});
+        return res.status(400).json({ error: `PDF가 너무 큽니다 (최대 ${Math.floor(MAX_PDF_BYTES / 1024 / 1024)}MB).` });
+      }
+      chunks.push(Buffer.from(value));
+    }
+    const buffer = Buffer.concat(chunks);
+    if (buffer.slice(0, 5).toString("ascii") !== "%PDF-") {
+      return res.status(400).json({ error: "받은 파일이 PDF가 아닙니다 (arXiv 페이지 주소가 논문 abs/pdf 링크인지 확인)." });
+    }
+
+    console.log(`[URL 분석] arXiv ${norm.id} (${(total / 1024 / 1024).toFixed(1)}MB, ${mode})`);
+    await analyzeBufferSSE(res, buffer, `arXiv ${norm.id}`, mode);
+  } catch (e) {
+    console.error("[/api/analyze-url 오류]", e);
+    if (res.headersSent) {
+      sseSend(res, { type: "error", error: `분석 중 오류: ${e.message || "알 수 없는 오류"}` });
+      return res.end();
+    }
+    const msg = e.name === "TimeoutError" ? "arXiv 다운로드가 60초를 초과했습니다." : e.message || "알 수 없는 오류";
+    return res.status(e.status || 500).json({ error: e.status ? e.message : `URL 분석 중 오류: ${msg}` });
+  }
 });
 
 // --- POST /api/reanalyze/:hash — 저장된 원문으로 새 프롬프트 재분석 -------------
@@ -1062,8 +1170,17 @@ app.post("/api/ask/:hash", async (req, res) => {
       options: {
         model: MODEL, allowedTools: ["Read", "WebSearch"], maxTurns: 20, cwd: PDF_DIR,
         abortController: ac,
+        includePartialMessages: true, // 답변 텍스트를 delta로 실시간 전송(타자기 렌더)
       },
     })) {
+      // 텍스트 토큰 스트리밍 — 메인 스레드(서브에이전트 제외)의 text_delta만 흘려보낸다.
+      // 도구 사용 전의 중간 코멘트도 흐르지만, 클라가 tool step 이벤트 때 라이브 버블을 비운다.
+      if (msg.type === "stream_event" && !msg.parent_tool_use_id) {
+        const ev = msg.event;
+        if (ev && ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && ev.delta.text) {
+          sseSend(res, { type: "delta", text: ev.delta.text });
+        }
+      }
       // 에이전트의 도구 사용·작성 단계를 사람이 읽을 메시지로 변환해 전송
       if (msg.type === "assistant" && msg.message && Array.isArray(msg.message.content)) {
         for (const b of msg.message.content) {
@@ -1075,9 +1192,9 @@ app.post("/api/ask/:hash", async (req, res) => {
               const q = ((b.input && b.input.query) || "").slice(0, 40);
               step(`🔎 자료를 검색하는 중: "${q}"`);
             }
-          } else if (b.type === "text" && b.text && b.text.trim().length > 30) {
-            step("✍️ 답변을 정리하는 중…");
           }
+          // (텍스트 블록 step은 제거 — delta 스트리밍이 실제 답변을 실시간 표시하므로
+          //  step을 보내면 클라가 라이브 텍스트를 지워버린다)
         }
       }
       if (msg.type === "result") {
@@ -1124,6 +1241,301 @@ app.get("/api/chat/:hash", async (req, res) => {
     res.json({ messages: await store.getChat(hash) });
   } catch (e) {
     res.status(500).json({ error: `채팅 기록 조회 실패: ${e.message}` });
+  }
+});
+
+// --- 파생 텍스트 생성 공용 (논문 비교 · 발표 대본) -----------------------------
+// 도구 없는 단일 LLM 호출을 delta SSE로 스트리밍하고 최종 텍스트를 반환한다.
+async function streamTextGen(res, ac, prompt, tag) {
+  let answer = null;
+  for await (const msg of query({
+    prompt,
+    options: { model: MODEL, allowedTools: [], maxTurns: 4, abortController: ac, includePartialMessages: true }, // 4: 모델이 마무리 턴을 더 쓰는 경우 대비(도구 없음이라 초과 사용 없음)
+  })) {
+    if (msg.type === "stream_event" && !msg.parent_tool_use_id) {
+      const ev = msg.event;
+      if (ev && ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && ev.delta.text) {
+        sseSend(res, { type: "delta", text: ev.delta.text });
+      }
+    }
+    if (msg.type === "result") {
+      logUsage(tag, msg);
+      if (msg.subtype !== "success") {
+        const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
+        const e = new Error(`생성 실패 (${msg.subtype})${detail ? ": " + detail.slice(0, 160) : ""}`);
+        if (isAuthError(detail)) e.code = "AUTH";
+        throw e;
+      }
+      answer = msg.result;
+    }
+  }
+  if (answer == null) throw new Error("모델이 텍스트를 반환하지 않았습니다.");
+  return answer;
+}
+// 파생 생성 라우트 공용 오류 응답 (SSE 시작 전/후 모두 처리)
+function genErrorReply(res, e, label) {
+  console.error(`[/api/${label} 오류]`, e.message);
+  const friendly = e.code === "AUTH" ? AUTH_ERROR_MSG : `${label} 생성 중 오류: ${e.message || "알 수 없는 오류"}`;
+  if (res.headersSent) {
+    if (!res.writableEnded && !res.destroyed) { sseSend(res, { type: "error", error: friendly }); res.end(); }
+  } else {
+    res.status(e.code === "AUTH" ? 401 : e.status || 500).json({ error: e.status ? e.message : friendly });
+  }
+}
+// 비교·대본 컨텍스트용 분석 요약(원문 PDF 재독 없음 — 저렴·빠름)
+function analysisDigest(a, { withSeminar = false } = {}) {
+  const d = {
+    title: a.title, one_liner: a.one_liner, venue: a.venue, year: a.year,
+    contributions: a.contributions,
+    problem: a.problem,
+    method_steps: (a.method_steps || []).map((s) => ({ title: s.title, description: s.description })),
+    equations: (a.equations || []).slice(0, 8).map((e) => ({ latex: e.latex, explanation: (e.explanation || "").slice(0, 200) })),
+    experiments: a.experiments && typeof a.experiments === "object"
+      ? {
+          takeaway: a.experiments.takeaway,
+          limitations: a.experiments.limitations,
+          studies: (a.experiments.studies || []).slice(0, 6).map((s) => ({ title: s.title, result: (s.result || "").slice(0, 220) })),
+        }
+      : null,
+  };
+  if (withSeminar) d.seminar = a.seminar;
+  return JSON.stringify(d).slice(0, withSeminar ? 15000 : 9000);
+}
+
+// --- POST /api/compare — 분석된 두 논문 비교 (B1) ------------------------------
+// 두 분석 JSON만 컨텍스트로 쓰는 1회 호출. 결과는 순서 무관 키로 캐시.
+app.post("/api/compare", async (req, res) => {
+  const ac = new AbortController();
+  abortOnDisconnect(res, ac, "논문 비교");
+  try {
+    const ha = String((req.body && req.body.a) || "").replace(/[^a-f0-9]/g, "");
+    const hb = String((req.body && req.body.b) || "").replace(/[^a-f0-9]/g, "");
+    const force = !!(req.body && req.body.force);
+    if (!isValidHash(ha) || !isValidHash(hb) || ha === hb) {
+      return res.status(400).json({ error: "서로 다른 두 논문을 골라 주세요." });
+    }
+    const [ra, rb] = await Promise.all([store.get(ha), store.get(hb)]);
+    if (!ra || !rb) return res.status(404).json({ error: "두 논문 모두 분석돼 있어야 비교할 수 있습니다." });
+    // 순서 무관 캐시 + 프롬프트도 정렬 순서로 고정 — 어느 논문에서 열어도 같은 결과 재사용
+    const [h1, h2] = [ha, hb].sort();
+    const r1 = h1 === ha ? ra : rb;
+    const r2 = h1 === ha ? rb : ra;
+    const key = `compare2:${h1}:${h2}`; // v2: 구조화(축별 그리드) — 구버전 산문 캐시(compare:)는 자연 폐기
+    sseInit(res);
+    if (!force) {
+      const cached = await store.getExtra(key).catch(() => null);
+      if (cached && cached.data) {
+        sseSend(res, { type: "result", data: cached.data, cached: true });
+        return res.end();
+      }
+    }
+    sseSend(res, { type: "step", msg: "두 논문의 분석을 비교하는 중…" });
+    const t1 = (r1.analysis && r1.analysis.title) || r1.title || "논문 1";
+    const t2 = (r2.analysis && r2.analysis.title) || r2.title || "논문 2";
+    const prompt = [
+      `대학원 세미나 준비 중인 학생을 위해 이미 분석된 두 논문을 비교하세요. 원문은 다시 읽을 수 없고, 아래 분석 요약(JSON)만 근거로 씁니다 — 요약에 없는 내용은 지어내지 마세요.`,
+      `[논문 1] ${analysisDigest(r1.analysis || {})}`,
+      `[논문 2] ${analysisDigest(r2.analysis || {})}`,
+      `출력: 아래 스키마의 JSON 객체 하나만. ==한눈에 훑는 비교표가 목적이므로 셀은 반드시 짧게== — ` +
+        `각 셀 최대 80자(구·1문장), 산문 금지. 강조 **볼드**/==형광펜==, 수식 $...$ 허용. ` +
+        `"a"는 논문 1("${t1.slice(0, 60)}"), "b"는 논문 2("${t2.slice(0, 60)}")입니다.`,
+      `{\n` +
+        `  "name_a": "논문 1의 짧은 통칭(약어나 핵심어, 12자 내)",\n` +
+        `  "name_b": "논문 2의 짧은 통칭",\n` +
+        `  "verdict": "결정적 차이 한 문장 (120자 내)",\n` +
+        `  "rows": [\n` +
+        `    { "axis": "한 줄 정체", "a": "…", "b": "…" },\n` +
+        `    { "axis": "푸는 문제", "a": "…", "b": "…" },\n` +
+        `    { "axis": "핵심 접근", "a": "…", "b": "…" },\n` +
+        `    { "axis": "필요한 것", "a": "학습 데이터·사전학습 모델 등", "b": "…" },\n` +
+        `    { "axis": "실험·성능", "a": "대표 수치(있으면)", "b": "…" },\n` +
+        `    { "axis": "강점", "a": "…", "b": "…" },\n` +
+        `    { "axis": "약점", "a": "…", "b": "…" }\n` +
+        `  ],\n` +
+        `  "when_a": "이럴 때 논문 1 접근 (1문장)",\n` +
+        `  "when_b": "이럴 때 논문 2 접근 (1문장)",\n` +
+        `  "qa": "\\"두 논문 차이가 뭐죠?\\"에 대한 30초 모범 답변 — 유일하게 문단 허용(3~4문장)"\n` +
+        `}`,
+      `비교 불가능한 축(예: 실험 설정이 달라 수치 비교 불가)은 셀에 "직접 비교 불가"라고 정직하게 쓰세요. rows는 필요시 1~2개 추가 가능(총 9개 이하).`,
+    ].join("\n\n");
+    console.log(`[비교] ${t1.slice(0, 30)} ↔ ${t2.slice(0, 30)}`);
+    const raw = await streamTextGen(res, ac, prompt, "비교");
+    let data;
+    try {
+      data = parseModelJson(raw);
+      if (!Array.isArray(data.rows) || !data.rows.length) throw new Error("rows 없음");
+    } catch (e) {
+      // 구조화 실패 시 산문 폴백 — 클라가 text로 렌더
+      sseSend(res, { type: "result", data: { fallback_text: raw }, cached: false });
+      return res.end();
+    }
+    data.title_a = t1; data.title_b = t2; // 전체 제목(툴팁·머리글용)
+    try { await store.setExtra(key, { data, a: h1, b: h2, at: new Date().toISOString() }); } catch (e) { console.warn("[비교 캐시 저장 실패]", e.message); }
+    sseSend(res, { type: "result", data, cached: false });
+    res.end();
+  } catch (e) {
+    if (ac.signal.aborted) return; // 사용자가 닫음 — 조용히 종료
+    genErrorReply(res, e, "compare");
+  }
+});
+
+// --- POST /api/script/:hash — 발표 대본 생성 (B3) ------------------------------
+// 세미나 정리·기여·방법론을 컨텍스트로 N분 발표 대본을 생성. (hash, minutes)별 캐시.
+app.post("/api/script/:hash", async (req, res) => {
+  const ac = new AbortController();
+  abortOnDisconnect(res, ac, "발표 대본");
+  try {
+    const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+    const minutes = [10, 20, 30].includes(Number(req.body && req.body.minutes)) ? Number(req.body.minutes) : 20;
+    const force = !!(req.body && req.body.force);
+    if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
+    const record = await store.get(hash);
+    if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
+    const a = record.analysis || {};
+    const key = `script:${hash}:${minutes}`;
+    sseInit(res);
+    if (!force) {
+      const cached = await store.getExtra(key).catch(() => null);
+      if (cached && cached.text) {
+        sseSend(res, { type: "result", text: cached.text, cached: true });
+        return res.end();
+      }
+    }
+    sseSend(res, { type: "step", msg: `${minutes}분 발표 대본을 쓰는 중…` });
+    const prompt = [
+      `연구실 세미나에서 이 논문을 ${minutes}분 동안 발표할 대학원생의 발표 대본을 쓰세요. ` +
+        `아래 분석 요약(JSON)만 근거로 하고, 요약에 없는 내용은 지어내지 마세요.`,
+      `분석 요약: ${analysisDigest(a, { withSeminar: true })}`,
+      `요구사항: (1) 실제로 소리 내어 말할 문장으로 — 문어체 낭독이 아니라 발표 말투("~인데요", "~입니다"). ` +
+        `(2) 각 절 소제목에 시간 배분을 붙이세요 — 예: "## 도입 (0:00–1:30)". 전체 합이 ${minutes}분이 되게. ` +
+        `(3) 구조: 도입(왜 이 논문) → 배경·문제 → 방법(가장 길게) → 실험·결과 → 한계·의의 → 마무리 멘트. ` +
+        `(4) 방법 절에는 청중이 따라올 수 있는 직관적 설명 한 번 + 핵심 수식이 있으면 $...$로 한두 개만. ` +
+        `(5) 마지막에 "## 예상 질문 대비" 절 — 나올 법한 질문 2~3개와 한 줄 답변. ` +
+        `(6) 리스트·표·코드펜스 금지, 소제목(##)·**볼드**·==형광펜==·$수식$만. 발표자가 그대로 읽을 수 있어야 합니다.`,
+    ].join("\n\n");
+    console.log(`[대본] ${a.title || record.title}: ${minutes}분`);
+    const text = await streamTextGen(res, ac, prompt, "대본");
+    try { await store.setExtra(key, { text, minutes, at: new Date().toISOString() }); } catch (e) { console.warn("[대본 캐시 저장 실패]", e.message); }
+    sseSend(res, { type: "result", text, cached: false });
+    res.end();
+  } catch (e) {
+    if (ac.signal.aborted) return;
+    genErrorReply(res, e, "script");
+  }
+});
+
+// --- POST /api/method-deep/:hash — 방법론 정밀 강독 생성 ------------------------
+// 원문 방법 섹션을 서브섹션 구조 그대로 따라가는 주해식 강독(요지 번역 + 해설 + 수식 풀이).
+// analysis.method_deep에 영구 저장(1회 생성 후 캐시). SSE: step(읽기 진행)/delta(글자수)/result.
+app.post("/api/method-deep/:hash", async (req, res) => {
+  const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+  if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
+  if (hashBusy(hash)) return res.status(409).json({ error: "이 논문은 이미 분석/생성이 진행 중입니다." });
+  const inflightKey = `${hash}:method_deep`;
+  inFlight.add(inflightKey);
+  const ac = new AbortController();
+  abortOnDisconnect(res, ac, "정밀 강독");
+  try {
+    const record = await store.get(hash);
+    if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
+    const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
+    if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: "저장된 원문 PDF가 없어 강독을 생성할 수 없습니다." });
+    const a = record.analysis || {};
+    const force = !!(req.body && req.body.force);
+    sseInit(res);
+    if (!force && a.method_deep && Array.isArray(a.method_deep.sections) && a.method_deep.sections.length) {
+      sseSend(res, { type: "result", data: a.method_deep, cached: true });
+      return res.end();
+    }
+    const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
+    const pageCount = doc.getPageCount();
+    // 위치 힌트: 기존 분석이 아는 방법 섹션·구조도 위치 (P6과 동일한 유도)
+    const figs = Array.isArray(a.figure_guide) ? a.figure_guide : [];
+    const archFigs = figs.filter((f) => f && (f.kind === "architecture" || f.kind === "method"));
+    const sectionRef =
+      (a.method_visualization && a.method_visualization.section_ref) ||
+      archFigs.map((f) => `${f.label}(p${f.page})`).join(", ") || "";
+    const stepsHint = (a.method_steps || []).map((s) => s.title).filter(Boolean).join(" / ");
+
+    sseSend(res, { type: "step", msg: "원문 방법 섹션을 찾는 중…" });
+    const prompt = [
+      `${pdfPath} 경로에 "${a.title || record.title || ""}" 논문 PDF(${pageCount}페이지)가 있습니다. ` +
+        `이 논문의 ==방법(Method) 부분을 대학원 수업의 논문 강독처럼 정밀하게 해설==하려 합니다.`,
+      `Read 도구로 방법 섹션과 그 주변만 읽으세요(pages 파라미터, 필요한 범위만).` +
+        (sectionRef ? ` 힌트 — 방법 섹션/구조도 위치: ${sectionRef}.` : "") +
+        (stepsHint ? ` 기존 분석의 단계 제목: ${stepsHint}.` : ""),
+      `강독 원칙:\n` +
+        `- 원문의 ==서브섹션 구조와 논리 전개 순서를 그대로== 따른다 (3.1→3.2…). 명시적 서브섹션이 없으면 논리 단위로 3~6개로 나누고 ref는 서술형 제목으로.\n` +
+        `- 각 서브섹션 body는: 문단 요지를 충실히 옮기고(번역 수준의 정확도) + 그 자리에서 주해 — 왜 이렇게 설계했는지, 이 수식이 뭘 하는지, 기호가 처음 나오면 정의.\n` +
+        `- 수식은 $...$ 인라인으로 옮기고 바로 풀이. 핵심 문장엔 ==형광펜==, 용어는 **볼드**(원어 병기).\n` +
+        `- 문단마다 근거 페이지 칩 [[p숫자|원문 짧은 구절]]을 1개 이상 — 실제 읽은 위치만, 지어내기 금지.\n` +
+        `- 서브섹션당 500~1200자. ## 소단락 가능, 리스트·표·코드펜스 금지.\n` +
+        `- 원문에 없는 내용을 보태지 않는다. 원문이 생략한 부분은 "원문은 ~를 다루지 않는다"라고 정직하게.`,
+      `최종 출력은 JSON 객체 하나만:\n` +
+        `{"sections":[{"ref":"3.1 원문 서브섹션 제목(원어)","page":시작페이지,"body":"강독 본문"}]}`,
+    ].join("\n\n");
+
+    let raw = null;
+    for await (const msg of query({
+      prompt,
+      options: {
+        model: MODEL, allowedTools: ["Read"], maxTurns: 30, cwd: PDF_DIR,
+        abortController: ac, includePartialMessages: true,
+      },
+    })) {
+      if (msg.type === "stream_event" && !msg.parent_tool_use_id) {
+        const ev = msg.event;
+        if (ev && ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && ev.delta.text) {
+          sseSend(res, { type: "delta", text: ev.delta.text });
+        }
+      }
+      if (msg.type === "assistant" && msg.message && Array.isArray(msg.message.content)) {
+        for (const b of msg.message.content) {
+          if (b.type === "tool_use" && b.name === "Read") {
+            const pages = (b.input && b.input.pages) || "";
+            sseSend(res, { type: "step", msg: pages ? `📄 원문 ${pages}쪽을 정독하는 중…` : "📄 원문을 정독하는 중…" });
+          }
+        }
+      }
+      if (msg.type === "result") {
+        logUsage("강독", msg);
+        if (msg.subtype !== "success") {
+          const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
+          const e = new Error(`강독 생성 실패 (${msg.subtype})`);
+          if (isAuthError(detail)) e.code = "AUTH";
+          throw e;
+        }
+        raw = msg.result;
+      }
+    }
+    if (ac.signal.aborted) return;
+    const parsed = parseModelJson(raw);
+    const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
+      .filter((s) => s && s.body)
+      .map((s) => ({ ref: String(s.ref || "").slice(0, 120), page: Number(s.page) || null, body: String(s.body) }));
+    if (!sections.length) throw new Error("강독 섹션을 생성하지 못했습니다.");
+    const data = { generated_at: new Date().toISOString(), sections };
+
+    // 기존 레코드에 method_deep만 병합 저장 (분석 시각·모드 보존 — 섹션 재생성과 동일 패턴)
+    const merged = { ...a, method_deep: data };
+    await store.set(hash, {
+      hash,
+      title: merged.title || record.title,
+      one_liner: merged.one_liner || record.one_liner,
+      venue: record.venue ?? null,
+      year: record.year ?? null,
+      analysis_mode: record.analysis_mode || a.analysis_mode || "full",
+      createdAt: record.createdAt,
+      analysis: merged,
+    });
+    console.log(`[강독 생성] ${a.title || record.title}: ${sections.length}개 섹션 · ${JSON.stringify(data).length}B`);
+    sseSend(res, { type: "result", data, cached: false });
+    res.end();
+  } catch (e) {
+    if (ac.signal.aborted) return;
+    genErrorReply(res, e, "method-deep");
+  } finally {
+    inFlight.delete(inflightKey);
   }
 });
 

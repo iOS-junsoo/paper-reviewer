@@ -19,6 +19,7 @@ const cancelBtn = document.getElementById("cancel-analysis");
 // "분석 취소" 버튼 — fetch를 끊으면 서버도 연결 종료를 감지해 에이전트 실행을 멈춘다(사용량 절약)
 cancelBtn.addEventListener("click", () => {
   if (analysisAbort) analysisAbort.abort();
+  stopEta(false); // ETA 티커·탭 타이틀 카운트다운 정지
 });
 
 // 취소 가능한 분석/재분석 시작. 이미 진행 중이던 흐름이 있으면 먼저 취소해
@@ -44,6 +45,7 @@ function endCancellable(ac) {
 // 재분석 배너의 "취소"도 동일하게 진행 중 분석을 중단한다
 document.getElementById("rebar-cancel").addEventListener("click", () => {
   if (analysisAbort) analysisAbort.abort();
+  stopEta(false); // ETA 티커·탭 타이틀 카운트다운 정지
 });
 
 // ── 읽기 테마 (기본 → 세피아 → 다크 순환). 속성은 <html>(documentElement)에 둔다
@@ -67,6 +69,31 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
 let historyFilter = "";
 const historySearch = document.getElementById("history-search");
 let historySearchTimer = 0;
+// ── 히스토리 필터 칩: 모드(전체→정밀→간단 순환) + 연도 셀렉트 ──────────────────
+let historyModeFilter = "all"; // all | full | simple
+let historyYearFilter = ""; // "" = 전체
+const hfMode = document.getElementById("hf-mode");
+const hfYear = document.getElementById("hf-year");
+hfMode.addEventListener("click", () => {
+  historyModeFilter = historyModeFilter === "all" ? "full" : historyModeFilter === "full" ? "simple" : "all";
+  hfMode.textContent = historyModeFilter === "all" ? "모드: 전체" : historyModeFilter === "full" ? "모드: 🔬 정밀" : "모드: ⚡ 간단";
+  hfMode.classList.toggle("hf-on", historyModeFilter !== "all");
+  renderHistory();
+});
+hfYear.addEventListener("change", () => {
+  historyYearFilter = hfYear.value;
+  hfYear.classList.toggle("hf-on", !!historyYearFilter);
+  renderHistory();
+});
+// 목록의 실제 연도들로 셀렉트 옵션 재구성(선택 유지)
+function refreshYearOptions() {
+  const years = [...new Set(historyItems.map((it) => it.year).filter(Boolean))].sort((a, b) => b - a);
+  const cur = historyYearFilter;
+  hfYear.innerHTML = `<option value="">연도: 전체</option>` + years.map((y) => `<option value="${y}">${y}</option>`).join("");
+  hfYear.value = years.includes(Number(cur)) ? cur : "";
+  historyYearFilter = hfYear.value;
+}
+
 historySearch.addEventListener("input", () => {
   historyFilter = historySearch.value.trim().toLowerCase();
   // 목록 재구성(KaTeX 렌더 포함)이 키 입력마다 돌지 않게 잠깐 모아서 반영
@@ -122,7 +149,8 @@ const API_BASE = window.API_BASE || "";
 // ---------- 업로드 ----------
 pickBtn.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
-  if (fileInput.files.length) analyzeFile(fileInput.files[0]);
+  if (fileInput.files.length > 1) analyzeQueue(fileInput.files);
+  else if (fileInput.files.length) analyzeFile(fileInput.files[0]);
 });
 
 ["dragenter", "dragover"].forEach((ev) =>
@@ -138,8 +166,12 @@ fileInput.addEventListener("change", () => {
   })
 );
 dropzone.addEventListener("drop", (e) => {
+  if (e.dataTransfer.files.length > 1) return analyzeQueue(e.dataTransfer.files);
   const file = e.dataTransfer.files[0];
-  if (file) analyzeFile(file);
+  if (file) return analyzeFile(file);
+  // 파일이 아니라 링크 텍스트를 끌어다 놓은 경우(브라우저 주소창·페이지의 arXiv 링크)
+  const text = (e.dataTransfer.getData("text/plain") || e.dataTransfer.getData("text/uri-list") || "").trim();
+  if (/arxiv\.org\/(abs|pdf)\//i.test(text)) analyzeUrl(text, null);
 });
 
 // ── 분석 모드 선택 다이얼로그 (간단 ⚡ / 정밀 🔬) ──────────────────────────
@@ -237,10 +269,17 @@ async function analyzeFile(file) {
     mode = await showModeDialog(file.name, pages);
     if (!mode) { fileInput.value = ""; return; } // 취소
   }
+  ensureNotifyPermission(); // 모드 선택 제스처 직후 — 완료 데스크톱 알림 권한
+  await runUpload(file, mode);
+}
 
+// 업로드→SSE→렌더 코어 (단일/일괄 큐 공용). label: 큐 진행 표시("(2/5) 제목").
+// 반환: { ok, error?, aborted? } — 큐가 이어갈지/멈출지 판단하는 데 쓴다.
+async function runUpload(file, mode, label) {
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
-  setActiveAnalysis(file.name.replace(/\.pdf$/i, ""));
+  setActiveAnalysis(label || file.name.replace(/\.pdf$/i, ""));
+  resetLoadingProgress();
   setLoadingProgress("논문을 업로드하는 중…", 0);
 
   const form = new FormData();
@@ -256,21 +295,58 @@ async function analyzeFile(file) {
       const data = await safeJson(res);
       throw new Error(formatApiError(data, res.status));
     }
-    const data = await consumeAnalysisStream(res); // SSE: 진행 메시지 → 최종 결과
-    renderResult(data);
+    const data = await consumeAnalysisStream(res); // SSE: 진행 메시지 → (부분 렌더) → 최종 결과
+    if (analysisPartialShown) {
+      const keep = activeTab; // 부분 렌더 후 사용자가 읽던 탭 유지 — 시각화만 갈아끼움
+      renderResult(data);
+      switchTab(keep);
+    } else {
+      renderResult(data);
+    }
     loadHistory();
+    return { ok: true };
   } catch (e) {
-    if (e.name === "AbortError") loadHistory(); // 사용자가 취소 — 조용히 초기 화면으로
-    else showError(e.message);
+    if (e.name === "AbortError") { loadHistory(); return { ok: false, aborted: true }; } // 사용자가 취소
+    showError(e.message);
+    return { ok: false, error: e.message };
   } finally {
     // 이 흐름이 다른 새 흐름으로 대체됐다면 UI 정리를 건너뛴다(새 흐름의 화면을 망치지 않게)
     if (endCancellable(ac)) {
       loadingEl.classList.add("hidden");
+      hideReanalyzeBanner(); // 부분 렌더가 띄운 시각화 진행 배너 정리
       setActiveAnalysis(null);
       setLoadingText("논문을 분석하고 있습니다…");
     }
     fileInput.value = "";
   }
+}
+
+// ── 여러 논문 일괄(큐) 분석 — 모드 한 번 선택 후 순차 진행, 오류는 건너뛰고 계속 ──
+async function analyzeQueue(files) {
+  const pdfs = [...files].filter((f) => f.name.toLowerCase().endsWith(".pdf"));
+  if (!pdfs.length) return showError("PDF 파일만 업로드할 수 있습니다.");
+  if (pdfs.length === 1) return analyzeFile(pdfs[0]);
+  hideError();
+  const mode = await showModeDialog(`${pdfs.length}편 일괄 분석`, null);
+  if (!mode) { fileInput.value = ""; return; }
+  ensureNotifyPermission();
+  const failures = [];
+  for (let i = 0; i < pdfs.length; i++) {
+    const f = pdfs[i];
+    const r = await runUpload(f, mode, `(${i + 1}/${pdfs.length}) ${f.name.replace(/\.pdf$/i, "")}`);
+    if (r.aborted) break; // 취소 = 큐 전체 중단
+    if (!r.ok) {
+      failures.push(f.name);
+      appendLoadingLog(`✗ ${f.name}: ${(r.error || "실패").slice(0, 80)}`);
+      // 구독 세션 한도 도달 — 남은 파일을 돌려봐야 전부 실패하므로 멈춘다
+      if (/한도|session limit|429/i.test(r.error || "")) {
+        showError(`구독 세션 한도에 도달했습니다 — 남은 ${pdfs.length - i - 1}편은 한도 리셋 후 다시 올려 주세요. (실패: ${failures.join(", ")})`);
+        return;
+      }
+    }
+  }
+  if (failures.length) showError(`일괄 분석 완료 — ${failures.length}편 실패: ${failures.join(", ")}`);
+  loadHistory();
 }
 
 let lastLoadingPct = 0;
@@ -353,6 +429,7 @@ function tickEta() {
   setBarLabel(label);
   const prog = document.getElementById("sb-active-prog");
   if (prog) prog.textContent = `${label}${lastLoadingMsg ? " · " + lastLoadingMsg : ""}`.trim();
+  document.title = `⏳ ${label} — ${DOC_TITLE}`; // 다른 탭에서도 남은 시간이 보이게
 }
 
 // 분석 구간의 실측 %(0~92)를 진행 비율로 반영 — 92%를 분석 사실상 완료로 본다
@@ -365,6 +442,7 @@ function etaOnProgress(pct) {
 function stopEta(finalize) {
   if (eta.timer) { clearInterval(eta.timer); eta.timer = null; }
   eta.active = false;
+  document.title = DOC_TITLE; // 탭 타이틀 카운트다운 원복
   if (finalize) {
     eta.lastWidth = 100;
     setBarWidth(100);
@@ -443,9 +521,35 @@ function appendLoadingLog(msg) {
   log.scrollTop = log.scrollHeight;
 }
 
-// 서버가 보내는 SSE 스트림(progress/result/error)을 소비하고 최종 결과를 반환
+// ── 분석 완료 데스크톱 알림 + 탭 타이틀 ETA ─────────────────────────────────
+// 긴 분석(정밀 ~11분) 동안 다른 탭에 가 있어도 완료를 알 수 있게 한다.
+const DOC_TITLE = document.title;
+function ensureNotifyPermission() {
+  // 사용자 제스처(모드 선택·재분석 클릭) 직후에만 호출 — 브라우저 정책상 이때만 프롬프트가 뜬다
+  try {
+    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+  } catch {}
+}
+function notifyDone(title, ok = true) {
+  if (!document.hidden) return; // 보고 있는 탭이면 알림 불필요
+  try {
+    if ("Notification" in window && Notification.permission === "granted") {
+      const n = new Notification(ok ? "✅ 논문 분석 완료" : "⚠️ 논문 분석 실패", {
+        body: (title || "Paper Reviewer").slice(0, 80),
+        tag: "paper-reviewer-analysis", // 같은 태그 = 알림 중복 교체
+      });
+      n.onclick = () => { try { window.focus(); n.close(); } catch {} };
+    }
+  } catch {}
+}
+
+// 서버가 보내는 SSE 스트림(progress/partial/result/error)을 소비하고 최종 결과를 반환.
+// partial(텍스트 분석 완료본)이 오면 즉시 렌더해 시각화(~5분)를 기다리지 않고 읽게 한다 —
+// 호출자는 analysisPartialShown을 보고 최종 렌더 시 보던 탭을 유지한다.
+let analysisPartialShown = false;
 async function consumeAnalysisStream(res) {
   document.getElementById("loading-log").innerHTML = "";
+  analysisPartialShown = false;
   let lastProgress = null;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -475,11 +579,23 @@ async function consumeAnalysisStream(res) {
         lastProgress = ev.msg;
         setLoadingProgress(ev.msg, ev.pct);
         etaOnProgress(ev.pct); // 실측 페이지% 로 바를 앞당김(분석 구간)
+      } else if (ev.type === "partial") {
+        // 텍스트 분석 완료 — 시각화가 구워지는 동안 먼저 읽는다. ETA 티커는 계속
+        // 돌며 재분석 배너의 바(rebar)를 채운다(setBarWidth가 양쪽을 갱신).
+        analysisPartialShown = true;
+        renderResult(ev.data);
+        loadingEl.classList.add("hidden");
+        document.getElementById("reanalyze-banner").classList.remove("hidden");
+        document.getElementById("rebar-text").textContent = "방법론 인터랙티브 시각화 생성 중 — 다른 탭은 먼저 읽을 수 있어요";
+        loadHistory();
+        window.scrollTo({ top: 0, behavior: "smooth" });
       } else if (ev.type === "result") {
         result = ev.data;
         stopEta(true); // 100% 스냅 + "완료!"
+        notifyDone(result && result.title, true); // 백그라운드 탭이면 데스크톱 알림
       } else if (ev.type === "error") {
         stopEta(false);
+        notifyDone(ev.error || "분석 실패", false);
         let msg = ev.error || "분석 실패";
         if (ev.detail) msg += `\n\n모델 응답 일부:\n${ev.detail}`;
         throw new Error(msg);
@@ -568,6 +684,8 @@ function renderResult(data) {
   const sameHash = !!prevHash && prevHash === currentHash;
   if (!sameHash && chatAbort) chatAbort.abort(); // 이전 논문의 답변 생성 중단 — 서버 에이전트도 함께 멈춰 사용량 절약
   currentAnalysis = data; // 마크다운 내보내기·섹션 재생성에서 사용
+  // 저장 실패(Firestore 한도 등): 결과는 보이지만 캐시에 없음 — 새로고침 시 사라짐을 알린다
+  if (data.save_failed) showError("⚠️ 분석은 완료됐지만 저장에 실패했습니다 — 이 화면을 벗어나면 결과가 사라질 수 있어요. 마크다운으로 내려받아 두거나 다시 분석해 주세요.");
   // 추천 질문은 객체({q,category,why}) 또는 옛 문자열 — 채팅 칩용으로 문자열만 추림
   currentSuggested = (Array.isArray(data.suggested_questions) ? data.suggested_questions : [])
     .map((x) => (typeof x === "string" ? x : (x && x.q) || ""))
@@ -1191,6 +1309,7 @@ async function loadPdf(hash) {
   pdfDoc = null;
   pdfPageEls.clear();
   pdfScroll.innerHTML = "";
+  resetPdfSearch(); // 이전 논문 검색 인덱스·UI 초기화
   const token = ++pdfRenderToken;
   if (!hash) return pdfMissing.classList.remove("hidden");
 
@@ -1467,6 +1586,110 @@ async function jumpToPdfPageText(page, anchor) {
   pdfScroll.scrollTop = pdfScroll.scrollTop + (tr.top - sr.top) - offset;
   flagPdfJump(page);
 }
+// ---------- PDF 내 텍스트 검색 (🔍 / 단축키 S) ----------
+// 페이지별 텍스트를 지연 캐시하고, 매치 목록(페이지+스니펫)을 보여준다.
+// 클릭 시 jumpToPdfPageText 재사용(페이지 이동 + ✓ 표시).
+let pdfTextCache = new Map(); // page -> 공백 정규화 텍스트
+let pdfSearchToken = 0; // 논문 전환/재검색 시 진행 중 검색 무효화
+function resetPdfSearch() {
+  pdfTextCache = new Map();
+  pdfSearchToken++;
+  const bar = document.getElementById("pdf-search-bar");
+  if (bar) {
+    bar.classList.add("hidden");
+    document.getElementById("pdf-search-input").value = "";
+    document.getElementById("pdf-search-count").textContent = "";
+    const list = document.getElementById("pdf-search-results");
+    list.innerHTML = "";
+    list.classList.add("hidden");
+  }
+}
+async function pdfPageTextOf(n) {
+  if (pdfTextCache.has(n)) return pdfTextCache.get(n);
+  const page = await pdfDoc.getPage(n);
+  const tc = await page.getTextContent();
+  const text = tc.items.map((it) => it.str || "").join(" ").replace(/\s+/g, " ");
+  pdfTextCache.set(n, text);
+  return text;
+}
+async function runPdfSearch(q) {
+  const token = ++pdfSearchToken;
+  const list = document.getElementById("pdf-search-results");
+  const count = document.getElementById("pdf-search-count");
+  list.innerHTML = "";
+  list.classList.add("hidden");
+  if (!pdfDoc || !q || q.trim().length < 2) { count.textContent = q ? "2자 이상" : ""; return; }
+  count.textContent = "검색 중…";
+  const needle = q.trim().toLowerCase();
+  const results = [];
+  const MAXR = 60;
+  for (let n = 1; n <= pdfDoc.numPages && results.length < MAXR; n++) {
+    let text;
+    try { text = await pdfPageTextOf(n); } catch { continue; }
+    if (token !== pdfSearchToken) return; // 그 사이 새 검색/논문 전환
+    const lower = text.toLowerCase();
+    let from = 0, i;
+    while ((i = lower.indexOf(needle, from)) >= 0 && results.length < MAXR) {
+      results.push({
+        page: n,
+        // 매치 주변 문맥 스니펫 + 점프 앵커(매치 시작부터 40자 — findTextPos가 위치를 찾는다)
+        pre: text.slice(Math.max(0, i - 26), i),
+        hit: text.slice(i, i + needle.length),
+        post: text.slice(i + needle.length, i + needle.length + 26),
+        anchor: text.slice(i, i + 40),
+      });
+      from = i + needle.length;
+    }
+  }
+  if (token !== pdfSearchToken) return;
+  count.textContent = results.length ? `${results.length}건${results.length >= MAXR ? "+" : ""}` : "결과 없음";
+  if (!results.length) return;
+  results.forEach((r) => {
+    const li = document.createElement("li");
+    const pg = document.createElement("span");
+    pg.className = "psr-page";
+    pg.textContent = `p.${r.page}`;
+    const tx = document.createElement("span");
+    tx.className = "psr-text";
+    tx.append(document.createTextNode(r.pre));
+    const b = document.createElement("b");
+    b.textContent = r.hit;
+    tx.append(b, document.createTextNode(r.post));
+    li.append(pg, tx);
+    li.addEventListener("click", () => jumpToPdfPageText(r.page, r.anchor));
+    list.appendChild(li);
+  });
+  list.classList.remove("hidden");
+}
+(function initPdfSearch() {
+  const bar = document.getElementById("pdf-search-bar");
+  const input = document.getElementById("pdf-search-input");
+  let debounce = 0;
+  const open = () => {
+    if (!pdfAvailable) return showError("이 논문의 원문 PDF가 저장돼 있지 않아 검색할 수 없습니다.");
+    workspaceEl.classList.remove("pdf-collapsed"); // 접힌 패널이면 펼친다
+    document.getElementById("pdf-toggle").textContent = "접기 ◀";
+    bar.classList.remove("hidden");
+    input.focus();
+    input.select();
+  };
+  document.getElementById("pdf-search-toggle").addEventListener("click", () => {
+    if (bar.classList.contains("hidden")) open();
+    else bar.classList.add("hidden");
+  });
+  document.getElementById("pdf-search-close").addEventListener("click", () => bar.classList.add("hidden"));
+  input.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => runPdfSearch(input.value), 350);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Enter") { e.preventDefault(); clearTimeout(debounce); runPdfSearch(input.value); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); bar.classList.add("hidden"); }
+  });
+  window.openPdfSearch = open; // 단축키(S)에서 호출
+})();
+
 // 실험 제목에서 원문 검색용 앵커 추출 (anchor 필드가 없을 때 폴백) — "Experiment 1: ..." → "Experiment 1"
 function studyAnchorFromTitle(title) {
   if (!title) return "";
@@ -1579,10 +1802,78 @@ function renderRelated(papers) {
     reason.className = "rel-reason";
     renderRich(reason, p.reason || "");
     li.append(title, reason);
+    // arXiv 링크가 있으면 원클릭 분석 — 선행 논문 따라 읽기 흐름을 잇는다
+    if (p.link && /arxiv\.org\/(abs|pdf)\//i.test(p.link)) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "rel-analyze";
+      go.textContent = "📥 이 논문도 분석";
+      go.title = "arXiv에서 PDF를 받아 바로 분석합니다";
+      go.addEventListener("click", () => analyzeUrl(p.link, p.title));
+      li.appendChild(go);
+    }
     list.appendChild(li);
   });
   box.classList.remove("hidden");
 }
+
+// ── arXiv URL로 바로 분석 (관련 논문 버튼·랜딩 화면 URL 붙여넣기 공용) ──────────
+async function analyzeUrl(url, title) {
+  hideError();
+  const mode = await showModeDialog(title || url.replace(/^https?:\/\//, ""), null);
+  if (!mode) return;
+  ensureNotifyPermission();
+
+  workspaceEl.classList.add("hidden");
+  loadingEl.classList.remove("hidden");
+  setActiveAnalysis(title || "arXiv 논문");
+  resetLoadingProgress();
+  setLoadingProgress("arXiv에서 PDF를 내려받는 중…", 0);
+
+  const ac = beginCancellable();
+  try {
+    const res = await fetch(`${API_BASE}/api/analyze-url`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, mode }),
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      const data = await safeJson(res);
+      throw new Error(formatApiError(data, res.status));
+    }
+    const data = await consumeAnalysisStream(res);
+    if (analysisPartialShown) {
+      const keep = activeTab;
+      renderResult(data);
+      switchTab(keep);
+    } else {
+      renderResult(data);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    loadHistory();
+  } catch (e) {
+    if (e.name !== "AbortError") showError(e.message);
+    workspaceEl.classList.toggle("hidden", !currentHash);
+  } finally {
+    if (endCancellable(ac)) {
+      loadingEl.classList.add("hidden");
+      hideReanalyzeBanner();
+      setActiveAnalysis(null);
+    }
+  }
+}
+
+// 랜딩 화면(드롭존 표시 중)에서 arXiv URL 붙여넣기 → 바로 분석 제안
+document.addEventListener("paste", (e) => {
+  const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName || "") ||
+    document.activeElement?.isContentEditable;
+  if (typing) return; // 입력창 붙여넣기는 그대로 둔다
+  const text = (e.clipboardData?.getData("text/plain") || "").trim();
+  if (!/arxiv\.org\/(abs|pdf)\//i.test(text)) return;
+  e.preventDefault();
+  analyzeUrl(text, null);
+});
 
 // ---------- 질문하기 (플로팅 버튼 + 우측 드로어) ----------
 const chatMessages = document.getElementById("chat-messages");
@@ -1850,12 +2141,24 @@ chatInput.addEventListener("keydown", (e) => {
   }
 });
 
-// 채팅 SSE 소비: step(진행 단계)으로 '생각 중' 표시를 갱신하고 최종 answer를 반환
+// 채팅 SSE 소비: delta(답변 토큰)를 타자기처럼 라이브 렌더, step(진행 단계)은
+// 라이브 텍스트를 비우고 '생각 중' 표시로 전환(도구 사용 전 중간 코멘트 정리),
+// 최종 answer(권위본)를 반환한다.
 async function consumeChatStream(res, thinkingEl) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
   let answer = null;
+  let live = ""; // 현재 턴에서 흘러온 답변 텍스트
+  let lastPaint = 0;
+  const paintLive = (force) => {
+    const now = performance.now();
+    if (!force && now - lastPaint < 120) return; // 렌더 스로틀(KaTeX 비용)
+    lastPaint = now;
+    const atBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 60;
+    renderRich(thinkingEl, live + " ▍");
+    if (atBottom) chatMessages.scrollTop = chatMessages.scrollHeight;
+  };
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -1868,7 +2171,8 @@ async function consumeChatStream(res, thinkingEl) {
       if (!line) continue;
       let ev;
       try { ev = JSON.parse(line.slice(6)); } catch { continue; }
-      if (ev.type === "step") setThinking(thinkingEl, ev.msg);
+      if (ev.type === "delta") { live += ev.text; paintLive(false); }
+      else if (ev.type === "step") { live = ""; setThinking(thinkingEl, ev.msg); } // 도구 사용 = 그 전 텍스트는 중간 코멘트
       else if (ev.type === "result") answer = ev.answer;
       else if (ev.type === "error") throw new Error(ev.error);
     }
@@ -1998,8 +2302,14 @@ function renderMethod(data) {
       const el = buildFigure(f);
       if (el) panel.appendChild(el);
     });
-    // 간단 분석: 시각화가 원래 없음을 알리고 채우는 경로를 안내
-    if (!figures.length && data.analysis_mode === "simple") {
+    // 부분 선렌더: 시각화가 아직 구워지는 중 — 완료되면 자동으로 이 자리에 나타남
+    if (data.viz_pending) {
+      const note = document.createElement("p");
+      note.className = "muted simple-viz-note";
+      note.textContent = "⏳ 인터랙티브 시각화를 생성하는 중입니다 (약 5분) — 완료되면 자동으로 여기에 표시돼요. 다른 탭은 지금 읽을 수 있습니다.";
+      panel.appendChild(note);
+    } else if (!figures.length && data.analysis_mode === "simple") {
+      // 간단 분석: 시각화가 원래 없음을 알리고 채우는 경로를 안내
       const note = document.createElement("p");
       note.className = "muted simple-viz-note";
       note.textContent = "⚡ 간단 분석에는 인터랙티브 시각화가 없습니다 — 정밀 분석으로 업그레이드하거나, 이 탭의 \"이 섹션 다시 생성\"으로 시각화만 만들 수 있어요.";
@@ -2035,6 +2345,136 @@ function renderMethod(data) {
     div.className = "method-plain";
     renderRich(div, data.method);
     panel.appendChild(div);
+  }
+
+  // 🔬 정밀 강독 — 원문 방법 섹션을 서브섹션 구조 그대로 따라가는 주해식 해설 (온디맨드)
+  panel.appendChild(buildMethodDeepBlock(data));
+}
+
+// ---------- 방법론 정밀 강독 (method_deep) ----------
+// 있으면 렌더(접이식·원문 점프), 없으면 [생성] 버튼. 생성은 SSE로 진행 표시 후
+// 서버가 analysis.method_deep에 영구 저장 → 이 블록만 다시 그린다.
+let methodDeepBusy = false;
+function buildMethodDeepBlock(data) {
+  const wrap = document.createElement("section");
+  wrap.className = "mdeep";
+  wrap.id = "mdeep-block";
+  const deep = data.method_deep;
+
+  const head = document.createElement("div");
+  head.className = "mdeep-head";
+  const title = document.createElement("h3");
+  title.className = "mdeep-title";
+  title.textContent = "🔬 정밀 강독";
+  const sub = document.createElement("span");
+  sub.className = "mdeep-sub muted";
+  sub.textContent = "원문 방법 섹션을 강독하듯 문단 요지 + 주해로 풀어냅니다";
+  head.append(title, sub);
+  wrap.appendChild(head);
+
+  if (deep && Array.isArray(deep.sections) && deep.sections.length) {
+    deep.sections.forEach((s) => {
+      const det = document.createElement("details");
+      det.className = "mdeep-sec";
+      det.open = true; // 기본 펼침 — "읽은 것처럼" 이어지는 흐름
+      const sum = document.createElement("summary");
+      sum.className = "mdeep-ref";
+      sum.textContent = s.ref || "(제목 없음)";
+      if (s.page) {
+        const pg = document.createElement("button");
+        pg.type = "button";
+        pg.className = "mdeep-page";
+        pg.textContent = `p.${s.page} ↗`;
+        pg.title = "원문의 이 섹션으로 이동";
+        pg.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation(); // summary 접힘 방지
+          jumpToPdfPageText(s.page, (s.ref || "").replace(/^[\d.\s]+/, "").slice(0, 30));
+        });
+        sum.appendChild(pg);
+      }
+      const body = document.createElement("div");
+      body.className = "mdeep-body";
+      renderRich(body, s.body || "");
+      det.append(sum, body);
+      wrap.appendChild(det);
+    });
+    const regen = document.createElement("button");
+    regen.type = "button";
+    regen.className = "rtool mdeep-btn";
+    regen.textContent = "🔄 강독 다시 생성";
+    regen.addEventListener("click", () => generateMethodDeep(wrap, true));
+    wrap.appendChild(regen);
+  } else {
+    const desc = document.createElement("p");
+    desc.className = "muted mdeep-desc";
+    desc.textContent = "단계 요약보다 깊게 — 원문 3.1→3.2 구조를 그대로 따라가며 수식 풀이·기호 정의·설계 의도까지 해설합니다. 원문에서 방법 섹션만 다시 읽어 생성해요.";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rtool mdeep-btn";
+    btn.textContent = "🔬 정밀 강독 생성 (2~3분)";
+    btn.addEventListener("click", () => generateMethodDeep(wrap, false));
+    wrap.append(desc, btn);
+  }
+  return wrap;
+}
+async function generateMethodDeep(wrap, force) {
+  if (!currentHash || methodDeepBusy) return;
+  if (force && !confirm("정밀 강독을 다시 생성할까요? (2~3분, 기존 강독을 교체)")) return;
+  methodDeepBusy = true;
+  const startedHash = currentHash;
+  // 진행 표시: 버튼 자리에 상태줄
+  wrap.querySelectorAll(".mdeep-btn, .mdeep-desc").forEach((el) => el.remove());
+  const stat = document.createElement("p");
+  stat.className = "mdeep-stat";
+  stat.textContent = "⏳ 준비 중…";
+  wrap.appendChild(stat);
+  try {
+    const res = await fetch(`${API_BASE}/api/method-deep/${startedHash}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    if (!res.ok) {
+      const d = await safeJson(res);
+      throw new Error((d && d.error) || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", chars = 0, data = null, lastStep = "생성 중";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        if (ev.type === "step") { lastStep = ev.msg; stat.textContent = `⏳ ${lastStep}`; }
+        else if (ev.type === "delta") { chars += ev.text.length; stat.textContent = `⏳ ${lastStep} (${chars.toLocaleString()}자 작성)`; }
+        else if (ev.type === "result") data = ev.data;
+        else if (ev.type === "error") throw new Error(ev.error);
+      }
+    }
+    if (!data) throw new Error("서버 연결이 중간에 끊어졌습니다.");
+    if (currentHash !== startedHash) return; // 그 사이 다른 논문으로 이동
+    currentAnalysis.method_deep = data;
+    const fresh = buildMethodDeepBlock(currentAnalysis);
+    wrap.replaceWith(fresh);
+  } catch (e) {
+    stat.textContent = `⚠️ ${e.message}`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "rtool mdeep-btn";
+    retry.textContent = "🔬 다시 시도";
+    retry.addEventListener("click", () => { stat.remove(); retry.remove(); generateMethodDeep(wrap, force); });
+    wrap.appendChild(retry);
+  } finally {
+    methodDeepBusy = false;
   }
 }
 
@@ -4179,6 +4619,32 @@ function renderEquations(equations, equationFlow, methodSteps = []) {
       item.appendChild(refBadge);
     }
 
+    // LaTeX 원본 복사 — 자기 노트(Overleaf·Obsidian 등)에 붙여넣기용
+    if (eq.latex) {
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "eq-copy";
+      copyBtn.textContent = "📋 LaTeX";
+      copyBtn.title = "LaTeX 원본 복사";
+      copyBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(eq.latex);
+          copyBtn.textContent = "✓ 복사됨";
+        } catch {
+          // http(Tailscale) 등 clipboard API 불가 환경 폴백
+          const ta = document.createElement("textarea");
+          ta.value = eq.latex;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          ta.remove();
+          copyBtn.textContent = "✓ 복사됨";
+        }
+        setTimeout(() => { copyBtn.textContent = "📋 LaTeX"; }, 1500);
+      });
+      item.appendChild(copyBtn);
+    }
+
     // 방법론 단계 연결 배지 — 클릭 시 해당 단계로 점프
     const si = Number.isInteger(eq.step_index) ? eq.step_index : -1;
     if (si >= 0 && si < methodSteps.length) {
@@ -4312,7 +4778,9 @@ async function loadHistory() {
         assignments: lib.assignments && typeof lib.assignments === "object" ? lib.assignments : {},
       };
     }
+    refreshYearOptions(); // 연도 필터 옵션을 목록 데이터로 갱신
     renderHistory();
+    if (typeof refreshCompareButton === "function") refreshCompareButton(); // 비교 대상 유무 반영
   } catch (e) {
     historyList.innerHTML = `<li class="muted">히스토리를 불러오지 못했습니다: ${e.message}</li>`;
   }
@@ -4328,7 +4796,10 @@ function renderHistory() {
     return;
   }
   const f = historyFilter;
-  const matches = (it) => !f || ((it.title || "") + " " + (it.one_liner || "")).toLowerCase().includes(f);
+  const matches = (it) =>
+    (!f || ((it.title || "") + " " + (it.one_liner || "")).toLowerCase().includes(f)) &&
+    (historyModeFilter === "all" || (it.analysis_mode || "full") === historyModeFilter) &&
+    (!historyYearFilter || String(it.year) === String(historyYearFilter));
   const folderOf = (hash) => {
     const fid = library.assignments[hash];
     return fid && library.folders.some((x) => x.id === fid) ? fid : null;
@@ -4584,6 +5055,7 @@ document.getElementById("folder-new").addEventListener("click", createFolder);
 async function reanalyzePaper(hash, title, opts = {}) {
   const mode = opts.mode === "simple" ? "simple" : "full";
   hideError();
+  ensureNotifyPermission(); // 재분석/업그레이드 클릭 제스처 직후 — 완료 알림 권한
   const inline = hash === currentHash && !workspaceEl.classList.contains("hidden");
   if (inline) {
     showReanalyzeBanner();
@@ -4607,9 +5079,15 @@ async function reanalyzePaper(hash, title, opts = {}) {
       throw new Error((d && d.error) || `HTTP ${res.status}`);
     }
     const data = await consumeAnalysisStream(res);
-    renderResult(data);
+    if (analysisPartialShown) {
+      const keep = activeTab;
+      renderResult(data);
+      switchTab(keep);
+    } else {
+      renderResult(data);
+    }
     loadHistory();
-    if (!inline) window.scrollTo({ top: 0, behavior: "smooth" });
+    if (!inline && !analysisPartialShown) window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (err) {
     if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
   } finally {
@@ -4732,7 +5210,410 @@ function renderGlossary(items) {
   if (!glossaryItems.length) document.getElementById("glossary-card").classList.add("hidden");
   document.getElementById("glossary-search").value = "";
   paintGlossary("");
+  refreshCardsButton(); // 카드(플래시카드) 버튼 표시 여부 갱신
 }
+
+// ---------- 복습 플래시카드 (예상 Q&A + 용어집 재활용 — LLM 호출 없음) ----------
+// '어려움' 표시는 localStorage(fc-hard:<hash>)에 남겨 다음에 그 카드부터 보여준다.
+function buildFlashcards() {
+  const cards = [];
+  const a = currentAnalysis || {};
+  (Array.isArray(a.suggested_questions) ? a.suggested_questions : []).forEach((it, i) => {
+    const q = typeof it === "string" ? it : (it && it.q) || "";
+    if (!q) return;
+    cards.push({
+      key: `q${i}`,
+      cat: (it && it.category) || "예상 질문",
+      front: q,
+      back: (it && it.why) || "(답변 가이드 없음 — 예상 Q&A 탭 참고)",
+    });
+  });
+  glossaryItems.forEach((g, i) => {
+    if (!g.term || !g.meaning) return;
+    cards.push({ key: `g${i}`, cat: "용어", front: g.term, back: g.meaning });
+  });
+  return cards;
+}
+function refreshCardsButton() {
+  const btn = document.getElementById("tool-cards");
+  if (btn) btn.style.display = buildFlashcards().length ? "" : "none";
+}
+function openFlashcards() {
+  const all = buildFlashcards();
+  if (!all.length) return;
+  const hardKey = `fc-hard:${currentHash}`;
+  let hardSet;
+  try { hardSet = new Set(JSON.parse(localStorage.getItem(hardKey) || "[]")); } catch { hardSet = new Set(); }
+  // 어려움 표시 카드 먼저, 나머지는 원래 순서
+  const deck = [...all.filter((c) => hardSet.has(c.key)), ...all.filter((c) => !hardSet.has(c.key))];
+  let idx = 0, flipped = false;
+
+  document.getElementById("fc-overlay")?.remove();
+  const ov = document.createElement("div");
+  ov.className = "mode-overlay"; // 모드 다이얼로그와 같은 딤 배경 재사용
+  ov.id = "fc-overlay";
+  ov.innerHTML =
+    `<div class="fc-box" role="dialog" aria-label="복습 카드">` +
+    `<div class="fc-top"><span id="fc-count"></span><span id="fc-cat" class="fc-cat"></span>` +
+    `<button type="button" class="fc-close" title="닫기 (Esc)">✕</button></div>` +
+    `<button type="button" id="fc-card" class="fc-card" title="클릭하면 뒤집힘 (Space)"><div id="fc-text"></div>` +
+    `<div class="fc-hint" id="fc-hint">클릭해서 답 보기</div></button>` +
+    `<div class="fc-nav">` +
+    `<button type="button" id="fc-prev" class="rtool" title="이전 (←)">← 이전</button>` +
+    `<button type="button" id="fc-hard" class="rtool" title="다음에 이 카드부터">😅 어려움</button>` +
+    `<button type="button" id="fc-easy" class="rtool" title="어려움 표시 해제">👍 쉬움</button>` +
+    `<button type="button" id="fc-next" class="rtool" title="다음 (→)">다음 →</button>` +
+    `</div></div>`;
+  const paint = () => {
+    const c = deck[idx];
+    document.getElementById("fc-count").textContent = `${idx + 1} / ${deck.length}`;
+    document.getElementById("fc-cat").textContent = `${c.cat}${hardSet.has(c.key) ? " · 😅" : ""}`;
+    renderRich(document.getElementById("fc-text"), flipped ? c.back : `**${c.front}**`);
+    document.getElementById("fc-hint").textContent = flipped ? "클릭하면 질문으로" : "클릭해서 답 보기";
+    document.getElementById("fc-card").classList.toggle("fc-flipped", flipped);
+  };
+  const move = (d) => { idx = (idx + d + deck.length) % deck.length; flipped = false; paint(); };
+  const saveHard = () => { try { localStorage.setItem(hardKey, JSON.stringify([...hardSet])); } catch {} };
+  const close = () => { document.removeEventListener("keydown", onKey, true); ov.remove(); };
+  const onKey = (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === " " || e.key === "Enter") { e.preventDefault(); flipped = !flipped; paint(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); move(1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); move(-1); }
+  };
+  document.addEventListener("keydown", onKey, true);
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov) return close();
+    if (e.target.closest(".fc-close")) return close();
+    if (e.target.closest("#fc-card")) { flipped = !flipped; paint(); return; }
+    if (e.target.closest("#fc-prev")) return move(-1);
+    if (e.target.closest("#fc-next")) return move(1);
+    if (e.target.closest("#fc-hard")) { hardSet.add(deck[idx].key); saveHard(); paint(); return; }
+    if (e.target.closest("#fc-easy")) { hardSet.delete(deck[idx].key); saveHard(); paint(); return; }
+  });
+  document.body.appendChild(ov);
+  paint();
+}
+document.getElementById("tool-cards").addEventListener("click", openFlashcards);
+
+// ---------- 파생 생성 공용 오버레이 (⚖️ 논문 비교 · 🎤 발표 대본) ----------
+// runFetch(force, signal) → fetch Response(SSE: step/delta/result). 결과는 서버가 캐시.
+// renderData(el, data)가 있으면 구조화 모드: 스트리밍 중엔 글자수만 보여주고(원시 JSON 노출 방지)
+// 완료 시 전용 렌더러로 그린다. toMarkdown(data)는 복사/.md용 텍스트 변환.
+function openGenOverlay({ title, filename, runFetch, renderData, toMarkdown }) {
+  document.getElementById("gen-overlay")?.remove();
+  const ov = document.createElement("div");
+  ov.className = "mode-overlay";
+  ov.id = "gen-overlay";
+  ov.innerHTML =
+    `<div class="gen-box" role="dialog" aria-label="${title.replace(/"/g, "&quot;")}">` +
+    `<div class="gen-head"><span class="gen-title"></span><span class="gen-status muted"></span>` +
+    `<button type="button" class="gen-close" title="닫기 (Esc)">✕</button></div>` +
+    `<div class="gen-body"><div class="gen-text"></div></div>` +
+    `<div class="gen-foot">` +
+    `<button type="button" class="rtool gen-regen" disabled>🔄 다시 생성</button>` +
+    `<button type="button" class="rtool gen-copy" disabled>📋 복사</button>` +
+    `<button type="button" class="rtool gen-dl" disabled>⬇︎ .md</button>` +
+    `</div></div>`;
+  ov.querySelector(".gen-title").textContent = title;
+  const body = ov.querySelector(".gen-body");
+  const textEl = ov.querySelector(".gen-text");
+  const statusEl = ov.querySelector(".gen-status");
+  const btnRegen = ov.querySelector(".gen-regen");
+  const btnCopy = ov.querySelector(".gen-copy");
+  const btnDl = ov.querySelector(".gen-dl");
+  let finalText = "";
+  let ac = null;
+
+  const start = async (force) => {
+    ac?.abort();
+    ac = new AbortController();
+    finalText = "";
+    btnRegen.disabled = btnCopy.disabled = btnDl.disabled = true;
+    statusEl.textContent = "생성 중…";
+    textEl.textContent = "준비 중…";
+    try {
+      const res = await runFetch(force, ac.signal);
+      if (!res.ok) {
+        const d = await safeJson(res);
+        throw new Error((d && d.error) || `HTTP ${res.status}`);
+      }
+      // SSE 소비: delta를 타자기 렌더(스로틀), step은 상태줄, result가 권위본.
+      // 구조화 모드(renderData)에선 delta 동안 진행 글자수만 표시(원시 JSON 노출 방지).
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "", live = "", lastPaint = 0, cached = false, text = null, data = null;
+      const paint = (forcePaint) => {
+        const now = performance.now();
+        if (!forcePaint && now - lastPaint < 150) return;
+        lastPaint = now;
+        if (renderData) {
+          textEl.textContent = `생성 중… (${live.length.toLocaleString()}자)`;
+          return;
+        }
+        const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+        renderRich(textEl, live + " ▍");
+        if (atBottom) body.scrollTop = body.scrollHeight;
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.type === "delta") { live += ev.text; paint(false); }
+          else if (ev.type === "step") statusEl.textContent = ev.msg;
+          else if (ev.type === "result") { text = ev.text ?? null; data = ev.data ?? null; cached = !!ev.cached; }
+          else if (ev.type === "error") throw new Error(ev.error);
+        }
+      }
+      if (text == null && data == null) throw new Error("서버 연결이 중간에 끊어졌습니다. 다시 시도해 주세요.");
+      if (renderData && data && !data.fallback_text) {
+        renderData(textEl, data);
+        finalText = toMarkdown ? toMarkdown(data) : JSON.stringify(data, null, 2);
+      } else {
+        finalText = text ?? (data && data.fallback_text) ?? "";
+        renderRich(textEl, finalText);
+      }
+      statusEl.textContent = cached ? "저장된 결과 (다시 생성 가능)" : "완료";
+      btnRegen.disabled = btnCopy.disabled = btnDl.disabled = false;
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      statusEl.textContent = "";
+      textEl.textContent = `⚠️ ${e.message}`;
+      btnRegen.disabled = false;
+    }
+  };
+
+  const close = () => { ac?.abort(); document.removeEventListener("keydown", onKey, true); ov.remove(); };
+  const onKey = (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+  };
+  document.addEventListener("keydown", onKey, true);
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.closest(".gen-close")) return close();
+  });
+  btnRegen.addEventListener("click", () => start(true));
+  btnCopy.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(finalText); } catch {
+      const ta = document.createElement("textarea");
+      ta.value = finalText; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    btnCopy.textContent = "✓ 복사됨";
+    setTimeout(() => { btnCopy.textContent = "📋 복사"; }, 1500);
+  });
+  btnDl.addEventListener("click", () => {
+    const blob = new Blob([`# ${title}\n\n${finalText}\n`], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || "paper-reviewer.md";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+  document.body.appendChild(ov);
+  start(false);
+}
+
+// ── ⚖️ 비교 결과 렌더러: 축별 나란히 그리드 (산문 대신 훑어보는 표) ────────────
+function buildCompareView(el, d) {
+  el.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  // 결정적 차이 한 줄 (맨 위, 가장 크게)
+  if (d.verdict) {
+    const v = document.createElement("p");
+    v.className = "cvw-verdict";
+    renderRich(v, d.verdict);
+    frag.appendChild(v);
+  }
+  // 축별 그리드: [축 | 논문1 | 논문2]
+  const grid = document.createElement("div");
+  grid.className = "cvw-grid";
+  const head = (txt, cls, title) => {
+    const h = document.createElement("div");
+    h.className = `cvw-h ${cls || ""}`;
+    h.textContent = txt;
+    if (title) h.title = title;
+    return h;
+  };
+  grid.append(head("", "cvw-axis"), head(d.name_a || "논문 1", "cvw-a", d.title_a), head(d.name_b || "논문 2", "cvw-b", d.title_b));
+  (Array.isArray(d.rows) ? d.rows : []).forEach((r) => {
+    if (!r || !r.axis) return;
+    const ax = document.createElement("div");
+    ax.className = "cvw-cell cvw-axis";
+    ax.textContent = r.axis;
+    const ca = document.createElement("div");
+    ca.className = "cvw-cell cvw-a";
+    renderRich(ca, r.a || "—");
+    const cb = document.createElement("div");
+    cb.className = "cvw-cell cvw-b";
+    renderRich(cb, r.b || "—");
+    grid.append(ax, ca, cb);
+  });
+  frag.appendChild(grid);
+  // 언제 무엇을 — 두 장의 카드
+  if (d.when_a || d.when_b) {
+    const row = document.createElement("div");
+    row.className = "cvw-when";
+    [[d.name_a, d.when_a, "cvw-a"], [d.name_b, d.when_b, "cvw-b"]].forEach(([name, when, cls]) => {
+      if (!when) return;
+      const card = document.createElement("div");
+      card.className = `cvw-when-card ${cls}`;
+      const t = document.createElement("div");
+      t.className = "cvw-when-name";
+      t.textContent = `👉 ${name || ""}`;
+      const b = document.createElement("div");
+      renderRich(b, when);
+      card.append(t, b);
+      row.appendChild(card);
+    });
+    frag.appendChild(row);
+  }
+  // 세미나 모범 답변 (유일한 문단 — 접이식)
+  if (d.qa) {
+    const det = document.createElement("details");
+    det.className = "cvw-qa";
+    const sum = document.createElement("summary");
+    sum.textContent = "🎓 \"두 논문 차이가 뭐죠?\" — 30초 모범 답변";
+    const p = document.createElement("p");
+    renderRich(p, d.qa);
+    det.append(sum, p);
+    frag.appendChild(det);
+  }
+  el.appendChild(frag);
+}
+// 비교 데이터 → 복사/.md용 마크다운
+function compareToMarkdown(d) {
+  const L = [];
+  if (d.verdict) L.push(`**${d.verdict}**`, "");
+  L.push(`| | ${d.name_a || "논문 1"} | ${d.name_b || "논문 2"} |`, "|---|---|---|");
+  (d.rows || []).forEach((r) => L.push(`| **${r.axis}** | ${r.a || "—"} | ${r.b || "—"} |`));
+  L.push("");
+  if (d.when_a) L.push(`- **${d.name_a}이 맞을 때**: ${d.when_a}`);
+  if (d.when_b) L.push(`- **${d.name_b}이 맞을 때**: ${d.when_b}`);
+  if (d.qa) L.push("", `> ${d.qa}`);
+  return L.join("\n");
+}
+
+// ── ⚖️ 논문 비교: 분석된 다른 논문 선택 → 비교 생성 ──────────────────────────
+function openComparePicker() {
+  if (!currentHash || !currentAnalysis) return;
+  const candidates = historyItems.filter((it) => it.hash !== currentHash);
+  if (!candidates.length) return showError("비교하려면 분석된 다른 논문이 하나 이상 필요합니다.");
+  document.getElementById("cmp-overlay")?.remove();
+  const ov = document.createElement("div");
+  ov.className = "mode-overlay";
+  ov.id = "cmp-overlay";
+  ov.innerHTML =
+    `<div class="gen-box cmp-box" role="dialog" aria-label="비교할 논문 선택">` +
+    `<div class="gen-head"><span class="gen-title">⚖️ 어떤 논문과 비교할까요?</span>` +
+    `<button type="button" class="gen-close" title="닫기 (Esc)">✕</button></div>` +
+    `<input class="cmp-search sb-search" type="search" placeholder="제목 검색…" autocomplete="off" />` +
+    `<ul class="cmp-list"></ul></div>`;
+  const list = ov.querySelector(".cmp-list");
+  const paint = (filter) => {
+    list.innerHTML = "";
+    const f = (filter || "").trim().toLowerCase();
+    candidates
+      .filter((it) => !f || (it.title || "").toLowerCase().includes(f))
+      .forEach((it) => {
+        const li = document.createElement("li");
+        const t = document.createElement("span");
+        t.className = "cmp-title";
+        t.textContent = it.title || "(제목 없음)";
+        const meta = document.createElement("span");
+        meta.className = "cmp-meta muted";
+        meta.textContent = [it.year, it.analysis_mode === "simple" ? "⚡간단" : null].filter(Boolean).join(" · ");
+        li.append(t, meta);
+        li.addEventListener("click", () => {
+          close();
+          const myTitle = (currentAnalysis.title || "").slice(0, 30);
+          openGenOverlay({
+            title: `⚖️ ${myTitle} ↔ ${(it.title || "").slice(0, 30)}`,
+            filename: `compare_${(it.title || "paper").slice(0, 24).replace(/[^\w가-힣]+/g, "_")}.md`,
+            renderData: buildCompareView, // 산문 대신 축별 그리드로 렌더
+            toMarkdown: compareToMarkdown,
+            runFetch: (force, signal) =>
+              fetch(`${API_BASE}/api/compare`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ a: currentHash, b: it.hash, force }),
+                signal,
+              }),
+          });
+        });
+        list.appendChild(li);
+      });
+    if (!list.children.length) list.innerHTML = `<li class="muted" style="cursor:default">검색 결과가 없습니다.</li>`;
+  };
+  const close = () => { document.removeEventListener("keydown", onKey, true); ov.remove(); };
+  const onKey = (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+  };
+  document.addEventListener("keydown", onKey, true);
+  ov.addEventListener("click", (e) => { if (e.target === ov || e.target.closest(".gen-close")) close(); });
+  ov.querySelector(".cmp-search").addEventListener("input", (e) => paint(e.target.value));
+  document.body.appendChild(ov);
+  paint("");
+  ov.querySelector(".cmp-search").focus();
+}
+document.getElementById("tool-compare").addEventListener("click", openComparePicker);
+// 비교할 다른 논문이 없으면 버튼 숨김 (loadHistory 후 호출)
+function refreshCompareButton() {
+  const btn = document.getElementById("tool-compare");
+  if (btn) btn.style.display = historyItems.some((it) => it.hash !== currentHash) ? "" : "none";
+}
+
+// ── 🎤 발표 대본: 발표 시간 선택 → 대본 생성 ────────────────────────────────
+function openScriptPicker() {
+  if (!currentHash || !currentAnalysis) return;
+  document.getElementById("scr-overlay")?.remove();
+  const ov = document.createElement("div");
+  ov.className = "mode-overlay";
+  ov.id = "scr-overlay";
+  ov.innerHTML =
+    `<div class="gen-box scr-box" role="dialog" aria-label="발표 시간 선택">` +
+    `<div class="gen-head"><span class="gen-title">🎤 몇 분 발표인가요?</span>` +
+    `<button type="button" class="gen-close" title="닫기 (Esc)">✕</button></div>` +
+    `<div class="scr-row">` +
+    [10, 20, 30].map((m) => `<button type="button" class="mode-card scr-min" data-min="${m}"><span class="mode-name">${m}분</span><span class="mode-desc">${m === 10 ? "핵심만 압축" : m === 20 ? "표준 세미나" : "여유 있는 상세 발표"}</span></button>`).join("") +
+    `</div></div>`;
+  const close = () => { document.removeEventListener("keydown", onKey, true); ov.remove(); };
+  const onKey = (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+  };
+  document.addEventListener("keydown", onKey, true);
+  ov.addEventListener("click", (e) => {
+    if (e.target === ov || e.target.closest(".gen-close")) return close();
+    const card = e.target.closest(".scr-min");
+    if (!card) return;
+    const minutes = Number(card.dataset.min);
+    close();
+    openGenOverlay({
+      title: `🎤 ${(currentAnalysis.title || "").slice(0, 34)} — ${minutes}분 발표 대본`,
+      filename: `script_${minutes}min_${(currentAnalysis.title || "paper").slice(0, 24).replace(/[^\w가-힣]+/g, "_")}.md`,
+      runFetch: (force, signal) =>
+        fetch(`${API_BASE}/api/script/${currentHash}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ minutes, force }),
+          signal,
+        }),
+    });
+  });
+  document.body.appendChild(ov);
+}
+document.getElementById("tool-script").addEventListener("click", openScriptPicker);
 function paintGlossary(filter) {
   const list = document.getElementById("glossary-list");
   list.innerHTML = "";
@@ -5150,6 +6031,7 @@ document.addEventListener("keydown", (e) => {
   else if ((e.key === "k" || e.key === "K") && reading) { e.preventDefault(); const i = TAB_ORDER.indexOf(activeTab); switchTab(TAB_ORDER[Math.max(0, i - 1)]); }
   else if (e.key >= "1" && e.key <= "7" && reading) { e.preventDefault(); switchTab(TAB_ORDER[+e.key - 1]); }
   else if ((e.key === "f" || e.key === "F") && reading) { e.preventDefault(); document.getElementById("pdf-toggle").click(); }
+  else if ((e.key === "s" || e.key === "S") && reading) { e.preventDefault(); window.openPdfSearch && window.openPdfSearch(); }
   else if ((e.key === "q" || e.key === "Q") && reading) { e.preventDefault(); openChat(); }
   else if (e.key === "n" || e.key === "N") { e.preventDefault(); document.getElementById("sb-new").click(); }
   else if (e.key === "t" || e.key === "T") { e.preventDefault(); document.getElementById("theme-toggle").click(); }

@@ -47,6 +47,10 @@
         <button id="folder-new" class="sb-folder-new" type="button" title="새 폴더 만들기">＋ 폴더</button>
       </div>
       <input id="history-search" class="sb-search" type="search" placeholder="제목·요약 검색…" autocomplete="off" />
+      <div id="history-filters" class="sb-filters">
+        <button id="hf-mode" class="hf-chip" type="button" title="분석 모드로 거르기">모드: 전체</button>
+        <select id="hf-year" class="hf-chip" title="논문 연도로 거르기"><option value="">연도: 전체</option></select>
+      </div>
       <ul id="history-list" class="sb-history"><li class="muted">불러오는 중…</li></ul>
     </aside>
 
@@ -69,7 +73,7 @@
         </svg>
         <p class="dz-main">논문 PDF를 여기에 드래그하세요</p>
         <button id="pick-btn" type="button">파일 선택</button>
-        <input id="file-input" type="file" accept="application/pdf,.pdf" hidden />
+        <input id="file-input" type="file" accept="application/pdf,.pdf" multiple hidden />
         <p class="dz-limit">PDF · 최대 23MB · 600페이지</p>
       </section>
 
@@ -96,7 +100,14 @@
               <button id="pdf-zoom-reset" class="pdf-zlabel" type="button" title="폭 맞춤으로">100%</button>
               <button id="pdf-zoom-in" class="pdf-zbtn" type="button" title="확대" aria-label="확대">＋</button>
             </div>
+            <button id="pdf-search-toggle" class="pdf-zbtn" type="button" title="원문에서 검색 (S)" aria-label="원문 검색">🔍</button>
             <button id="pdf-toggle" type="button" title="PDF 패널 접기/펼치기">접기 ◀</button>
+          </div>
+          <div id="pdf-search-bar" class="pdf-search-bar hidden">
+            <input id="pdf-search-input" type="search" placeholder="원문에서 찾기… (Enter)" autocomplete="off" />
+            <span id="pdf-search-count" class="pdf-search-count"></span>
+            <button id="pdf-search-close" type="button" title="닫기 (Esc)">✕</button>
+            <ul id="pdf-search-results" class="pdf-search-results hidden"></ul>
           </div>
           <div id="pdf-scroll" class="pdf-scroll"></div>
           <div id="pdf-missing" class="pdf-missing hidden">
@@ -130,6 +141,9 @@
             <button id="tool-download" class="rtool" type="button" title="치트시트를 .md 파일로 저장">⬇︎ .md</button>
             <button id="tool-notes" class="rtool" type="button" title="이 논문 개인 메모">📝 메모</button>
             <button id="tool-glossary" class="rtool" type="button" title="용어집">📖 용어집</button>
+            <button id="tool-cards" class="rtool" type="button" title="예상 Q&A·용어로 복습 (세미나 직전 리허설)">🃏 카드</button>
+            <button id="tool-compare" class="rtool" type="button" title="분석된 다른 논문과 방법론·실험 비교">⚖️ 비교</button>
+            <button id="tool-script" class="rtool" type="button" title="N분 발표 대본 생성 (시간 배분 포함)">🎤 대본</button>
           </div>
 
           <nav class="tabs" id="tabs">
@@ -219,6 +233,7 @@
         <li><kbd>J</kbd> / <kbd>K</kbd> <span>다음 / 이전 탭</span></li>
         <li><kbd>1</kbd>–<kbd>7</kbd> <span>탭 바로 이동</span></li>
         <li><kbd>F</kbd> <span>원문 PDF 패널 접기/펼치기</span></li>
+        <li><kbd>S</kbd> <span>원문 PDF에서 검색</span></li>
         <li><kbd>Q</kbd> <span>질문하기 열기</span></li>
         <li><kbd>/</kbd> <span>히스토리 검색</span></li>
         <li><kbd>N</kbd> <span>새 논문 분석</span></li>
