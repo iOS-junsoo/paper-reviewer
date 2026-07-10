@@ -64,7 +64,8 @@
    ```
    node scripts/verify_mviz.js <출력경로> --json
    ```
-   출력 JSON의 `violations`가 비어 있지 않으면(pass:false), 각 위반을 고쳐 다시 Write하고
+   출력 JSON의 `violations`가 비어 있지 않으면(pass:false), 각 위반 지점을 **Edit로 부분 수정**하고
+   (전체 파일을 다시 Write하지 말 것 — 바뀐 부분만 Edit해 토큰을 아낀다)
    **다시 verify를 실행한다.** `pass:true`가 될 때까지 반복한다(최대 5회). 대표 위반과 처리:
    - `text_overlap` / `viewbox_overflow`: 라벨을 도형 옆 전용 여백으로 옮기거나 좌표 조정.
    - `inline_bar`: 막대 span에 `display:block` 추가.
@@ -96,6 +97,9 @@
   ```
 - `method_steps`는 방법론 텍스트 단계다(수식 탭이 `#step-{i}`로 점프해 오므로 유지). HTML의
   스테퍼와 별개로, 각 단계 title/description(관통 예시 포함)을 담는다.
+  단, **사용자 메시지가 "method_steps 재사용(P4)" 블록으로 확정된 단계를 제공하면** 그 단계를
+  재생성·변경하지 말고 HTML 스테퍼를 그에 맞추기만 하라. 이때 응답 JSON의 `method_steps`는
+  생략해도 된다(서버가 기존 값을 유지한다).
 - `method_viz_html`은 응답 JSON에 넣지 않는다 — 파일로 Write하면 서버가 읽는다.
 
 ## 금지

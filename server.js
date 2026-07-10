@@ -135,13 +135,14 @@ if (fs.existsSync(serviceAccountPath)) {
     async list() {
       const snap = await analyses.orderBy("createdAt", "desc").limit(100).get();
       return snap.docs.map((d) => {
-        const { hash, title, one_liner, venue, year, createdAt } = d.data();
+        const { hash, title, one_liner, venue, year, createdAt, analysis_mode } = d.data();
         return {
           hash,
           title,
           one_liner,
           venue: venue || null,
           year: year || null,
+          analysis_mode: analysis_mode || "full", // 구 레코드는 full로 간주
           createdAt: createdAt ? createdAt.toDate().toISOString() : null,
         };
       });
@@ -198,12 +199,13 @@ if (!firestoreReady) {
     async list() {
       return [...mem.values()]
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-        .map(({ hash, title, one_liner, venue, year, createdAt }) => ({
+        .map(({ hash, title, one_liner, venue, year, createdAt, analysis_mode }) => ({
           hash,
           title,
           one_liner,
           venue: venue || null,
           year: year || null,
+          analysis_mode: analysis_mode || "full",
           createdAt,
         }));
     },
@@ -226,6 +228,56 @@ const METHOD_VIZ_HTML_GEN = fs.readFileSync(path.join(__dirname, "prompts", "met
 // 생성 HTML 산출 디렉터리(자가검증·디버깅용으로 파일 보존; .gitignore 대상).
 const MVIZ_GEN_DIR = path.join(__dirname, ".mviz_gen");
 try { fs.mkdirSync(MVIZ_GEN_DIR, { recursive: true }); } catch (e) {}
+
+// ── ETA(예상 남은 시간) 예측 통계 ─────────────────────────────────────────────
+// 성공한 분석의 실측 소요 {pages, analysis_ms, viz_ms}를 롤링 보관해 다음 실행의 ETA를
+// 자가학습으로 예측한다(.gitignore 대상). 히스토리가 부족하면 시드값으로 폴백한다.
+const STATS_FILE = path.join(__dirname, ".stats", "durations.json");
+const STATS_MAX = 40; // 최근 N회만 유지 — 중앙값 안정 + 파일 소형
+// 시드: 실측 기반 보수적 기본값(예: Balancing Act 20p ≈ 분석 324s · 시각화 334s).
+// 모드별 — simple(간단 분석)은 시각화 생략 + 출력 섹션 축소 + WebSearch 생략이라 훨씬 짧다.
+const ETA_SEED = {
+  full: { fixedA_ms: 30000, perPage_ms: 15000, viz_ms: 330000 },
+  simple: { fixedA_ms: 25000, perPage_ms: 9000, viz_ms: 0 }, // 20p ≈ 3.4분
+};
+
+function readDurations() {
+  try { return JSON.parse(fs.readFileSync(STATS_FILE, "utf8")); } catch (e) { return []; }
+}
+function appendDuration(rec) {
+  try {
+    const arr = readDurations();
+    arr.push(rec);
+    while (arr.length > STATS_MAX) arr.shift();
+    fs.mkdirSync(path.dirname(STATS_FILE), { recursive: true });
+    fs.writeFileSync(STATS_FILE, JSON.stringify(arr));
+  } catch (e) { /* 통계 실패는 분석에 영향 없음 */ }
+}
+function median(xs) {
+  const a = xs.filter((v) => Number.isFinite(v) && v > 0).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+// pages 논문의 분석·시각화 예상 소요(ms). 같은 모드의 히스토리 3회 이상이면 실측 중앙값, 아니면 시드.
+// (mode 필드가 없는 기존 레코드는 full로 간주 — 하위호환)
+function predictDurations(pages, mode = "full") {
+  const p = Math.max(1, pages || 1);
+  const seed = ETA_SEED[mode] || ETA_SEED.full;
+  const hist = readDurations().filter((h) => (h.mode || "full") === mode);
+  let analysisMs, vizMs;
+  if (hist.length >= 3) {
+    const perPage = median(hist.map((h) => h.analysis_ms / Math.max(1, h.pages)));
+    analysisMs = (perPage != null ? perPage : seed.perPage_ms) * p;
+    vizMs = mode === "simple" ? 0 : (median(hist.map((h) => h.viz_ms)) ?? seed.viz_ms);
+  } else {
+    analysisMs = seed.fixedA_ms + seed.perPage_ms * p;
+    vizMs = seed.viz_ms;
+  }
+  analysisMs = Math.round(analysisMs);
+  vizMs = Math.round(vizMs);
+  return { analysisMs, vizMs, totalMs: analysisMs + vizMs };
+}
 const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 리서처입니다.
 지정된 논문 PDF 전체(텍스트, 레이아웃, 그림, 표, 수식)를 읽고 아래 JSON 스키마에 맞춰 분석 결과를 작성하세요.
 
@@ -371,12 +423,78 @@ ${METHOD_VIZ_V4}
 3. latex 문자열 안의 백슬래시는 JSON 규칙에 맞게 이스케이프하세요 (예: "\\\\frac{a}{b}").
 4. 정확하고 구체적으로 쓰되 불필요한 수사는 빼세요. 강조 마크업은 위 두 종류만 사용하고 다른 마크다운 문법은 쓰지 마세요.`;
 
-async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac) {
-  const prompt =
-    `${pdfPath} 경로에 ${pageCount}페이지짜리 논문 PDF가 있습니다.\n` +
-    `Read 도구로 논문 전체를 읽으세요. 10페이지가 넘으므로 pages 파라미터로 최대 20페이지씩 나눠 끝까지 읽어야 합니다 (예: "1-20", "21-40", ...).\n` +
-    `전부 읽은 뒤 inner_viz 제작 전에 WebSearch로 이 논문의 시각화·해설 자료를 1~2회 검색해 참고하고,\n` +
-    `시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요.`;
+// ── 최적화 프롬프트 (검증 완료: 결과 불변, 토큰 절감) ──────────────────────────
+// SYSTEM_PROMPT_CORE: 방법론 시각화(method_visualization)는 별도 HTML 파이프라인이
+// 생성하므로, 전체 분석·비-method 재생성 프롬프트에서 V4 지침(~36KB)과 시각화 요청을 뺀다.
+// method_visualization은 null이 되고, 방법론 시각화는 generateMethodVizHtml이 담당(figures 폴백 유지).
+const SYSTEM_PROMPT_CORE = SYSTEM_PROMPT
+  .replace(/"method_visualization": "[^"]*",/, '"method_visualization": "null로 두세요 — 방법론 시각화는 별도 HTML 파이프라인이 생성합니다. 여기서 만들지 마세요.",')
+  .replace(/- method_visualization \/ figures: 아래 \[연구 방법론[\s\S]*?지시문 v4 \(끝\) ={5,}/, '- method_visualization: null로 두세요. 방법론 시각화는 별도 HTML 파이프라인이 생성하므로 여기서 만들지 마세요. (figure_guide/그림 해설은 평소대로 생성)');
+// SYSTEM_PROMPT_MINI: HTML 시각화 생성 전용. 상세 규칙은 유저 프롬프트가 지정한 지침서를 따른다.
+const SYSTEM_PROMPT_MINI =
+  "당신은 논문의 방법론을 초심자용 인터랙티브 HTML 시각화로 만드는 전문가입니다. 한국어로 작성하고 " +
+  "고유명사·수식은 원어를 병기합니다. 정직성 최우선 — 논문에서 확인한 값만 실제 수치로 쓰고, 확인 못 한 " +
+  "값은 \"(예시)\"로 명시하며 지어내지 않습니다. 상세 제작 규칙·검증·출력 형식은 사용자 메시지가 지정한 지침서와 절차를 따릅니다.";
+
+// ── SYSTEM_PROMPT_LITE: '간단 분석' 전용 ─────────────────────────────────────
+// CORE에서 세미나·핵심기여·실험·그림·Q&A·용어집·관련논문 스키마와 해당 지침을 제거해
+// 4개 섹션(배경+타임라인·문제·방법론 단계·수식+흐름)만 생성한다. WebSearch도 쓰지 않는다.
+// 각 정규식이 CORE의 스키마 블록/지침 불릿을 통째로 지운다 — 매칭 실패(silent no-op)는
+// 아래 자가검증이 기동 시 잡는다.
+const LITE_STRIP_RES = [
+  /^ {2}"contributions": \[[^\n]*\],\n/m,
+  /^ {2}"method_visualization": "[^"]*",\n/m,
+  /^ {2}"experiments": \{[\s\S]*?\n {2}\},\n/m,
+  /^ {2}"figure_guide": \[[\s\S]*?\n {2}\],\n/m,
+  /^ {2}"seminar": \[[\s\S]*?\n {2}\],\n/m,
+  /^ {2}"suggested_questions": \[[\s\S]*?\n {2}\],\n/m,
+  /^ {2}"glossary": \[[\s\S]*?\n {2}\],\n/m,
+  /^ {2}"related_papers": \[[\s\S]*?\n {2}\],\n/m,
+  /^- contributions: [^\n]*\n/m,
+  /^- method_visualization: null로[^\n]*\n/m,
+  /^- experiments: [\s\S]*?(?=^- figure_guide:)/m,
+  /^- figure_guide: [\s\S]*?(?=^- seminar:)/m,
+  /^- seminar: [\s\S]*?(?=^- suggested_questions:)/m,
+  /^- suggested_questions: [^\n]*\n/m,
+  /^- glossary: [^\n]*\n/m,
+  /^- related_papers: [^\n]*\n/m,
+];
+const SYSTEM_PROMPT_LITE =
+  LITE_STRIP_RES.reduce((s, re) => s.replace(re, ""), SYSTEM_PROMPT_CORE) +
+  "\n\n[간단 분석 모드] 위 스키마에 남아 있는 필드만 생성하세요. 세미나 정리·실험·그림 해설 등 " +
+  "제거된 섹션을 임의로 추가하지 마세요. 웹 검색 없이 논문 PDF만 근거로 작성하세요.";
+// 기동 시 자가검증: 제거 대상 키가 남았거나 유지 대상 키가 사라졌으면(프롬프트 원문 변경 등)
+// 경고를 남긴다 — LITE가 조용히 CORE와 같아져 사용량만 낭비되는 사고 방지.
+(function validateLitePrompt() {
+  const mustGo = ["contributions", "experiments", "figure_guide", "seminar", "suggested_questions", "glossary", "related_papers", "method_visualization"];
+  const mustStay = ["title", "one_liner", "venue", "year", "background", "timeline", "problem", "method_steps", "equations", "equation_flow"];
+  const leaked = mustGo.filter((k) => SYSTEM_PROMPT_LITE.includes(`"${k}":`));
+  const missing = mustStay.filter((k) => !SYSTEM_PROMPT_LITE.includes(`"${k}":`));
+  if (leaked.length || missing.length) {
+    console.error(
+      `[경고] SYSTEM_PROMPT_LITE 파생 이상 — 잔존: [${leaked.join(", ")}] · 소실: [${missing.join(", ")}]\n` +
+        "       server.js의 SYSTEM_PROMPT 원문이 바뀌어 LITE_STRIP_RES 정규식이 어긋난 것 같습니다."
+    );
+  }
+})();
+// Phase0: 쿼리 usage 실측 로깅(경로 태그) — 절감 확인용.
+function logUsage(tag, msg) {
+  try {
+    const u = msg.usage || {};
+    console.log(`[usage:${tag}] turns ${msg.num_turns} · in ${u.input_tokens} · cache_read ${u.cache_read_input_tokens} · cache_create ${u.cache_creation_input_tokens} · out ${u.output_tokens} · $${(msg.total_cost_usd || 0).toFixed(3)}`);
+  } catch (e) {}
+}
+
+async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac, mode = "full") {
+  const simple = mode === "simple";
+  const prompt = simple
+    ? `${pdfPath} 경로에 ${pageCount}페이지짜리 논문 PDF가 있습니다.\n` +
+      `Read 도구로 논문 전체를 읽으세요. 10페이지가 넘으면 pages 파라미터로 최대 20페이지씩 나눠 끝까지 읽어야 합니다 (예: "1-20", "21-40", ...).\n` +
+      `전부 읽은 뒤 시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요. (간단 분석 — 웹 검색 없이 논문만 근거로)`
+    : `${pdfPath} 경로에 ${pageCount}페이지짜리 논문 PDF가 있습니다.\n` +
+      `Read 도구로 논문 전체를 읽으세요. 10페이지가 넘으므로 pages 파라미터로 최대 20페이지씩 나눠 끝까지 읽어야 합니다 (예: "1-20", "21-40", ...).\n` +
+      `전부 읽은 뒤 inner_viz 제작 전에 WebSearch로 이 논문의 시각화·해설 자료를 1~2회 검색해 참고하고,\n` +
+      `시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요.`;
 
   let resultText = null;
 
@@ -398,9 +516,11 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac) {
     for await (const msg of query({
       prompt,
       options: {
-        systemPrompt: SYSTEM_PROMPT,
+        // 최적화: V4·method_visualization 제거(별도 HTML 파이프라인이 시각화 담당).
+        // 간단 모드는 LITE(4개 섹션) + Read만 — WebSearch 생략으로 사용량·시간 절약.
+        systemPrompt: simple ? SYSTEM_PROMPT_LITE : SYSTEM_PROMPT_CORE,
         model: MODEL,
-        allowedTools: ["Read", "WebSearch"], // WebSearch: inner_viz 예시값·관련 논문 링크의 정확도
+        allowedTools: simple ? ["Read"] : ["Read", "WebSearch"], // WebSearch: inner_viz 예시값·관련 논문 링크의 정확도
         maxTurns: 90, // 600페이지 = Read 30회 + 검색 + 여유
         cwd: PDF_DIR,
         ...(ac ? { abortController: ac } : {}), // 클라이언트 연결 종료 시 분석 중단(사용량 절약)
@@ -430,6 +550,7 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac) {
         }
       }
       if (msg.type === "result") {
+        logUsage(simple ? "전체분석:간단" : "전체분석:정밀", msg);
         if (msg.subtype !== "success") {
           // 인증 신호는 모델 본문이 아니라 SDK의 오류 결과에 담긴다. 오류 결과(SDKResultError)는
           // result 필드가 없고 errors[] 배열에 메시지가 들어오므로 둘 다 본다.
@@ -497,27 +618,36 @@ function hashBusy(hash) {
   return false;
 }
 
-async function runAnalysisJob(res, hash, pageCount, fallbackTitle, ac) {
+// opts: { mode: "simple"|"full", createdAt } — createdAt은 간단→정밀 업그레이드 시
+// 기존 분석 시각을 보존하려고 전달한다(히스토리 목록 순서 유지).
+async function runAnalysisJob(res, hash, pageCount, fallbackTitle, ac, opts = {}) {
   inFlight.add(hash);
   try {
-    await runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac);
+    await runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts);
   } finally {
     inFlight.delete(hash);
   }
 }
 
-async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
+async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts = {}) {
+  const mode = opts.mode === "simple" ? "simple" : "full";
   const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
-  console.log(`[분석 시작] ${fallbackTitle} (${pageCount}p, ${hash.slice(0, 12)}…)`);
+  console.log(`[분석 시작] ${fallbackTitle} (${pageCount}p, ${mode === "simple" ? "간단" : "정밀"}, ${hash.slice(0, 12)}…)`);
   const aborted = () => ac && ac.signal && ac.signal.aborted;
   const onProgress = (msg, pct) => sseSend(res, { type: "progress", msg, pct });
-  onProgress(`분석 시작 — ${pageCount}페이지 논문`, 0);
+  // ETA: 예상 소요(ms)를 클라이언트에 알려 시간 기반으로 바를 채우게 한다.
+  // 간단 모드는 시각화 구간이 없어 전체 = 분석 구간 하나(프론트 티커는 그대로 동작).
+  const est = predictDurations(pageCount, mode);
+  const estTotal = mode === "simple" ? est.analysisMs : est.totalMs;
+  const tA0 = Date.now();
+  sseSend(res, { type: "eta", phase: "analysis", estMs: est.analysisMs, estTotalMs: estTotal });
+  onProgress(`분석 시작 — ${pageCount}페이지 논문${mode === "simple" ? " (간단 분석)" : ""}`, 0);
 
   let analysis = null;
   let lastRaw = "";
   for (let attempt = 1; attempt <= 2 && !analysis; attempt++) {
     try {
-      lastRaw = await runAnalysis(pdfPath, pageCount, onProgress, ac);
+      lastRaw = await runAnalysis(pdfPath, pageCount, onProgress, ac, mode);
       analysis = parseModelJson(lastRaw);
     } catch (e) {
       // 클라이언트가 취소(연결 종료)한 경우: 재시도·에러 전송 없이 조용히 종료
@@ -534,6 +664,8 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
       }
       if (attempt === 1) {
         onProgress("응답 검증에 실패해 처음부터 다시 시도하는 중…");
+        // 재시도: 클라 구간시계를 리셋하고 추정치를 1.3배로 부풀린다.
+        sseSend(res, { type: "eta", phase: "analysis", estMs: Math.round(est.analysisMs * 1.3), estTotalMs: estTotal, retry: true });
       } else {
         sseSend(res, {
           type: "error",
@@ -547,9 +679,15 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
 
   if (aborted()) return; // 루프 종료와 거의 동시에 취소된 경우 저장하지 않음
 
+  const analysisMs = Date.now() - tA0; // 실측 분석 소요(재시도 포함)
+  let vizMs = 0;
   // 방법론 타입 기반 HTML 시각화 생성(§8 자가검증 루프) — 메인 분석 뒤 이어서.
   // 실패·미검증이어도 분석은 그대로 저장(기존 JSON method_visualization이 폴백).
-  if (!aborted()) {
+  // 간단 모드는 시각화 파이프라인 전체 생략(−약 5.5분·사용량 절약) — [정밀 업그레이드]로 채운다.
+  if (mode !== "simple" && !aborted()) {
+    const tB0 = Date.now();
+    // ETA: 시각화 구간으로 전환 → 클라 구간시계가 여기서 리셋된다.
+    sseSend(res, { type: "eta", phase: "viz", estMs: est.vizMs, estTotalMs: est.totalMs });
     try {
       onProgress("방법론 인터랙티브 시각화 생성 중 — 타입 분류·수치 추출·자동 검증", 92);
       const viz = await generateMethodVizHtml(
@@ -557,7 +695,8 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
         { analysis, title: analysis.title || fallbackTitle },
         pdfPath,
         pageCount,
-        ac
+        ac,
+        { reuseSteps: true } // P4: 메인 분석이 만든 method_steps 재사용(재생성 금지)
       );
       if (viz && viz.verify && viz.verify.pass) {
         analysis.method_viz_html = viz.html;
@@ -566,13 +705,17 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
       } else {
         console.warn(`[방법론 HTML 미검증 — JSON 폴백 유지] ${analysis.title || fallbackTitle}`);
       }
+      vizMs = Date.now() - tB0; // 성공 시에만 실측(폴백·예외는 통계에서 제외)
     } catch (e) {
       if (aborted()) return;
       console.warn(`[방법론 HTML 생성 실패 — JSON 폴백 유지] ${(e.message || "").slice(0, 150)}`);
     }
   }
   if (aborted()) return;
+  // ETA 자가학습: 성공 실행의 실측 소요를 모드별로 적재해 다음 예측을 보정한다.
+  if (analysisMs > 0) appendDuration({ pages: pageCount, analysis_ms: analysisMs, viz_ms: vizMs > 0 ? vizMs : null, mode });
 
+  analysis.analysis_mode = mode; // 프론트가 간단/정밀을 구분(탭 잠금·배지·업그레이드 버튼)
   try {
     await store.set(hash, {
       hash,
@@ -580,6 +723,9 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac) {
       one_liner: analysis.one_liner || "",
       venue: typeof analysis.venue === "string" ? analysis.venue.slice(0, 40) : null,
       year: Number.isFinite(Number(analysis.year)) ? Number(analysis.year) : null,
+      analysis_mode: mode,
+      // 업그레이드(간단→정밀)면 기존 분석 시각 보존 — 히스토리 순서가 튀지 않게
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
       analysis,
     });
   } catch (e) {
@@ -678,18 +824,28 @@ app.post("/api/analyze", (req, res) => {
           error: "이 논문은 이미 분석이 진행 중입니다. 잠시 후 히스토리에서 확인하세요.",
         });
       }
+      // 분석 모드: multer가 멀티파트 텍스트 필드를 req.body에 채운다. 기본 full(하위호환).
+      const mode = req.body && req.body.mode === "simple" ? "simple" : "full";
       inFlight.add(hash); // 검사 직후 등록 — 아래 await 사이 동시 진입(중복 분석·사용량 이중 소모) 방지
       try {
         const cached = await store.get(hash);
+        const cachedMode = cached
+          ? cached.analysis_mode || (cached.analysis && cached.analysis.analysis_mode) || "full"
+          : null;
         sseInit(res); // 여기부터는 SSE 스트림으로 진행 상황 전달
-        if (cached) {
+        // 캐시 반환 조건: 정밀 캐시는 어떤 요청이든 충족(full ⊇ simple), 간단 캐시는 간단 요청만.
+        // 간단 캐시 + 정밀 요청 = 업그레이드 → 정밀 분석을 돌려 덮어쓴다(분석 시각 보존).
+        if (cached && !(cachedMode === "simple" && mode === "full")) {
           sseSend(res, { type: "result", data: { cached: true, hash, ...cached.analysis } });
           return res.end();
         }
         // 클라이언트가 탭을 닫거나 "분석 취소"하면 연결이 끊긴다 → 에이전트 실행 중단(사용량 절약)
         const ac = new AbortController();
         abortOnDisconnect(res, ac, req.file.originalname);
-        await runAnalysisJob(res, hash, pageCount, req.file.originalname, ac);
+        await runAnalysisJob(res, hash, pageCount, req.file.originalname, ac, {
+          mode,
+          createdAt: cached ? cached.createdAt : undefined,
+        });
       } finally {
         inFlight.delete(hash); // runAnalysisJob 내부 finally와 중복 삭제는 무해(Set)
       }
@@ -730,7 +886,12 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
       sseInit(res);
       const ac = new AbortController();
       abortOnDisconnect(res, ac, (prev && prev.title) || "재분석");
-      await runAnalysisJob(res, hash, pageCount, (prev && prev.title) || "재분석", ac);
+      // mode: 업그레이드 버튼(간단→정밀)도 이 경로를 쓴다. 기본 full(기존 🔄 재분석과 동일).
+      const mode = req.body && req.body.mode === "simple" ? "simple" : "full";
+      // 간단→정밀 업그레이드면 분석 시각 보존(목록 순서 유지). 같은 모드 재분석은 새 시각(최신으로 갱신).
+      const prevMode = prev ? prev.analysis_mode || (prev.analysis && prev.analysis.analysis_mode) || "full" : null;
+      const keepCreatedAt = prev && prevMode === "simple" && mode === "full" ? prev.createdAt : undefined;
+      await runAnalysisJob(res, hash, pageCount, (prev && prev.title) || "재분석", ac, { mode, createdAt: keepCreatedAt });
     } finally {
       inFlight.delete(hash);
     }
@@ -744,6 +905,19 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
   }
 });
 
+// --- GET /api/eta?pages=N — 모드별 예상 소요(모드 선택 다이얼로그용) -------------
+app.get("/api/eta", (req, res) => {
+  const n = parseInt(req.query.pages, 10);
+  const pages = Number.isInteger(n) && n > 0 ? Math.min(n, MAX_PDF_PAGES) : 20;
+  const s = predictDurations(pages, "simple");
+  const f = predictDurations(pages, "full");
+  res.json({
+    pages,
+    simple: { analysisMs: s.analysisMs, totalMs: s.analysisMs }, // 시각화 구간 없음
+    full: { analysisMs: f.analysisMs, vizMs: f.vizMs, totalMs: f.totalMs },
+  });
+});
+
 // --- GET /api/pdf/:hash — 원문 PDF 서빙 (좌측 뷰어) ----------------------------
 app.get("/api/pdf/:hash", (req, res) => {
   const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
@@ -752,196 +926,11 @@ app.get("/api/pdf/:hash", (req, res) => {
   res.sendFile(p);
 });
 
-// label("Table 2", "Figure 1" …) → {type, num}
-function parseFigLabel(label) {
-  const typeM = label.match(/[A-Za-z]+/);
-  const numM = label.match(/\d+/);
-  if (!typeM || !numM) return null;
-  let type = typeM[0].toLowerCase();
-  if (type === "fig") type = "figure";
-  if (type === "tbl") type = "table";
-  return { type, num: numM[0] };
-}
-
-// 모델이 찍은 bbox는 세로 위치가 부정확할 때가 많다(특히 표). PDF 텍스트 레이어에서
-// 'Table N:'/'Figure N:' 캡션 위치(정확)를 찾아 크롭의 세로 위치를 캡션에 맞춰 보정한다.
-// 가로 폭·대략 크기는 모델 bbox를 따른다. 캡션을 못 찾으면 null(→ 원본 bbox 사용).
+// 그림 크롭 박스 결정은 lib/figurebox.js로 이동 (계획 1: 텍스트 "추론" → 실체 "실측").
+// Table→텍스트 스캔(L3), Figure→임베디드 이미지(L1)→잉크 밀도(L2)→L3 라우팅 +
+// 백지·절단 검증(L4). 모델 bbox는 방향·컬럼 힌트와 최종 폴백으로만 쓴다.
+const { resolveFigureBox } = require("./lib/figurebox");
 const clamp01 = (n) => Math.min(Math.max(0, n), 1);
-async function captionAnchoredBox(pdfPath, page, label, modelBox, wpt, hpt) {
-  const parsed = parseFigLabel(label);
-  if (!parsed) return null;
-  const xml = await new Promise((resolve, reject) => {
-    execFile(
-      "pdftotext",
-      ["-bbox", "-f", String(page), "-l", String(page), pdfPath, "-"],
-      { timeout: 15000, maxBuffer: 24 * 1024 * 1024 },
-      (err, stdout) => (err ? reject(err) : resolve(stdout))
-    );
-  });
-  const words = [];
-  const re = /<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)<\/word>/g;
-  let m;
-  while ((m = re.exec(xml))) words.push({ x0: +m[1], y0: +m[2], x1: +m[3], y1: +m[4], t: m[5] });
-  if (!words.length) return null;
-
-  // 대표 줄 높이(중앙값) — 간격(gap) 판정 기준
-  const heights = words.map((w) => w.y1 - w.y0).filter((h) => h > 0).sort((a, b) => a - b);
-  const lineH = heights.length ? heights[Math.floor(heights.length / 2)] : 10;
-  const otherCapRe = /^(table|figure|fig\.?)\s*\d+\s*[:.]/i; // 다른 그림/표 캡션
-
-  // --- 1) 캡션 라벨 단어 찾기 (줄 시작 + 콜론을 강하게 우선) ---
-  const cands = [];
-  for (let i = 0; i < words.length - 1; i++) {
-    if (words[i].t.toLowerCase() !== parsed.type) continue;
-    const nm = words[i + 1].t.match(/^(\d+)([.:]?)/);
-    if (!nm || nm[1] !== parsed.num) continue;
-    const w = words[i];
-    const lineStart = !words.some((o) => o !== w && Math.abs(o.y0 - w.y0) < lineH * 0.6 && o.x0 < w.x0 - 0.5);
-    let score = 0;
-    if (nm[2] === ":") score += 3;
-    else if (nm[2] === ".") score += 2;
-    if (lineStart) score += 3; // 줄 시작 = 캡션(본문 속 'Table 2 provides…' 인용 배제)
-    cands.push({ w, score });
-  }
-  if (!cands.length) return null;
-  const modelCY = ((modelBox[1] + modelBox[3]) / 2) * hpt;
-  cands.sort((a, b) => b.score - a.score || Math.abs(a.w.y0 - modelCY) - Math.abs(b.w.y0 - modelCY));
-  const cap = cands[0];
-  if (cap.score < 3) return null; // 캡션이라 확신 못 하면 보정 안 함(원본 bbox 폴백)
-
-  // --- 2) 캡션이 속한 컬럼의 단어만 모아 '줄(row)' 단위로 묶기 (2단 레이아웃 오염 방지) ---
-  const mid = wpt / 2;
-  let colMin = Math.min(modelBox[0] * wpt, cap.w.x0) - 0.02 * wpt;
-  let colMax = Math.max(modelBox[2] * wpt, cap.w.x1) + 0.03 * wpt;
-  // 단일 컬럼 그림이면 페이지 중앙(거터)에서 다른 컬럼을 차단 (좌/우 글자 새어듦 방지)
-  if (modelBox[2] - modelBox[0] < 0.55) {
-    if (modelBox[0] >= 0.45) colMin = Math.max(colMin, mid + 2);
-    else if (modelBox[2] <= 0.55) colMax = Math.min(colMax, mid - 2);
-  }
-  const colWords = words.filter((w) => { const c = (w.x0 + w.x1) / 2; return c > colMin && c < colMax; });
-  const rows = [];
-  for (const w of [...colWords].sort((a, b) => a.y0 - b.y0)) {
-    const c = (w.y0 + w.y1) / 2;
-    const r = rows[rows.length - 1];
-    if (r && c <= r.cMax + lineH * 0.6 && c >= r.cMin - lineH * 0.6) {
-      r.top = Math.min(r.top, w.y0); r.bottom = Math.max(r.bottom, w.y1);
-      r.xL = Math.min(r.xL, w.x0); r.xR = Math.max(r.xR, w.x1);
-      r.cMin = Math.min(r.cMin, c); r.cMax = Math.max(r.cMax, c); r.words.push(w);
-    } else {
-      rows.push({ top: w.y0, bottom: w.y1, xL: w.x0, xR: w.x1, cMin: c, cMax: c, words: [w] });
-    }
-  }
-  rows.forEach((r) => { r.text = r.words.slice().sort((a, b) => a.x0 - b.x0).map((w) => w.t).join(" "); });
-  const ci = rows.findIndex((r) => r.words.includes(cap.w));
-  if (ci < 0) return null;
-
-  // 캡션 라벨 줄부터 아래로 이어지는 캡션 블록(여러 줄)을 실측
-  const capBlockFrom = (idx) => {
-    let top = rows[idx].top, bottom = rows[idx].bottom, end = idx, xL = rows[idx].xL, xR = rows[idx].xR;
-    for (let j = idx + 1; j < rows.length; j++) {
-      const r = rows[j];
-      if (r.top - bottom > lineH * 1.0) break; // 캡션 줄 간격보다 크면 끝(다음 블록)
-      if (otherCapRe.test(r.text)) break; // 다음 그림/표 캡션
-      if (r.bottom - top > 0.17 * hpt) break; // 너무 길면 본문 흡수 방지
-      bottom = r.bottom; end = j; xL = Math.min(xL, r.xL); xR = Math.max(xR, r.xR);
-    }
-    return { top, bottom, end, xL, xR };
-  };
-
-  // --- 3) 우리 캡션 블록 + 페이지 내 다른 그림/표 캡션 블록(이웃 침범 차단용) ---
-  const myCap = capBlockFrom(ci);
-  const capTop = myCap.top, capBottom = myCap.bottom, capXL = myCap.xL, capXR = myCap.xR, capEndIdx = myCap.end;
-  const foreignBlocks = [];
-  for (let idx = 0; idx < rows.length; idx++) {
-    if (idx >= ci && idx <= capEndIdx) continue; // 우리 캡션 줄들은 제외
-    if (!otherCapRe.test(rows[idx].text)) continue;
-    foreignBlocks.push(capBlockFrom(idx));
-  }
-  const inForeign = (r) => foreignBlocks.some((b) => r.top < b.bottom + 1 && r.bottom > b.top - 1);
-
-  // --- 4) 방향 판정: 모델 박스가 한쪽으로 분명히 치우치면 그걸, 모호하면 가까운 콘텐츠 쪽 ---
-  const rowAbove = ci > 0 ? rows[ci - 1] : null;
-  const rowBelow = capEndIdx + 1 < rows.length ? rows[capEndIdx + 1] : null;
-  const gapAbove = rowAbove ? capTop - rowAbove.bottom : Infinity;
-  const gapBelow = rowBelow ? rowBelow.top - capBottom : Infinity;
-  const extendsAbove = modelBox[1] < capTop / hpt - 0.05;
-  const extendsBelow = modelBox[3] > capBottom / hpt + 0.05;
-  const aboveAmt = capTop / hpt - modelBox[1]; // 모델 박스가 캡션 위로 뻗은 정도
-  const belowAmt = modelBox[3] - capBottom / hpt; // 아래로 뻗은 정도
-  let figureAbove;
-  if (extendsAbove && !extendsBelow) figureAbove = true;
-  else if (extendsBelow && !extendsAbove) figureAbove = false;
-  // 둘 다(혹은 둘 다 아님) 모호 → 위에 붙은 콘텐츠가 더 가깝거나(표),
-  // 위에 텍스트가 없어도 모델 박스가 캡션 위로 훨씬 더 뻗어 있으면(순수 이미지 그림) 위로 판단
-  else figureAbove = gapAbove <= gapBelow || aboveAmt > belowAmt + 0.1;
-
-  // --- 5) 본체 경계 스캔 ---
-  // 표↔본문 경계 간격은 표마다 다르다(빽빽한 표 ~13pt, 느슨한 표는 더 큼). 고정 임계는 한쪽을 깨므로,
-  // 스캔하며 '내부 줄 간격'을 누적해 그 대비 큰 간격에서만 멈춘다(적응형). 처음 두 간격은 표본으로만 쓴다.
-  // 캡션 바로 위/아래의 아주 큰 빈칸은 그림 이미지로 본다.
-  const imageGap = Math.max(lineH * 3.0, 0.045 * hpt); // 이만큼 크면 이미지 빈칸
-  const minBoundary = lineH * 0.9, maxBoundary = lineH * 2.6;
-  const median = (xs) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
-  const stopBoundary = (gap, gs) => {
-    if (gs.length < 2) { gs.push(Math.max(gap, 0)); return false; } // 처음 2개는 표본 확보(멈춤 판정 보류)
-    const th = Math.min(Math.max(median(gs) * 2.2, minBoundary), maxBoundary);
-    if (gap > th) return true;
-    gs.push(Math.max(gap, 0));
-    return false;
-  };
-
-  let bodyTop, bodyBottom;
-  if (figureAbove) {
-    bodyBottom = capBottom;
-    let top = capTop, acc = false; const gs = [];
-    for (let j = ci - 1; j >= 0; j--) {
-      const r = rows[j];
-      if (inForeign(r)) break; // 위쪽 다른 그림/표 캡션 블록 → 멈춤(제외)
-      const gap = top - r.bottom;
-      if (!acc) { if (gap > imageGap) { top = r.bottom; break; } } // 캡션 바로 위 큰 빈칸 = 이미지
-      else if (stopBoundary(gap, gs)) break; // 내부 줄 간격 대비 큰 간격 = 표/그림 끝
-      top = r.top; acc = true;
-    }
-    let limitTop = 0; // 위쪽으로 가장 가까운 이웃 캡션 블록의 아래 경계
-    for (const b of foreignBlocks) if (b.bottom <= capTop + 1 && b.bottom > limitTop) limitTop = b.bottom;
-    // 모델 박스가 캡션에 닿을 때만(=위치가 신뢰되는 박스) 하한으로 써서 잘림을 막는다.
-    // 닿지 않으면(예: 본문 위에 잘못 찍힌 박스) 스캔 결과만 사용해 과확장을 막는다.
-    if (modelBox[3] * hpt >= capTop - 0.08 * hpt) top = Math.min(top, modelBox[1] * hpt);
-    bodyTop = Math.max(top, limitTop);
-  } else {
-    bodyTop = capTop;
-    let bottom = capBottom, acc = false; const gs = [];
-    for (let j = capEndIdx + 1; j < rows.length; j++) {
-      const r = rows[j];
-      if (inForeign(r)) break;
-      const gap = r.top - bottom;
-      if (!acc) { if (gap > imageGap) { bottom = r.top; break; } }
-      else if (stopBoundary(gap, gs)) break;
-      bottom = r.bottom; acc = true;
-    }
-    let limitBot = hpt; // 아래쪽으로 가장 가까운 이웃 캡션 블록의 위 경계
-    for (const b of foreignBlocks) if (b.top >= capBottom - 1 && b.top < limitBot) limitBot = b.top;
-    // 모델 박스가 캡션에 닿을 때만 하한으로 사용 (위 figureAbove와 동일 취지)
-    if (modelBox[1] * hpt <= capBottom + 0.08 * hpt) bottom = Math.max(bottom, modelBox[3] * hpt);
-    bodyBottom = Math.min(bottom, limitBot);
-  }
-
-  // --- 6) 가로 폭: 본체 영역 단어들의 실제 좌우 + 캡션 폭 (우측 범례 잘림 방지) ---
-  let nx0pt = Infinity, nx1pt = -Infinity;
-  for (const w of colWords) {
-    if (w.y1 < bodyTop - 1 || w.y0 > bodyBottom + 1) continue;
-    if (w.x0 < nx0pt) nx0pt = w.x0;
-    if (w.x1 > nx1pt) nx1pt = w.x1;
-  }
-  if (!isFinite(nx0pt)) { nx0pt = modelBox[0] * wpt; nx1pt = modelBox[2] * wpt; }
-  nx0pt = Math.min(nx0pt, capXL);
-  nx1pt = Math.max(nx1pt, capXR);
-
-  const X0 = clamp01(nx0pt / wpt), Y0 = clamp01(bodyTop / hpt);
-  const X1 = clamp01(nx1pt / wpt), Y1 = clamp01(bodyBottom / hpt);
-  if (Y1 - Y0 < 0.03 || X1 - X0 < 0.05) return null; // 비정상이면 폴백
-  return [X0, Y0, X1, Y1];
-}
 
 // --- GET /api/figure/:hash?page=N&box=x0,y0,x1,y1&label=Table 2 — 그림 해설 크롭(PNG) -
 // poppler(pdftoppm)로 해당 페이지의 영역만 잘라 PNG 반환. 모델 bbox를 캡션 위치로 보정. 디스크 캐시.
@@ -962,8 +951,9 @@ app.get("/api/figure/:hash", async (req, res) => {
     const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
     if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: "저장된 원문 PDF가 없습니다." });
 
-    // 캐시 키는 입력(page+box+label) 기준 → 캐시 히트 시 PDF 로드·캡션 탐색을 건너뛴다
-    const keyHash = crypto.createHash("sha1").update(`v9|${page}|${box.join(",")}|${label}`).digest("hex").slice(0, 16);
+    // 캐시 키는 입력(page+box+label) 기준 → 캐시 히트 시 PDF 로드·박스 실측을 건너뛴다.
+    // v11: 실측 파이프라인(Layer 1~4) + 캡션 약어("Fig. 2") 매칭 — 버전을 올려 옛 크롭 캐시를 자연 무효화
+    const keyHash = crypto.createHash("sha1").update(`v11|${page}|${box.join(",")}|${label}`).digest("hex").slice(0, 16);
     const outBase = path.join(CROP_DIR, `${hash}_${keyHash}`);
     const outPng = `${outBase}.png`;
 
@@ -972,13 +962,14 @@ app.get("/api/figure/:hash", async (req, res) => {
       if (page > doc.getPageCount()) return res.status(404).json({ error: "페이지 범위를 벗어났습니다." });
       const { width: wpt, height: hpt } = doc.getPage(page - 1).getSize();
 
-      // 캡션 위치로 세로 보정 (실패하면 모델 bbox 그대로)
-      if (label) {
-        try {
-          const fixed = await captionAnchoredBox(pdfPath, page, label, [x0, y0, x1, y1], wpt, hpt);
-          if (fixed) [x0, y0, x1, y1] = fixed;
-        } catch (e) { console.error("[캡션 보정 실패]", label, e.message); }
-      }
+      // 크롭 박스 실측 (Table→L3 / Figure→L1→L2→L3 + L4 백지·절단 검증) — 실패 시 모델 bbox
+      try {
+        const r = await resolveFigureBox(pdfPath, page, label, [x0, y0, x1, y1], wpt, hpt);
+        if (r && r.box) {
+          [x0, y0, x1, y1] = r.box;
+          console.log(`[그림 크롭] ${label || "(라벨 없음)"} p${page} → ${r.layer}${r.report && r.report.blank_fallback ? "+백지폴백" : ""}`);
+        }
+      } catch (e) { console.error("[크롭 박스 실측 실패 — 모델 bbox 사용]", label, e.message); }
 
       const pad = 0.015; // 약간의 여유로 잘림 방지
       x0 = clamp01(x0 - pad); y0 = clamp01(y0 - pad);
@@ -1026,9 +1017,11 @@ app.post("/api/ask/:hash", async (req, res) => {
     if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
 
     const a = record.analysis;
+    const simpleRec = (record.analysis_mode || a.analysis_mode || "full") === "simple";
     const context = JSON.stringify({
       title: a.title,
       one_liner: a.one_liner,
+      analysis_mode: simpleRec ? "simple(간단 분석 — 실험·그림·세미나 정리 섹션 없음)" : "full",
       contributions: a.contributions,
       background: a.background,
       problem: a.problem,
@@ -1048,6 +1041,9 @@ app.post("/api/ask/:hash", async (req, res) => {
       fs.existsSync(pdfPath)
         ? `원문 PDF: ${pdfPath} — 분석 요약만으로 부족할 때만 Read 도구(pages 파라미터)로 필요한 부분을 읽으세요.`
         : `원문 PDF는 없으므로 분석 요약과 일반 지식으로 답하세요.`,
+      simpleRec
+        ? `참고: 이 논문은 '간단 분석' 모드라 분석 요약에 실험·결과, 그림 해설, 세미나 정리가 없습니다. 그 내용을 물으면 원문 PDF를 직접 읽어 답하고, 필요하면 "정밀 분석으로 업그레이드" 기능을 한 줄로 안내하세요.`
+        : "",
       histText ? `이전 대화:\n${histText}` : "",
       `질문: ${question}`,
       `규칙: 한국어로 간결히(보통 3~8문장, 필요할 때만 길게). 고유명사는 영어 원어 그대로 + 괄호 번역. 인라인 수식은 $...$, 강조는 **볼드**/==형광펜== 사용 가능. 마크다운 헤더·리스트·코드펜스는 쓰지 말고, 답변 텍스트만 출력하세요. ==원문 PDF에서 확인한 사실에는 [[p7]] 또는 [[p7|근거 구절]] 형식으로 출처 페이지를 다세요(클릭 시 그 페이지로 이동). 직접 확인한 것에만 달고, 추론·일반론에는 달지 마세요. 페이지를 지어내지 마세요.==`,
@@ -1230,12 +1226,21 @@ function runVerifyMviz(htmlPath) {
 // method 섹션: viz_guideline 기반 타입별 독립 HTML 시각화를 생성한다.
 // 에이전트가 한 query 안에서 Read(지침·참조·PDF)+Write(HTML)+Bash(verify)로 생성→검증→수정을
 // 자가 반복하고, 서버가 최종 게이트로 verify를 재실행한다.
-async function generateMethodVizHtml(hash, record, pdfPath, pageCount, ac) {
+async function generateMethodVizHtml(hash, record, pdfPath, pageCount, ac, opts = {}) {
   const a = record.analysis || {};
   const outPath = path.join(MVIZ_GEN_DIR, `${hash}.html`);
   try { fs.rmSync(outPath, { force: true }); } catch (e) {}
-  const prompt =
-    METHOD_VIZ_HTML_GEN +
+  // P6 힌트: 이미 분석된 figure_guide로 overview/방법 그림 위치를 짚어 PDF 재독 축소.
+  // 메인 분석(CORE)에서는 method_visualization=null이므로, figure_guide의 구조도(kind)에서 위치를 유도한다.
+  const figs = Array.isArray(a.figure_guide) ? a.figure_guide : [];
+  const archFigs = figs.filter((f) => f && (f.kind === "architecture" || f.kind === "method"));
+  const sectionRef =
+    (a.method_visualization && a.method_visualization.section_ref) ||
+    a.section_ref ||
+    archFigs.map((f) => `${f.label}(p${f.page})`).join(", ") ||
+    "";
+  const figPages = [...new Set(figs.map((f) => f && f.page).filter(Boolean))].slice(0, 8);
+  let ctx =
     `\n\n---\n## 이번 논문 (컨텍스트)\n` +
     `- 제목: ${a.title || record.title || ""}\n` +
     `- 원문 PDF: pdfs/${hash}.pdf (${pageCount}페이지) — Read로 필요한 범위만(20페이지씩) 읽어라.\n` +
@@ -1244,12 +1249,31 @@ async function generateMethodVizHtml(hash, record, pdfPath, pageCount, ac) {
     `  → 완성 HTML을 정확히 이 절대경로에 Write하라.\n` +
     `- 자가검증: \`node scripts/verify_mviz.js ${outPath} --json\` 를 실행해 pass:true까지 고쳐라(최대 5회).\n` +
     `작업 디렉터리는 저장소 루트다. prompts/method_viz_refs/ 와 scripts/ 를 상대경로로 접근할 수 있다.`;
+  if (sectionRef || figPages.length) {
+    ctx += `\n\n## 읽기 힌트 (P6 — 이미 분석된 정보, 이 범위부터 읽으면 PDF 재독을 줄인다)\n` +
+      (sectionRef ? `- 방법론/overview figure 위치: ${sectionRef}\n` : "") +
+      (figPages.length ? `- 주요 figure 페이지: ${figPages.join(", ")} (overview figure pdftoppm 렌더 시 우선)\n` : "");
+  }
+  // P4 method_steps 재사용: 메인 분석이 방금 만든 단계는 재생성하지 않는다(섹션 재생성 경로는 미적용).
+  // 참조용으로만 넣고 모델이 재출력하지 않게 한다 — 문자열 중간 절단으로 깨진 JSON을 주지 않도록
+  // '통째' 직렬화하고(문자 slice 금지), 단계 수만 상한한다. 서버는 reuseSteps일 때 원본 steps를 그대로 유지.
+  const reusing = opts.reuseSteps && Array.isArray(a.method_steps) && a.method_steps.length;
+  if (reusing) {
+    const cap = a.method_steps.slice(0, 14); // 통째 객체 단위로만 상한(항상 유효 JSON)
+    const omitted = a.method_steps.length - cap.length;
+    ctx += `\n\n## method_steps 재사용 (P4 — 이미 확정됨: 재생성·재출력 금지)\n` +
+      "```json\n" + JSON.stringify(cap) + "\n```\n" +
+      (omitted > 0 ? `(위는 앞 ${cap.length}단계 — 나머지 ${omitted}단계는 동일 형식으로 이어짐) ` : "") +
+      `이 단계들은 이미 확정된 값이다. HTML 스테퍼를 이에 맞춰 구성하되, 응답 JSON의 method_steps는 생략해도 된다(서버가 기존 값을 유지한다).`;
+  }
+  const prompt = METHOD_VIZ_HTML_GEN + ctx;
   let raw = null;
   for await (const msg of query({
     prompt,
-    options: { systemPrompt: SYSTEM_PROMPT, model: MODEL, allowedTools: ["Read", "Write", "Bash", "WebSearch"], maxTurns: 160, cwd: __dirname, abortController: ac },
+    options: { systemPrompt: SYSTEM_PROMPT_MINI, model: MODEL, allowedTools: ["Read", "Write", "Bash", "WebSearch"], maxTurns: 160, cwd: __dirname, abortController: ac },
   })) {
     if (msg.type === "result") {
+      logUsage("HTML시각화", msg);
       if (msg.subtype !== "success") {
         const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
         const e = new Error(`방법론 HTML 생성 실패 (${msg.subtype})`);
@@ -1264,7 +1288,9 @@ async function generateMethodVizHtml(hash, record, pdfPath, pageCount, ac) {
   const html = fs.readFileSync(outPath, "utf8");
   if (!html || html.length < 400) throw new Error("생성된 HTML이 비었거나 너무 짧습니다.");
   const verify = await runVerifyMviz(outPath); // 서버측 최종 게이트
-  return { html, method_steps: Array.isArray(meta.method_steps) ? meta.method_steps : null, viz_report: meta.viz_report || null, verify };
+  // reuseSteps일 때는 원본 method_steps를 그대로 유지(모델이 재출력하며 analogy 등을 잃는 것 방지).
+  const method_steps = reusing ? a.method_steps : Array.isArray(meta.method_steps) ? meta.method_steps : null;
+  return { html, method_steps, viz_report: meta.viz_report || null, verify };
 }
 
 app.post("/api/reanalyze-section/:hash", async (req, res) => {
@@ -1310,6 +1336,7 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
         one_liner: merged.one_liner || record.one_liner,
         venue: record.venue ?? (typeof merged.venue === "string" ? merged.venue.slice(0, 40) : null),
         year: record.year ?? (Number.isFinite(Number(merged.year)) ? Number(merged.year) : null),
+        analysis_mode: record.analysis_mode || a.analysis_mode || "full", // 섹션 재생성이 모드를 지우지 않게
         createdAt: record.createdAt,
         analysis: merged,
       });
@@ -1326,9 +1353,10 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
     let raw = null;
     for await (const msg of query({
       prompt,
-      options: { systemPrompt: SYSTEM_PROMPT, model: MODEL, allowedTools: ["Read", "WebSearch"], maxTurns: 60, cwd: PDF_DIR, abortController: ac },
+      options: { systemPrompt: SYSTEM_PROMPT_CORE, model: MODEL, allowedTools: ["Read", "WebSearch"], maxTurns: 60, cwd: PDF_DIR, abortController: ac }, // P1: V4 불필요(비-method 섹션)
     })) {
       if (msg.type === "result") {
+        logUsage(`섹션재생성:${section}`, msg);
         if (msg.subtype !== "success") {
           const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
           const e = new Error(`섹션 재생성 실패 (${msg.subtype})`);
@@ -1364,6 +1392,7 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
       // 사이드바 메타데이터(학회·연도) 보존 — 섹션 재생성이 지우지 않게
       venue: record.venue ?? (typeof merged.venue === "string" ? merged.venue.slice(0, 40) : null),
       year: record.year ?? (Number.isFinite(Number(merged.year)) ? Number(merged.year) : null),
+      analysis_mode: record.analysis_mode || a.analysis_mode || "full", // 모드 보존
       createdAt: record.createdAt, // 분석 시각 유지 — 섹션 하나 고쳤다고 목록 순서가 바뀌지 않게
       analysis: merged,
     });

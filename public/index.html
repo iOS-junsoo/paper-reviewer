@@ -75,7 +75,7 @@
 
       <!-- 로딩 -->
       <section id="loading" class="loading hidden">
-        <div id="loading-pct" class="loading-pct">0%</div>
+        <div id="loading-pct" class="loading-pct">준비 중…</div>
         <div class="loading-bar"><div id="loading-fill" class="loading-fill"></div></div>
         <p id="loading-text">논문을 분석하고 있습니다…</p>
         <p class="loading-sub">Claude가 논문 전체를 페이지 단위로 읽는 중입니다. 논문 길이에 따라 1~5분 정도 걸릴 수 있어요.</p>
@@ -110,18 +110,20 @@
           <div id="reanalyze-banner" class="reanalyze-banner hidden">
             <span class="rebar-spin" aria-hidden="true"></span>
             <span id="rebar-text" class="rebar-text">최신 방식으로 재분석 중…</span>
-            <span id="rebar-pct" class="rebar-pct">0%</span>
+            <span id="rebar-pct" class="rebar-pct">준비 중…</span>
             <div class="rebar-track"><div id="rebar-fill" class="rebar-fill"></div></div>
             <button id="rebar-cancel" class="rebar-cancel" type="button">취소</button>
           </div>
           <div class="result-head">
             <span id="cache-badge" class="badge hidden">⚡ 캐시에서 불러옴</span>
+            <span id="simple-badge" class="badge badge-simple hidden" title="배경·문제·방법론·수식 4개 섹션만 있는 빠른 분석입니다">⚡ 간단 분석</span>
             <h2 id="paper-title"></h2>
             <p id="one-liner"></p>
             <div id="contributions" class="contributions hidden"></div>
           </div>
 
           <div id="result-tools" class="result-tools">
+            <button id="tool-upgrade" class="rtool rtool-upgrade hidden" type="button" title="전체 7개 섹션 + 인터랙티브 시각화로 재분석합니다 (몇 분 소요)">🔬 정밀 분석으로 업그레이드</button>
             <button id="tool-regen" class="rtool" type="button" title="지금 보는 섹션만 다시 생성 (전체 재분석 아님)">🔄 이 섹션 다시 생성</button>
             <button id="tool-copy" class="rtool" type="button" title="현재 섹션을 마크다운으로 복사">📋 섹션 복사</button>
             <button id="tool-cheatsheet" class="rtool" type="button" title="핵심 요약을 마크다운으로 복사">📄 치트시트</button>

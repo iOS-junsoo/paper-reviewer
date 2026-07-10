@@ -142,11 +142,102 @@ dropzone.addEventListener("drop", (e) => {
   if (file) analyzeFile(file);
 });
 
+// ── 분석 모드 선택 다이얼로그 (간단 ⚡ / 정밀 🔬) ──────────────────────────
+// 페이지 수로 서버에 모드별 예상 시간을 물어 카드에 표시한다. 반환: "simple"|"full"|null(취소)
+function fmtEtaMinutes(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "수 분";
+  const m = Math.round(ms / 60000);
+  return m < 1 ? "약 1분 미만" : `약 ${m}분`;
+}
+function showModeDialog(fileName, pages) {
+  return new Promise((resolve) => {
+    document.getElementById("mode-overlay")?.remove();
+    const ov = document.createElement("div");
+    ov.className = "mode-overlay";
+    ov.id = "mode-overlay";
+    const remembered = localStorage.getItem("analysisMode") === "simple" ? "simple" : "full";
+    ov.innerHTML =
+      `<div class="mode-box" role="dialog" aria-label="분석 모드 선택">` +
+      `<div class="mode-file">「${fileName.replace(/</g, "&lt;")}」${pages ? ` · ${pages}페이지` : ""}</div>` +
+      `<div class="mode-row">` +
+      `<button type="button" class="mode-card" data-mode="simple"><span class="mode-name">⚡ 간단 분석</span>` +
+      `<span class="mode-eta" id="mode-eta-simple">예상 시간 계산 중…</span>` +
+      `<span class="mode-desc">배경 · 문제 · 방법론 · 수식<br />4개 섹션</span><kbd>1</kbd></button>` +
+      `<button type="button" class="mode-card" data-mode="full"><span class="mode-name">🔬 정밀 분석</span>` +
+      `<span class="mode-eta" id="mode-eta-full">예상 시간 계산 중…</span>` +
+      `<span class="mode-desc">전체 7개 섹션 +<br />인터랙티브 시각화</span><kbd>2</kbd></button>` +
+      `</div><div class="mode-foot"><button type="button" class="mode-cancel">취소 (Esc)</button></div></div>`;
+    const done = (mode) => {
+      document.removeEventListener("keydown", onKey, true);
+      ov.remove();
+      if (mode) { try { localStorage.setItem("analysisMode", mode); } catch {} }
+      resolve(mode);
+    };
+    const onKey = (e) => {
+      if (e.isComposing) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done(null); }
+      else if (e.key === "1") { e.preventDefault(); done("simple"); }
+      else if (e.key === "2") { e.preventDefault(); done("full"); }
+    };
+    document.addEventListener("keydown", onKey, true); // 전역 단축키(J/K 등)보다 먼저 잡는다
+    ov.addEventListener("click", (e) => {
+      if (e.target === ov) return done(null); // 바깥 클릭 = 취소
+      const card = e.target.closest(".mode-card");
+      if (card) return done(card.dataset.mode);
+      if (e.target.closest(".mode-cancel")) return done(null);
+    });
+    document.body.appendChild(ov);
+    ov.querySelector(`.mode-card[data-mode="${remembered}"]`)?.focus(); // 마지막 선택에 기본 포커스
+    // 모드별 예상 시간 (ETA 자가학습 통계 기반) — 실패해도 다이얼로그는 동작
+    fetch(`${API_BASE}/api/eta?pages=${pages || 20}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d || !document.getElementById("mode-overlay")) return;
+        document.getElementById("mode-eta-simple").textContent = fmtEtaMinutes(d.simple && d.simple.totalMs);
+        document.getElementById("mode-eta-full").textContent = fmtEtaMinutes(d.full && d.full.totalMs);
+      })
+      .catch(() => {});
+  });
+}
+
 async function analyzeFile(file) {
   if (!file.name.toLowerCase().endsWith(".pdf")) {
     return showError("PDF 파일만 업로드할 수 있습니다.");
   }
   hideError();
+
+  // 업로드 전 클라 측 준비: (a) SHA-256으로 캐시 여부 확인 — 이미 분석된 논문이면
+  // 다이얼로그 없이 바로 연다(서버가 캐시 즉시 반환). (b) pdf.js로 페이지 수 계산(ETA 표시용).
+  // 어느 쪽이든 실패하면 그냥 다이얼로그로 진행한다 (crypto.subtle은 https/localhost 전용 —
+  // Tailscale http 접속에선 없을 수 있음).
+  let pages = null;
+  let cachedRec = null;
+  try {
+    const buf = await file.arrayBuffer();
+    if (window.crypto && crypto.subtle) {
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      const r = await fetch(`${API_BASE}/api/history/${hex}`);
+      if (r.ok) cachedRec = await r.json();
+    }
+    if (typeof pdfjsLib !== "undefined") {
+      // getDocument가 버퍼 소유권을 가져가므로 사본을 넘긴다 (FormData의 file은 영향 없음)
+      const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)) }).promise;
+      pages = doc.numPages;
+      destroyPdfDoc(doc);
+    }
+  } catch {}
+
+  let mode;
+  if (cachedRec) {
+    // 캐시 히트: 그 기록의 모드 그대로 즉시 열기 — 간단 기록의 정밀 전환은
+    // 결과 화면의 [정밀 분석으로 업그레이드] 버튼이 담당한다.
+    mode = cachedRec.analysis_mode === "simple" ? "simple" : "full";
+  } else {
+    mode = await showModeDialog(file.name, pages);
+    if (!mode) { fileInput.value = ""; return; } // 취소
+  }
+
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
   setActiveAnalysis(file.name.replace(/\.pdf$/i, ""));
@@ -154,6 +245,7 @@ async function analyzeFile(file) {
 
   const form = new FormData();
   form.append("pdf", file);
+  form.append("mode", mode);
 
   const ac = beginCancellable();
   try {
@@ -182,29 +274,134 @@ async function analyzeFile(file) {
 }
 
 let lastLoadingPct = 0;
+let lastLoadingMsg = "";
 
-// 실측 진행도 갱신 — msg(상태 문구)와 pct(0~100, 실제 이벤트에만 변함)
-function setLoadingProgress(msg, pct) {
-  if (msg != null) document.getElementById("loading-text").textContent = msg;
-  if (typeof pct === "number" && !Number.isNaN(pct)) {
-    lastLoadingPct = Math.max(0, Math.min(100, Math.round(pct)));
-    document.getElementById("loading-pct").textContent = `${lastLoadingPct}%`;
-    document.getElementById("loading-fill").style.width = `${lastLoadingPct}%`;
+// ── ETA(예상 남은 시간) 기반 진행바 ─────────────────────────────────────────
+// 서버가 보내는 eta 이벤트(구간별 예상 소요 estMs)와 클라 경과시간으로 바를 채운다.
+// 실측 %(progress.pct)는 분석 구간에서 시간기반 진행을 '앞당기는' 보정 신호로만 쓴다.
+const eta = {
+  active: false, timer: null, phase: null,
+  phaseStart: 0, phaseEstMs: 0, estTotalMs: 0,
+  bandStart: 0, bandEnd: 1, runStart: 0, lastWidth: 0, eventFrac: 0,
+};
+
+// 로딩 화면과 재분석 배너의 바를 동시에 갱신(한쪽은 숨겨져 있어도 무해)
+function setBarWidth(w) {
+  const pct = Math.max(0, Math.min(100, w));
+  document.getElementById("loading-fill").style.width = `${pct}%`;
+  document.getElementById("rebar-fill").style.width = `${pct}%`;
+}
+function setBarLabel(txt) {
+  document.getElementById("loading-pct").textContent = txt;
+  document.getElementById("rebar-pct").textContent = txt;
+}
+function fmtRemaining(ms) {
+  if (ms == null || ms <= 4000) return "곧 완료…";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `약 ${s}초 남음`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `약 ${m}분 ${r}초 남음` : `약 ${m}분 남음`;
+}
+
+function startEta(ev) {
+  const now = performance.now();
+  if (ev.phase === "viz") {
+    eta.active = true;
+    eta.phase = "viz";
+    eta.phaseStart = now;
+    eta.phaseEstMs = ev.estMs || 1;
+    eta.estTotalMs = ev.estTotalMs || eta.estTotalMs;
+    eta.bandStart = eta.bandEnd; // 분석 구간 끝에서 이어붙임
+    eta.bandEnd = 1;
+    eta.eventFrac = 0;
+    eta.lastWidth = Math.max(eta.lastWidth, eta.bandStart * 100); // 분석 완료분 반영
+  } else {
+    // analysis (최초 시작 또는 재시도)
+    if (!eta.active) { eta.runStart = now; eta.lastWidth = 0; }
+    eta.active = true;
+    eta.phase = "analysis";
+    eta.phaseStart = now;
+    eta.phaseEstMs = ev.estMs || 1;
+    eta.estTotalMs = ev.estTotalMs || ev.estMs || 1;
+    eta.bandStart = 0;
+    eta.bandEnd = eta.estTotalMs > 0 ? Math.min(0.95, (ev.estMs || 1) / eta.estTotalMs) : 0.5;
+    eta.eventFrac = 0;
   }
+  if (!eta.timer) eta.timer = setInterval(tickEta, 250);
+  tickEta();
+}
+
+function tickEta() {
+  if (!eta.active) return;
+  const now = performance.now();
+  const elapsed = now - eta.phaseStart;
+  const fRaw = eta.phaseEstMs > 0 ? elapsed / eta.phaseEstMs : 0;
+  // 구간의 마지막 10%는 asymptote로 기어가 예상 초과에도 완료 이벤트 전엔 안 참
+  let f = fRaw < 0.9 ? fRaw : 0.9 + 0.1 * (1 - Math.exp(-(fRaw - 0.9) * 2));
+  f = Math.max(0, Math.min(0.999, f));
+  let width = (eta.bandStart + f * (eta.bandEnd - eta.bandStart)) * 100;
+  // 분석 구간: 실제 페이지-읽기 신호로 보정(시간 기반보다 앞서면 그쪽을 따른다)
+  if (eta.phase === "analysis" && eta.eventFrac > 0) {
+    const evWidth = (eta.bandStart + eta.eventFrac * (eta.bandEnd - eta.bandStart)) * 100;
+    width = Math.max(width, evWidth);
+  }
+  width = Math.min(99, width);
+  eta.lastWidth = Math.max(eta.lastWidth, width); // 단조 증가(뒤로 안 감)
+  setBarWidth(eta.lastWidth);
+  const remaining = eta.estTotalMs - (now - eta.runStart);
+  const label = fmtRemaining(remaining);
+  setBarLabel(label);
   const prog = document.getElementById("sb-active-prog");
-  if (prog) prog.textContent = `${lastLoadingPct}% · ${msg || ""}`.trim();
-  // 재분석 배너(인라인 재분석) 미러링 — 배너가 떠 있을 때만 의미 있음
-  if (msg != null) document.getElementById("rebar-text").textContent = msg;
-  document.getElementById("rebar-pct").textContent = `${lastLoadingPct}%`;
-  document.getElementById("rebar-fill").style.width = `${lastLoadingPct}%`;
+  if (prog) prog.textContent = `${label}${lastLoadingMsg ? " · " + lastLoadingMsg : ""}`.trim();
+}
+
+// 분석 구간의 실측 %(0~92)를 진행 비율로 반영 — 92%를 분석 사실상 완료로 본다
+function etaOnProgress(pct) {
+  if (!eta.active || eta.phase !== "analysis") return;
+  if (typeof pct !== "number" || Number.isNaN(pct)) return;
+  eta.eventFrac = Math.max(eta.eventFrac, Math.min(1, pct / 92));
+}
+
+function stopEta(finalize) {
+  if (eta.timer) { clearInterval(eta.timer); eta.timer = null; }
+  eta.active = false;
+  if (finalize) {
+    eta.lastWidth = 100;
+    setBarWidth(100);
+    setBarLabel("완료!");
+    document.getElementById("loading-text").textContent = "완료!";
+    document.getElementById("rebar-text").textContent = "완료!";
+    const prog = document.getElementById("sb-active-prog");
+    if (prog) prog.textContent = "완료!";
+  }
+}
+
+// 상태 문구·로그만 갱신(바 너비·남은시간은 ETA 티커가 담당).
+// ETA 비활성(서버가 eta 미전송) 시엔 폴백으로 pct를 바에 직접 반영한다.
+function setLoadingProgress(msg, pct) {
+  if (msg != null) {
+    lastLoadingMsg = msg;
+    document.getElementById("loading-text").textContent = msg;
+    document.getElementById("rebar-text").textContent = msg;
+  }
+  if (!eta.active && typeof pct === "number" && !Number.isNaN(pct)) {
+    lastLoadingPct = Math.max(0, Math.min(100, Math.round(pct)));
+    setBarWidth(lastLoadingPct);
+    setBarLabel(`${lastLoadingPct}%`);
+  }
+  if (!eta.active) {
+    const prog = document.getElementById("sb-active-prog");
+    if (prog) prog.textContent = `${msg || ""}`.trim();
+  }
 }
 
 // 현재 보고 있는 논문을 재분석할 때: 로딩 화면으로 덮지 않고 기존 결과를 그대로 둔 채
 // 상단에 진행 배너만 띄운다(읽던 내용 유지). 완료되면 renderResult가 내용을 교체한다.
 function showReanalyzeBanner() {
   document.getElementById("rebar-text").textContent = "재분석을 시작하는 중…";
-  document.getElementById("rebar-pct").textContent = "0%";
-  document.getElementById("rebar-fill").style.width = "0%";
+  eta.active = false; eta.lastWidth = 0;
+  setBarWidth(0);
+  setBarLabel("준비 중…");
   document.getElementById("reanalyze-banner").classList.remove("hidden");
 }
 function hideReanalyzeBanner() {
@@ -216,11 +413,13 @@ function setLoadingText(msg) {
   setLoadingProgress(msg, undefined);
 }
 
-// 분석 시작 시 0%로 초기화
+// 분석 시작 시 0으로 초기화
 function resetLoadingProgress() {
-  lastLoadingPct = 0;
-  document.getElementById("loading-pct").textContent = "0%";
-  document.getElementById("loading-fill").style.width = "0%";
+  if (eta.timer) { clearInterval(eta.timer); eta.timer = null; }
+  eta.active = false; eta.lastWidth = 0; eta.eventFrac = 0;
+  lastLoadingPct = 0; lastLoadingMsg = "";
+  setBarWidth(0);
+  setBarLabel("준비 중…");
 }
 
 // 사이드바 "분석 중" 표시 — title이 있으면 표시, null이면 숨김
@@ -269,14 +468,18 @@ async function consumeAnalysisStream(res) {
       } catch {
         continue;
       }
-      if (ev.type === "progress") {
+      if (ev.type === "eta") {
+        startEta(ev); // 예상 소요 → 시간 기반 바 시작/구간 전환
+      } else if (ev.type === "progress") {
         if (lastProgress && lastProgress !== ev.msg) appendLoadingLog(lastProgress);
         lastProgress = ev.msg;
         setLoadingProgress(ev.msg, ev.pct);
+        etaOnProgress(ev.pct); // 실측 페이지% 로 바를 앞당김(분석 구간)
       } else if (ev.type === "result") {
         result = ev.data;
-        setLoadingProgress("완료!", 100);
+        stopEta(true); // 100% 스냅 + "완료!"
       } else if (ev.type === "error") {
+        stopEta(false);
         let msg = ev.error || "분석 실패";
         if (ev.detail) msg += `\n\n모델 응답 일부:\n${ev.detail}`;
         throw new Error(msg);
@@ -375,6 +578,10 @@ function renderResult(data) {
   renderRich(document.getElementById("one-liner"), data.one_liner || "");
   renderContributions(data.contributions);
   cacheBadge.classList.toggle("hidden", !data.cached);
+  // 간단 분석 표시: 배지 + 업그레이드 버튼 + 생략 섹션 탭 잠금(정밀에서 제공)
+  const isSimple = data.analysis_mode === "simple";
+  document.getElementById("simple-badge").classList.toggle("hidden", !isSimple);
+  document.getElementById("tool-upgrade").classList.toggle("hidden", !isSimple);
 
   renderRich(document.getElementById("panel-background"), data.background || "(내용 없음)");
   // 분야 발전 타임라인 (배경 탭 상단)
@@ -388,6 +595,7 @@ function renderResult(data) {
   renderEquations(data.equations || [], data.equation_flow, data.method_steps || []);
   renderFigureGuide(data.figure_guide); // 그림 해설 탭 (실제 그림 크롭 + 해설)
   renderSeminar(data.seminar); // 세미나 정리 탭 (논문 섹션 구조 그대로)
+  updateTabLocks(data); // 간단 분석의 생략 섹션 탭을 잠금 표시(클릭하면 개별 생성/업그레이드 안내)
   renderRelated(data.related_papers);
   renderQaPrep(data.suggested_questions); // 예상 Q&A 준비 패널
   renderGlossary(data.glossary); // 용어집
@@ -401,6 +609,56 @@ function renderResult(data) {
   // 발표 준비가 기본 목적이므로 세미나 정리가 있으면 그 탭으로, 없으면(옛 분석) 연구 배경으로.
   // (딥링크/재생성은 이후 restoreFromHash·keepTab이 다시 덮어쓴다.)
   switchTab(Array.isArray(data.seminar) && data.seminar.length ? "seminar" : "background");
+}
+
+// ---------- 간단 분석: 생략 섹션 탭 잠금 + 안내 패널 ----------
+// 간단 분석에서 생략되는 탭들. 값 = 그 섹션 데이터가 실제로 있는지 판정(개별 재생성으로
+// 채워졌으면 잠금 해제 — 업그레이드의 부분적 대안).
+const SIMPLE_LOCKED_TABS = {
+  seminar: (d) => Array.isArray(d.seminar) && d.seminar.length > 0,
+  results: (d) => {
+    const e = d.experiments;
+    return !!(e && typeof e === "object" &&
+      (e.takeaway || e.limitations || (Array.isArray(e.studies) && e.studies.length)));
+  },
+  figures: (d) => Array.isArray(d.figure_guide) && d.figure_guide.length > 0,
+};
+function updateTabLocks(data) {
+  const simple = data && data.analysis_mode === "simple";
+  document.querySelectorAll("#tabs .tab").forEach((t) => {
+    const name = t.dataset.tab;
+    const locked = !!(simple && SIMPLE_LOCKED_TABS[name] && !SIMPLE_LOCKED_TABS[name](data));
+    t.classList.toggle("tab-locked", locked);
+    t.title = locked ? "간단 분석에서는 생략된 섹션 — 정밀 분석에서 제공 (탭을 열면 개별 생성할 수 있어요)" : "";
+    if (locked) buildSimplePlaceholder(name);
+  });
+}
+// 잠긴 탭의 패널 내용: 왜 비었는지 + 채우는 두 가지 경로(섹션만 생성 / 전체 업그레이드)
+function buildSimplePlaceholder(section) {
+  const label = { seminar: "세미나 정리", results: "실험·결과", figures: "그림 해설" }[section] || section;
+  const panel = document.getElementById(`panel-${section}`);
+  if (!panel) return;
+  panel.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "simple-missing";
+  const p = document.createElement("p");
+  p.className = "muted";
+  p.textContent = `⚡ 간단 분석에는 '${label}' 섹션이 없습니다.`;
+  const row = document.createElement("div");
+  row.className = "simple-missing-btns";
+  const one = document.createElement("button");
+  one.type = "button";
+  one.className = "rtool";
+  one.textContent = `🔄 이 섹션만 생성 (1~2분)`;
+  one.addEventListener("click", () => regenSection(section));
+  const up = document.createElement("button");
+  up.type = "button";
+  up.className = "rtool rtool-upgrade";
+  up.textContent = "🔬 정밀 분석으로 업그레이드";
+  up.addEventListener("click", upgradeToFull);
+  row.append(one, up);
+  box.append(p, row);
+  panel.appendChild(box);
 }
 
 // ---------- 세미나 정리 탭 (논문의 실제 섹션 구조 그대로 · 출처 정직성) ----------
@@ -1740,6 +1998,13 @@ function renderMethod(data) {
       const el = buildFigure(f);
       if (el) panel.appendChild(el);
     });
+    // 간단 분석: 시각화가 원래 없음을 알리고 채우는 경로를 안내
+    if (!figures.length && data.analysis_mode === "simple") {
+      const note = document.createElement("p");
+      note.className = "muted simple-viz-note";
+      note.textContent = "⚡ 간단 분석에는 인터랙티브 시각화가 없습니다 — 정밀 분석으로 업그레이드하거나, 이 탭의 \"이 섹션 다시 생성\"으로 시각화만 만들 수 있어요.";
+      panel.appendChild(note);
+    }
   }
 
   if (Array.isArray(data.method_steps) && data.method_steps.length) {
@@ -4151,6 +4416,13 @@ function buildHistoryItem(it) {
   const title = document.createElement("div");
   title.className = "h-title";
   title.textContent = it.title || "(제목 없음)";
+  if (it.analysis_mode === "simple") {
+    const b = document.createElement("span");
+    b.className = "h-mode";
+    b.title = "간단 분석 (4개 섹션)";
+    b.textContent = "⚡ 간단";
+    title.appendChild(b);
+  }
   const line = document.createElement("div");
   line.className = "h-line";
   renderRich(line, it.one_liner || "");
@@ -4202,44 +4474,10 @@ function buildHistoryItem(it) {
   re.className = "h-del h-re";
   re.title = "최신 분석 방식으로 재분석";
   re.textContent = "🔄";
-  re.addEventListener("click", async (e) => {
+  re.addEventListener("click", (e) => {
     e.stopPropagation();
     if (!confirm(`'${it.title}'을(를) 최신 분석 방식으로 재분석할까요?\n(몇 분 걸리며, 기존 결과는 대체됩니다)`)) return;
-    hideError();
-    // 지금 보고 있는 논문이면 화면을 비우지 않고 배너만 띄운다(읽던 내용 유지)
-    const inline = it.hash === currentHash && !workspaceEl.classList.contains("hidden");
-    if (inline) {
-      showReanalyzeBanner();
-    } else {
-      workspaceEl.classList.add("hidden");
-      loadingEl.classList.remove("hidden");
-      setLoadingProgress("재분석을 시작하는 중…", 0);
-    }
-    setActiveAnalysis(it.title || "재분석");
-    const ac = beginCancellable();
-    try {
-      const res = await fetch(`${API_BASE}/api/reanalyze/${it.hash}`, {
-        method: "POST", signal: ac.signal,
-      });
-      if (!res.ok) {
-        const d = await safeJson(res);
-        throw new Error((d && d.error) || `HTTP ${res.status}`);
-      }
-      const data = await consumeAnalysisStream(res);
-      renderResult(data);
-      loadHistory();
-      if (!inline) window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (err) {
-      if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
-    } finally {
-      // 새 흐름으로 대체됐으면(두 번째 재분석 등) UI 정리를 건너뛴다 — 새 흐름의 배너/표시 유지
-      if (endCancellable(ac)) {
-        hideReanalyzeBanner();
-        loadingEl.classList.add("hidden");
-        setActiveAnalysis(null);
-        setLoadingText("논문을 분석하고 있습니다…");
-      }
-    }
+    reanalyzePaper(it.hash, it.title); // 기본 정밀(full) — 기존 🔄 동작 그대로
   });
   li.appendChild(re);
 
@@ -4340,6 +4578,61 @@ function openFolderMenu(hash, anchor) {
   setTimeout(() => document.addEventListener("click", closeFolderMenu, { once: true }), 0);
 }
 document.getElementById("folder-new").addEventListener("click", createFolder);
+
+// 재분석 공용 흐름 — 히스토리 🔄(정밀 기본)와 [정밀 분석으로 업그레이드]가 공유.
+// 보고 있는 논문이면 화면을 비우지 않고 상단 배너만(읽던 내용 유지), 아니면 로딩 화면.
+async function reanalyzePaper(hash, title, opts = {}) {
+  const mode = opts.mode === "simple" ? "simple" : "full";
+  hideError();
+  const inline = hash === currentHash && !workspaceEl.classList.contains("hidden");
+  if (inline) {
+    showReanalyzeBanner();
+    if (opts.bannerText) document.getElementById("rebar-text").textContent = opts.bannerText;
+  } else {
+    workspaceEl.classList.add("hidden");
+    loadingEl.classList.remove("hidden");
+    setLoadingProgress(opts.bannerText || "재분석을 시작하는 중…", 0);
+  }
+  setActiveAnalysis(title || "재분석");
+  const ac = beginCancellable();
+  try {
+    const res = await fetch(`${API_BASE}/api/reanalyze/${hash}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+      signal: ac.signal,
+    });
+    if (!res.ok) {
+      const d = await safeJson(res);
+      throw new Error((d && d.error) || `HTTP ${res.status}`);
+    }
+    const data = await consumeAnalysisStream(res);
+    renderResult(data);
+    loadHistory();
+    if (!inline) window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch (err) {
+    if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
+  } finally {
+    // 새 흐름으로 대체됐으면(두 번째 재분석 등) UI 정리를 건너뛴다 — 새 흐름의 배너/표시 유지
+    if (endCancellable(ac)) {
+      hideReanalyzeBanner();
+      loadingEl.classList.add("hidden");
+      setActiveAnalysis(null);
+      setLoadingText("논문을 분석하고 있습니다…");
+    }
+  }
+}
+
+// 간단 → 정밀 업그레이드 (v1: 전체 재분석 — 서버가 간단 기록의 분석 시각을 보존한다)
+function upgradeToFull() {
+  if (!currentHash || !currentAnalysis) return;
+  if (!confirm("정밀 분석으로 업그레이드할까요?\n(전체 7개 섹션 + 인터랙티브 시각화를 새로 생성 — 몇 분 걸립니다)")) return;
+  reanalyzePaper(currentHash, currentAnalysis.title || "업그레이드", {
+    mode: "full",
+    bannerText: "정밀 분석으로 업그레이드 중…",
+  });
+}
+document.getElementById("tool-upgrade").addEventListener("click", upgradeToFull);
 
 async function openHistory(hash) {
   hideError();
@@ -4573,6 +4866,7 @@ function cheatSheetMd(data) {
   data = data || currentAnalysis || {};
   const L = [`# ${data.title || "논문"}`];
   if (data.one_liner) L.push(`> ${mdInline(data.one_liner)}`);
+  if (data.analysis_mode === "simple") L.push(`> ⚡ 간단 분석 결과 (세미나 정리·실험·그림 해설 생략)`);
   if (Array.isArray(data.contributions) && data.contributions.length) {
     L.push("\n## 핵심 기여");
     data.contributions.forEach((c) => { if (c) L.push(`- ${mdInline(typeof c === "string" ? c : c.text)}`); });
@@ -4775,6 +5069,28 @@ async function regenSection(section) {
   btn.disabled = true;
   const panel = document.getElementById(`panel-${section}`);
   if (panel) panel.classList.add("regenerating");
+  // 클라 전용 ETA(서버 스트림 없음): 섹션별 정적 추정으로 버튼 카운트다운 + 패널 상단 바.
+  const SECTION_EST_MS = { method: 90000, figures: 40000, equations: 40000, results: 45000, background: 40000, problem: 35000, seminar: 45000 };
+  const estMs = SECTION_EST_MS[section] || 40000;
+  let regenBar = null, regenFill = null, regenTimer = null;
+  if (panel && panel.parentNode) {
+    regenBar = document.createElement("div");
+    regenBar.className = "regen-bar";
+    regenFill = document.createElement("div");
+    regenFill.className = "regen-fill";
+    regenBar.appendChild(regenFill);
+    panel.parentNode.insertBefore(regenBar, panel); // 패널 바로 위(디밍 영향 없음)
+  }
+  const t0 = performance.now();
+  const tickRegen = () => {
+    const el = performance.now() - t0;
+    const fRaw = el / estMs;
+    const f = fRaw < 0.9 ? fRaw : 0.9 + 0.1 * (1 - Math.exp(-(fRaw - 0.9) * 2));
+    if (regenFill) regenFill.style.width = `${Math.min(99, f * 100)}%`;
+    btn.textContent = `재생성 중 · ${fmtRemaining(estMs - el)}`;
+  };
+  regenTimer = setInterval(tickRegen, 250);
+  tickRegen();
   try {
     const r = await fetch(`${API_BASE}/api/reanalyze-section/${startedHash}`, {
       method: "POST",
@@ -4792,6 +5108,9 @@ async function regenSection(section) {
   } catch (e) {
     if (e.name !== "AbortError" && currentHash === startedHash) showError(e.message);
   } finally {
+    if (regenTimer) clearInterval(regenTimer);
+    if (regenFill) regenFill.style.width = "100%";
+    if (regenBar) setTimeout(() => regenBar.remove(), 250); // 100% 잠깐 보여주고 제거
     sectionRegenInFlight = false;
     sectionRegenAbort = null;
     btn.textContent = orig;

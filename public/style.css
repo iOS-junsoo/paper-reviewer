@@ -355,12 +355,13 @@ body.reading .new-analysis { display: inline-block; }
 /* 실측 진행률 숫자 */
 .loading-pct {
   font-family: var(--serif);
-  font-weight: 900;
-  font-size: 2.6rem;
+  font-weight: 800;
+  font-size: 1.7rem;
   color: var(--accent);
-  line-height: 1;
+  line-height: 1.15;
   margin-bottom: 16px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .loading-bar {
   width: 300px; max-width: 80%; height: 8px;
@@ -652,6 +653,105 @@ body.ws-resizing iframe, body.ws-resizing .pdf-scroll { pointer-events: none; }
   font-size: 0.74rem;
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+/* 간단 분석 배지 — 캐시 배지와 나란히 */
+.badge-simple { margin-left: 6px; }
+
+/* ── 분석 모드 선택 다이얼로그 (간단 ⚡ / 정밀 🔬) ─────────────────── */
+.mode-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 16, 12, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 90;
+  padding: 20px;
+}
+.mode-box {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 22px 24px 16px;
+  max-width: 520px;
+  width: 100%;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22);
+}
+.mode-file {
+  font-family: var(--serif);
+  font-weight: 700;
+  color: var(--ink);
+  margin-bottom: 16px;
+  text-align: center;
+  word-break: break-all;
+  font-size: 0.95rem;
+}
+.mode-row { display: flex; gap: 12px; }
+.mode-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 12px 14px;
+  background: var(--paper);
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+  font-family: var(--sans);
+  color: var(--ink);
+  transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
+}
+.mode-card:hover,
+.mode-card:focus-visible {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1);
+  outline: none;
+}
+.mode-name { font-weight: 700; font-size: 1rem; }
+.mode-eta { color: var(--accent); font-weight: 700; font-size: 0.86rem; }
+.mode-desc { color: var(--ink-soft); font-size: 0.8rem; line-height: 1.45; text-align: center; }
+.mode-card kbd {
+  margin-top: 4px;
+  font-size: 0.68rem;
+  color: var(--ink-faint);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+  background: var(--paper-deep);
+}
+.mode-foot { text-align: center; margin-top: 12px; }
+.mode-cancel {
+  background: none;
+  border: none;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 6px 10px;
+}
+.mode-cancel:hover { color: var(--ink-soft); }
+
+/* ── 간단 분석: 잠긴 탭·안내 패널·업그레이드 ───────────────────────── */
+.tab.tab-locked { opacity: 0.45; }
+.tab.tab-locked .tab-no { color: var(--ink-faint); }
+.simple-missing { text-align: center; padding: 34px 12px 26px; }
+.simple-missing p { margin-bottom: 16px; }
+.simple-missing-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.simple-viz-note { margin: 10px 2px 16px; font-size: 0.86rem; }
+.rtool-upgrade { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.h-mode {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  vertical-align: 1px;
+  white-space: nowrap;
 }
 
 /* ── tabs ──────────────────────────────────────────────────────────── */
@@ -1939,7 +2039,7 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 }
 @keyframes rebar-spin { to { transform: rotate(360deg); } }
 .rebar-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rebar-pct { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); }
+.rebar-pct { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); white-space: nowrap; flex: none; }
 .rebar-track { width: 120px; height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; flex: none; }
 .rebar-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.4s ease; }
 .rebar-cancel {
@@ -2297,6 +2397,8 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 .bm-empty { font-size: 0.82rem; padding: 6px 0; }
 
 /* 섹션 재생성 중 표시 */
+.regen-bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 0 0 12px; }
+.regen-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
 .panel.regenerating { position: relative; min-height: 160px; opacity: 0.5; pointer-events: none; }
 .panel.regenerating::after {
   content: "이 섹션 다시 생성 중…";

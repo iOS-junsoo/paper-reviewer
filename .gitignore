@@ -9,3 +9,4 @@ npm-debug.log*
 .claude/
 pdfs/
 .mviz_gen/
+.stats/
