@@ -1315,6 +1315,22 @@ mark {
 .cvw-qa p { margin: 10px 0 4px; font-size: 0.88rem; line-height: 1.7; }
 
 /* ── 작업 A: 원본 방법 그림 대조 블록 ─────────────────────────────────────── */
+/* 작업 C: 스테퍼 → 정밀 강독 점프 링크 */
+.step-deep-link {
+  display: inline-block;
+  margin-top: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: var(--sans);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--ink-faint);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.step-deep-link:hover { color: var(--accent); text-decoration: underline; }
+
 .mviz-orig {
   border: 1px solid var(--line);
   border-radius: 10px;

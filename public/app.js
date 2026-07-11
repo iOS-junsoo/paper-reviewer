@@ -2430,6 +2430,57 @@ function renderMethod(data) {
 
   // 🔬 정밀 강독 — 원문 방법 섹션을 서브섹션 구조 그대로 따라가는 주해식 해설 (온디맨드)
   panel.appendChild(buildMethodDeepBlock(data));
+  attachStepDeepLinks(data); // 작업 C: 스테퍼 각 단계 → 강독 해당 절 점프 링크
+}
+
+// ---------- 작업 C: 스테퍼 ↔ 정밀 강독 연동 ----------
+// 각 단계에 [🔬 강독에서 자세히] 링크를 달아 강독의 해당 절로 점프한다.
+// 매칭: 단계 title 토큰이 절(ref + body 앞부분)에 몇 개 등장하는지(부분 문자열 —
+// 한국어 조사 결합 대응)로 최대 절 선택. 전부 0이면 순서 비례 폴백.
+// 강독 생성/재생성 후에도 다시 불러 갱신할 수 있게 멱등으로 만든다.
+function attachStepDeepLinks(data) {
+  const panel = document.getElementById("panel-method");
+  if (!panel) return;
+  panel.querySelectorAll(".step-deep-link").forEach((el) => el.remove()); // 멱등
+  const deep = data && data.method_deep;
+  const sections = deep && Array.isArray(deep.sections) ? deep.sections : [];
+  const steps = Array.isArray(data && data.method_steps) ? data.method_steps : [];
+  if (!sections.length || !steps.length) return; // 강독이 없으면 링크도 없음
+
+  // 절별 매칭용 텍스트 (ref + body 앞 200자, 소문자)
+  const secText = sections.map((s) => `${(s && s.ref) || ""} ${String((s && s.body) || "").slice(0, 200)}`.toLowerCase());
+  const tokensOf = (t) =>
+    String(t || "").toLowerCase().split(/[^a-z0-9가-힣]+/).filter((w) => w.length >= 2);
+
+  panel.querySelectorAll(".stepper > li").forEach((li, i) => {
+    const step = steps[i];
+    if (!step) return;
+    // 토큰 겹침 최대 절
+    const toks = tokensOf(step.title);
+    let best = -1, bestScore = 0;
+    secText.forEach((txt, si) => {
+      const score = toks.reduce((n, w) => n + (txt.includes(w) ? 1 : 0), 0);
+      if (score > bestScore) { bestScore = score; best = si; }
+    });
+    // 전부 실패 → 순서 비례 (i번째 단계 → ⌈(i+1)×절수/단계수⌉번째 절)
+    const idx = best >= 0 ? best : Math.min(sections.length - 1, Math.ceil(((i + 1) * sections.length) / steps.length) - 1);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "step-deep-link";
+    btn.textContent = "🔬 강독에서 자세히";
+    btn.title = `정밀 강독 "${(sections[idx] && sections[idx].ref) || ""}" 절로 이동`;
+    btn.addEventListener("click", () => {
+      const det = panel.querySelectorAll(".mdeep-sec")[idx];
+      if (!det) return;
+      det.open = true;
+      det.scrollIntoView({ behavior: "smooth", block: "start" });
+      det.classList.remove("eq-flash");
+      void det.offsetWidth; // 애니메이션 재시작
+      det.classList.add("eq-flash");
+      setTimeout(() => det.classList.remove("eq-flash"), 1300);
+    });
+    li.appendChild(btn);
+  });
 }
 
 // ---------- 작업 A: 원본 방법 그림 대조 블록 ----------
@@ -2613,6 +2664,7 @@ async function generateMethodDeep(wrap, force) {
     currentAnalysis.method_deep = data;
     const fresh = buildMethodDeepBlock(currentAnalysis);
     wrap.replaceWith(fresh);
+    attachStepDeepLinks(currentAnalysis); // 작업 C: 방금 생긴 강독으로 스테퍼 링크 갱신
   } catch (e) {
     stat.textContent = `⚠️ ${e.message}`;
     const retry = document.createElement("button");
