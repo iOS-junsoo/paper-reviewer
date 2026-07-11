@@ -729,7 +729,6 @@ function renderResult(data) {
   // P9: 전에 읽던 논문이면 마지막 탭·스크롤 위치 복원. 처음이면 세미나(발표 준비 기본
   // 목적) 또는 연구 배경. (딥링크/재생성은 이후 restoreFromHash·keepTab이 다시 덮어쓴다.)
   const pos = readPos(currentHash);
-  paintSeenDots(new Set(Array.isArray(pos.seen) ? pos.seen : []));
   const defaultTab = Array.isArray(data.seminar) && data.seminar.length ? "seminar" : "background";
   switchTab(!sameHash && pos.tab && TAB_ORDER.includes(pos.tab) ? pos.tab : sameHash ? activeTab : defaultTab);
   if (!sameHash && pos.y > 80) setTimeout(() => window.scrollTo(0, pos.y), 60); // 렌더 안정 후 복원
@@ -4954,16 +4953,7 @@ function saveReadPos(hash, patch) {
 }
 function markTabSeen(name) {
   if (!currentHash) return;
-  const cur = readPos(currentHash);
-  const seen = new Set(Array.isArray(cur.seen) ? cur.seen : []);
-  seen.add(name);
-  saveReadPos(currentHash, { tab: name, seen: [...seen] });
-  paintSeenDots(seen);
-}
-function paintSeenDots(seenSet) {
-  document.querySelectorAll("#tabs .tab").forEach((t) =>
-    t.classList.toggle("tab-seen", seenSet.has(t.dataset.tab))
-  );
+  saveReadPos(currentHash, { tab: name }); // 마지막 탭만 기억 (읽음 점 표시는 제거됨)
 }
 // 스크롤 위치 저장(디바운스) — 읽는 중에만
 let _readScrollTimer = 0;
@@ -5647,92 +5637,8 @@ function renderGlossary(items) {
   if (!glossaryItems.length) document.getElementById("glossary-card").classList.add("hidden");
   document.getElementById("glossary-search").value = "";
   paintGlossary("");
-  refreshCardsButton(); // 카드(플래시카드) 버튼 표시 여부 갱신
 }
 
-// ---------- 복습 플래시카드 (예상 Q&A + 용어집 재활용 — LLM 호출 없음) ----------
-// '어려움' 표시는 localStorage(fc-hard:<hash>)에 남겨 다음에 그 카드부터 보여준다.
-function buildFlashcards() {
-  const cards = [];
-  const a = currentAnalysis || {};
-  (Array.isArray(a.suggested_questions) ? a.suggested_questions : []).forEach((it, i) => {
-    const q = typeof it === "string" ? it : (it && it.q) || "";
-    if (!q) return;
-    cards.push({
-      key: `q${i}`,
-      cat: (it && it.category) || "예상 질문",
-      front: q,
-      back: (it && it.why) || "(답변 가이드 없음 — 예상 Q&A 탭 참고)",
-    });
-  });
-  glossaryItems.forEach((g, i) => {
-    if (!g.term || !g.meaning) return;
-    cards.push({ key: `g${i}`, cat: "용어", front: g.term, back: g.meaning });
-  });
-  return cards;
-}
-function refreshCardsButton() {
-  const btn = document.getElementById("tool-cards");
-  if (btn) btn.style.display = buildFlashcards().length ? "" : "none";
-}
-function openFlashcards() {
-  const all = buildFlashcards();
-  if (!all.length) return;
-  const hardKey = `fc-hard:${currentHash}`;
-  let hardSet;
-  try { hardSet = new Set(JSON.parse(localStorage.getItem(hardKey) || "[]")); } catch { hardSet = new Set(); }
-  // 어려움 표시 카드 먼저, 나머지는 원래 순서
-  const deck = [...all.filter((c) => hardSet.has(c.key)), ...all.filter((c) => !hardSet.has(c.key))];
-  let idx = 0, flipped = false;
-
-  document.getElementById("fc-overlay")?.remove();
-  const ov = document.createElement("div");
-  ov.className = "mode-overlay"; // 모드 다이얼로그와 같은 딤 배경 재사용
-  ov.id = "fc-overlay";
-  ov.innerHTML =
-    `<div class="fc-box" role="dialog" aria-label="복습 카드">` +
-    `<div class="fc-top"><span id="fc-count"></span><span id="fc-cat" class="fc-cat"></span>` +
-    `<button type="button" class="fc-close" title="닫기 (Esc)">✕</button></div>` +
-    `<button type="button" id="fc-card" class="fc-card" title="클릭하면 뒤집힘 (Space)"><div id="fc-text"></div>` +
-    `<div class="fc-hint" id="fc-hint">클릭해서 답 보기</div></button>` +
-    `<div class="fc-nav">` +
-    `<button type="button" id="fc-prev" class="rtool" title="이전 (←)">← 이전</button>` +
-    `<button type="button" id="fc-hard" class="rtool" title="다음에 이 카드부터">😅 어려움</button>` +
-    `<button type="button" id="fc-easy" class="rtool" title="어려움 표시 해제">👍 쉬움</button>` +
-    `<button type="button" id="fc-next" class="rtool" title="다음 (→)">다음 →</button>` +
-    `</div></div>`;
-  const paint = () => {
-    const c = deck[idx];
-    document.getElementById("fc-count").textContent = `${idx + 1} / ${deck.length}`;
-    document.getElementById("fc-cat").textContent = `${c.cat}${hardSet.has(c.key) ? " · 😅" : ""}`;
-    renderRich(document.getElementById("fc-text"), flipped ? c.back : `**${c.front}**`);
-    document.getElementById("fc-hint").textContent = flipped ? "클릭하면 질문으로" : "클릭해서 답 보기";
-    document.getElementById("fc-card").classList.toggle("fc-flipped", flipped);
-  };
-  const move = (d) => { idx = (idx + d + deck.length) % deck.length; flipped = false; paint(); };
-  const saveHard = () => { try { localStorage.setItem(hardKey, JSON.stringify([...hardSet])); } catch {} };
-  const close = () => { document.removeEventListener("keydown", onKey, true); ov.remove(); };
-  const onKey = (e) => {
-    if (e.isComposing) return;
-    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
-    else if (e.key === " " || e.key === "Enter") { e.preventDefault(); flipped = !flipped; paint(); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); move(1); }
-    else if (e.key === "ArrowLeft") { e.preventDefault(); move(-1); }
-  };
-  document.addEventListener("keydown", onKey, true);
-  ov.addEventListener("click", (e) => {
-    if (e.target === ov) return close();
-    if (e.target.closest(".fc-close")) return close();
-    if (e.target.closest("#fc-card")) { flipped = !flipped; paint(); return; }
-    if (e.target.closest("#fc-prev")) return move(-1);
-    if (e.target.closest("#fc-next")) return move(1);
-    if (e.target.closest("#fc-hard")) { hardSet.add(deck[idx].key); saveHard(); paint(); return; }
-    if (e.target.closest("#fc-easy")) { hardSet.delete(deck[idx].key); saveHard(); paint(); return; }
-  });
-  document.body.appendChild(ov);
-  paint();
-}
-document.getElementById("tool-cards").addEventListener("click", openFlashcards);
 
 // ---------- 파생 생성 공용 오버레이 (⚖️ 논문 비교 · 🎤 발표 대본) ----------
 // runFetch(force, signal) → fetch Response(SSE: step/delta/result). 결과는 서버가 캐시.
@@ -6005,25 +5911,6 @@ function openComparePicker() {
 }
 document.getElementById("tool-compare").addEventListener("click", openComparePicker);
 
-// ── 🐣 더 쉽게 (P8): 지금 보는 탭을 학부 신입생 수준으로 재설명 ────────────────
-// 서버가 (hash, section)별로 캐시하므로 두 번째부터는 즉시. 원문 탭과 오버레이로 대조해 읽는다.
-const ELI_TABS = { background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리" };
-document.getElementById("tool-eli").addEventListener("click", () => {
-  if (!currentHash || !currentAnalysis) return;
-  const label = ELI_TABS[activeTab];
-  if (!label) return showError("이 탭은 '더 쉽게'를 지원하지 않아요 — 배경·문제·방법론·실험·수식 탭에서 눌러 주세요.");
-  openGenOverlay({
-    title: `🐣 ${label} — 더 쉽게`,
-    filename: `easy_${activeTab}_${(currentAnalysis.title || "paper").slice(0, 24).replace(/[^\w가-힣]+/g, "_")}.md`,
-    runFetch: (force, signal) =>
-      fetch(`${API_BASE}/api/explain/${currentHash}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ section: activeTab, force }),
-        signal,
-      }),
-  });
-});
 // 비교할 다른 논문이 없으면 버튼 숨김 (loadHistory 후 호출)
 function refreshCompareButton() {
   const btn = document.getElementById("tool-compare");

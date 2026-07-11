@@ -1125,38 +1125,6 @@ mark {
 }
 .rel-analyze:hover { border-color: var(--accent); background: var(--accent); color: #fff; }
 
-/* ── 복습 플래시카드 ─────────────────────────────────────────────────────── */
-.fc-box {
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 18px 20px;
-  width: min(560px, 92vw);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
-}
-.fc-top { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-family: var(--sans); font-size: 0.8rem; color: var(--ink-soft); }
-.fc-cat { color: var(--accent); font-weight: 600; }
-.fc-close { margin-left: auto; border: none; background: none; color: var(--ink-soft); font-size: 1rem; cursor: pointer; }
-.fc-card {
-  display: block;
-  width: 100%;
-  min-height: 180px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 22px 20px 34px;
-  font-family: inherit;
-  font-size: 1rem;
-  color: var(--ink);
-  text-align: center;
-  cursor: pointer;
-  position: relative;
-  transition: border-color 0.12s;
-}
-.fc-card:hover { border-color: var(--accent); }
-.fc-card.fc-flipped { background: var(--paper); border-style: dashed; text-align: left; }
-.fc-hint { position: absolute; bottom: 10px; left: 0; right: 0; font-family: var(--sans); font-size: 0.72rem; color: var(--ink-faint); text-align: center; }
-.fc-nav { display: flex; gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
 
 /* ── PDF 내 텍스트 검색 ──────────────────────────────────────────────────── */
 .pdf-search-bar {
@@ -1463,15 +1431,6 @@ mark {
 }
 .mini-toc-item:hover { color: var(--accent); }
 .mini-toc-item.on { color: var(--accent); border-color: var(--accent); background: rgba(140, 47, 57, 0.06); }
-
-/* ── P9: 읽음 표시 점 ────────────────────────────────────────────────────── */
-.tab.tab-seen:not(.active)::after {
-  content: "·";
-  color: var(--accent);
-  font-weight: 900;
-  margin-left: 4px;
-  opacity: 0.7;
-}
 
 /* ── P10: 채팅 답변 메모 저장 핀 ─────────────────────────────────────────── */
 .chat-a { position: relative; }

@@ -1453,59 +1453,6 @@ app.post("/api/script/:hash", async (req, res) => {
   }
 });
 
-// --- POST /api/explain/:hash — "더 쉽게" 재설명 (P8) ---------------------------
-// 특정 섹션을 학부 신입생 수준으로 비유 중심 재설명. (hash, section)별 extras 캐시.
-const EXPLAIN_SECTIONS = {
-  background: { label: "연구 배경", pick: (a) => ({ background: a.background, timeline: a.timeline }) },
-  problem: { label: "해결하려는 것", pick: (a) => ({ problem: a.problem }) },
-  method: { label: "연구 방법론", pick: (a) => ({ method_steps: a.method_steps, method_deep_refs: a.method_deep && a.method_deep.sections ? a.method_deep.sections.map((s) => s.ref) : undefined }) },
-  results: { label: "실험·결과", pick: (a) => ({ experiments: a.experiments }) },
-  equations: { label: "수식 정리", pick: (a) => ({ equations: (a.equations || []).map((e) => ({ latex: e.latex, explanation: e.explanation })) }) },
-};
-app.post("/api/explain/:hash", async (req, res) => {
-  const ac = new AbortController();
-  abortOnDisconnect(res, ac, "쉬운 설명");
-  try {
-    const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
-    const section = String((req.body && req.body.section) || "");
-    const spec = EXPLAIN_SECTIONS[section];
-    if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
-    if (!spec) return res.status(400).json({ error: "이 탭은 쉬운 설명을 지원하지 않습니다." });
-    const record = await store.get(hash);
-    if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
-    const a = record.analysis || {};
-    const force = !!(req.body && req.body.force);
-    const key = `explain:${hash}:${section}`;
-    sseInit(res);
-    if (!force) {
-      const cached = await store.getExtra(key).catch(() => null);
-      if (cached && cached.text) {
-        sseSend(res, { type: "result", text: cached.text, cached: true });
-        return res.end();
-      }
-    }
-    sseSend(res, { type: "step", msg: `'${spec.label}'을(를) 쉽게 풀어 쓰는 중…` });
-    const content = JSON.stringify({ title: a.title, one_liner: a.one_liner, ...spec.pick(a) }).slice(0, 12000);
-    const prompt = [
-      `아래는 논문 "${a.title}"의 '${spec.label}' 섹션 분석입니다. 이걸 ==해당 전공을 아직 안 배운 학부 신입생==도 이해할 수 있게 다시 설명하세요.`,
-      `섹션 내용(JSON): ${content}`,
-      `규칙: (1) 전제지식 최소 — 전문용어가 나오면 그 자리에서 일상어로 풀기(원어 병기). ` +
-        `(2) ==일상 비유를 적극적으로== — 각 핵심 개념마다 하나씩. (3) 내용을 빼먹지 말되 단순화는 허용, ` +
-        `단 원문 분석에 없는 사실을 지어내지 말 것. (4) 수식이 있으면 $...$로 쓰되 "이 식이 하는 일"을 말로 먼저. ` +
-        `(5) 형식: ## 소제목 몇 개 + 짧은 문단들. **볼드**/==형광펜== 허용, 리스트·표·코드펜스 금지. ` +
-        `(6) 분량은 원문 섹션과 비슷하거나 약간 짧게.`,
-    ].join("\n\n");
-    console.log(`[쉬운 설명] ${a.title || record.title}: ${section}`);
-    const text = await streamTextGen(res, ac, prompt, "쉬운설명");
-    try { await store.setExtra(key, { text, section, at: new Date().toISOString() }); } catch (e) { console.warn("[쉬운 설명 캐시 저장 실패]", e.message); }
-    sseSend(res, { type: "result", text, cached: false });
-    res.end();
-  } catch (e) {
-    if (ac.signal.aborted) return;
-    genErrorReply(res, e, "explain");
-  }
-});
-
 // --- POST /api/method-deep/:hash — 방법론 정밀 강독 생성 ------------------------
 // 원문 방법 섹션을 서브섹션 구조 그대로 따라가는 주해식 강독(요지 번역 + 해설 + 수식 풀이).
 // analysis.method_deep에 영구 저장(1회 생성 후 캐시). SSE: step(읽기 진행)/delta(글자수)/result.
