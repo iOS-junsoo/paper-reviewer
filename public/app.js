@@ -6408,8 +6408,14 @@ async function regenSection(section) {
   const panel = document.getElementById(`panel-${section}`);
   if (panel) panel.classList.add("regenerating");
   // 클라 전용 ETA(서버 스트림 없음): 섹션별 정적 추정으로 버튼 카운트다운 + 패널 상단 바.
-  const SECTION_EST_MS = { method: 90000, figures: 40000, equations: 40000, results: 45000, background: 40000, problem: 35000, seminar: 45000 };
-  const estMs = SECTION_EST_MS[section] || 40000;
+  // 예상 소요: 서버 자가학습 예측(/api/eta?section= — 섹션별 실측 중앙값)을 우선 사용.
+  // 응답 전·실패 시엔 현실화한 시드로 폴백(method는 시각화 자가검증 루프 포함이라 ~5분).
+  const SECTION_EST_MS = { method: 300000, figures: 130000, equations: 90000, results: 90000, background: 90000, problem: 90000, seminar: 90000 };
+  let estMs = SECTION_EST_MS[section] || 90000;
+  fetch(`${API_BASE}/api/eta?section=${section}`)
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => { if (d && Number.isFinite(d.estMs) && d.estMs > 0) estMs = d.estMs; })
+    .catch(() => {});
   let regenBar = null, regenFill = null, regenTimer = null;
   if (panel && panel.parentNode) {
     regenBar = document.createElement("div");

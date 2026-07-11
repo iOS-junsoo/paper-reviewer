@@ -1014,7 +1014,36 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
 });
 
 // --- GET /api/eta?pages=N — 모드별 예상 소요(모드 선택 다이얼로그용) -------------
+// 섹션 재생성 소요 자가학습 — 섹션별 최근 실측(ms) 롤링 보관, 중앙값으로 예측.
+// method는 시각화 자가검증 루프 포함이라 5분대, 텍스트 섹션은 1~2분대로 편차가 커 분리 기록.
+const SECTION_STATS_FILE = path.join(__dirname, ".stats", "section_durations.json");
+const SECTION_ETA_SEED = { method: 300000, figures: 130000, default: 90000 };
+function readSectionStats() {
+  try { return JSON.parse(fs.readFileSync(SECTION_STATS_FILE, "utf8")); } catch (e) { return {}; }
+}
+function appendSectionDuration(section, ms) {
+  try {
+    const all = readSectionStats();
+    const arr = Array.isArray(all[section]) ? all[section] : [];
+    arr.push(Math.round(ms));
+    while (arr.length > 10) arr.shift();
+    all[section] = arr;
+    fs.mkdirSync(path.dirname(SECTION_STATS_FILE), { recursive: true });
+    fs.writeFileSync(SECTION_STATS_FILE, JSON.stringify(all));
+  } catch (e) { /* 통계 실패는 무해 */ }
+}
+function predictSectionMs(section) {
+  const arr = readSectionStats()[section];
+  const m = Array.isArray(arr) && arr.length >= 2 ? median(arr) : null;
+  return Math.round(m ?? SECTION_ETA_SEED[section] ?? SECTION_ETA_SEED.default);
+}
+
 app.get("/api/eta", (req, res) => {
+  // 섹션 재생성 예상: /api/eta?section=method → { section, estMs }
+  if (req.query.section) {
+    const section = String(req.query.section);
+    return res.json({ section, estMs: predictSectionMs(section) });
+  }
   const n = parseInt(req.query.pages, 10);
   const pages = Number.isInteger(n) && n > 0 ? Math.min(n, MAX_PDF_PAGES) : 20;
   const s = predictDurations(pages, "simple");
@@ -1770,6 +1799,7 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
   inFlight.add(inflightKey); // 검사 직후 등록 — await 사이 동시 진입(TOCTOU) 방지. 이후 종료는 finally가 담당
   const ac = new AbortController();
   abortOnDisconnect(res, ac, `섹션 재생성: ${spec.label}`);
+  const tSec0 = Date.now(); // ETA 자가학습용 실측 시작
   try {
     const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
     if (!fs.existsSync(pdfPath)) {
@@ -1805,6 +1835,7 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
         createdAt: record.createdAt,
         analysis: merged,
       });
+      appendSectionDuration(section, Date.now() - tSec0); // 성공 실측 적재 → 다음 예측 보정
       return res.json({ ok: true, section, verify: result.verify, viz_report: result.viz_report, analysis: { cached: false, hash, ...merged } });
     }
 
@@ -1861,6 +1892,7 @@ app.post("/api/reanalyze-section/:hash", async (req, res) => {
       createdAt: record.createdAt, // 분석 시각 유지 — 섹션 하나 고쳤다고 목록 순서가 바뀌지 않게
       analysis: merged,
     });
+    appendSectionDuration(section, Date.now() - tSec0); // 성공 실측 적재 → 다음 예측 보정
     res.json({ ok: true, section, analysis: { cached: false, hash, ...merged } });
   } catch (e) {
     if (ac.signal.aborted) return;
