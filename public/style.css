@@ -1354,6 +1354,92 @@ mark {
 }
 .mdeep-page:hover { border-color: var(--accent); }
 .mdeep-body { padding: 2px 2px 16px; font-size: 0.93rem; line-height: 1.8; }
+
+/* ── P2: 30초 오리엔테이션 카드 ─────────────────────────────────────────── */
+.tldr3 { display: flex; gap: 10px; margin: 14px 0 6px; flex-wrap: wrap; }
+.tldr-card {
+  flex: 1;
+  min-width: 200px;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s, transform 0.12s;
+}
+.tldr-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.tldr-label { font-family: var(--sans); font-weight: 700; font-size: 0.76rem; color: var(--accent); margin-bottom: 5px; }
+.tldr-text { font-size: 0.84rem; line-height: 1.55; color: var(--ink); }
+
+/* ── P6: 본문 용어 툴팁 ─────────────────────────────────────────────────── */
+.gloss-term {
+  border-bottom: 1.5px dotted var(--accent);
+  cursor: help;
+  text-decoration: none;
+}
+.gloss-term:hover { background: rgba(140, 47, 57, 0.08); }
+
+/* ── P4: 미니 목차 (세미나·정밀 강독) ───────────────────────────────────── */
+.mini-toc {
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 8px 10px;
+  margin: 0 0 14px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.06);
+  scrollbar-width: none;
+}
+.mini-toc::-webkit-scrollbar { display: none; }
+.mini-toc-item {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 3px 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mini-toc-item:hover { color: var(--accent); }
+.mini-toc-item.on { color: var(--accent); border-color: var(--accent); background: rgba(140, 47, 57, 0.06); }
+
+/* ── P9: 읽음 표시 점 ────────────────────────────────────────────────────── */
+.tab.tab-seen:not(.active)::after {
+  content: "·";
+  color: var(--accent);
+  font-weight: 900;
+  margin-left: 4px;
+  opacity: 0.7;
+}
+
+/* ── P10: 채팅 답변 메모 저장 핀 ─────────────────────────────────────────── */
+.chat-a { position: relative; }
+.chat-a .chat-pin {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: none;
+  background: var(--paper);
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+.chat-a:hover .chat-pin { opacity: 1; }
 .eq-ref-link { cursor: pointer; font-family: var(--sans); background: #fff; transition: border-color 0.12s, color 0.12s; }
 .eq-ref-link:hover { border-color: var(--accent); color: var(--accent); }
 
@@ -2005,6 +2091,130 @@ body.chat-resizing .pdf-scroll { pointer-events: none; }
   transition: border-color 0.12s, color 0.12s;
 }
 .chat-chip:hover { border-color: var(--accent); color: var(--accent); }
+/* P7: 지금 보던 탭 맥락 질문 칩 — 일반 추천 칩과 살짝 구분 */
+.chat-chip-ctx {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+.chat-chip-ctx:hover { background: #fff; }
+
+/* ── P3: 통합 검색 커맨드 팔레트 (⌘K) ─────────────────────────────── */
+.cmdk-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 16, 12, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 11vh 20px 20px;
+  z-index: 92;
+}
+.cmdk-box {
+  width: 100%;
+  max-width: 640px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 20px 56px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+#cmdk-input {
+  font-family: var(--sans);
+  font-size: 1rem;
+  padding: 15px 18px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+}
+.cmdk-results {
+  max-height: 52vh;
+  overflow-y: auto;
+  padding: 6px;
+}
+.cmdk-hint { color: var(--ink-faint); font-size: 0.86rem; padding: 14px 12px; margin: 0; }
+.cmdk-group {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+  padding: 10px 12px 4px;
+}
+.cmdk-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.cmdk-item.active { background: var(--accent-soft); }
+.cmdk-where {
+  flex: 0 0 auto;
+  max-width: 34%;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-snippet {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cmdk-snippet b { color: var(--ink); background: var(--accent-soft); border-radius: 3px; padding: 0 2px; }
+.cmdk-foot {
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+}
+/* 검색 결과로 점프한 위치 강조 */
+.cmdk-flash { animation: cmdkFlash 1.9s ease-out; border-radius: 6px; }
+@keyframes cmdkFlash {
+  0% { background: var(--accent-soft); box-shadow: 0 0 0 4px var(--accent-soft); }
+  70% { background: var(--accent-soft); box-shadow: 0 0 0 0 transparent; }
+  100% { background: transparent; box-shadow: none; }
+}
+
+/* P5: 드래그 선택 → 바로 질문 플로팅 버튼 */
+.sel-ask {
+  position: fixed;
+  z-index: 95;
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  padding: 6px 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  white-space: nowrap;
+  animation: selAskIn 0.12s ease-out;
+}
+.sel-ask:hover { filter: brightness(1.12); }
+@keyframes selAskIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
 
 .chat-form { display: flex; align-items: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); background: var(--card); }
 #chat-input {

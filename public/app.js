@@ -717,6 +717,8 @@ function renderResult(data) {
   renderRelated(data.related_papers);
   renderQaPrep(data.suggested_questions); // 예상 Q&A 준비 패널
   renderGlossary(data.glossary); // 용어집
+  renderTldr(data); // P2: 30초 오리엔테이션 카드 (문제→방법→결과)
+  decorateGlossaryTerms(); // P6: 본문 용어 점선 밑줄+툴팁 (renderGlossary 뒤 — glossaryItems 필요)
   if (!sameHash) loadNotes(currentHash); // 개인 메모·북마크
   if (!sameHash) loadPdf(currentHash);
 
@@ -724,9 +726,13 @@ function renderResult(data) {
   chatFab.classList.remove("hidden"); // 분석 결과가 있어야 질문 가능
   document.body.classList.add("reading"); // 상단 헤더·드롭존 축소
   highlightActiveHistory(); // 사이드바에서 현재 논문 강조
-  // 발표 준비가 기본 목적이므로 세미나 정리가 있으면 그 탭으로, 없으면(옛 분석) 연구 배경으로.
-  // (딥링크/재생성은 이후 restoreFromHash·keepTab이 다시 덮어쓴다.)
-  switchTab(Array.isArray(data.seminar) && data.seminar.length ? "seminar" : "background");
+  // P9: 전에 읽던 논문이면 마지막 탭·스크롤 위치 복원. 처음이면 세미나(발표 준비 기본
+  // 목적) 또는 연구 배경. (딥링크/재생성은 이후 restoreFromHash·keepTab이 다시 덮어쓴다.)
+  const pos = readPos(currentHash);
+  paintSeenDots(new Set(Array.isArray(pos.seen) ? pos.seen : []));
+  const defaultTab = Array.isArray(data.seminar) && data.seminar.length ? "seminar" : "background";
+  switchTab(!sameHash && pos.tab && TAB_ORDER.includes(pos.tab) ? pos.tab : sameHash ? activeTab : defaultTab);
+  if (!sameHash && pos.y > 80) setTimeout(() => window.scrollTo(0, pos.y), 60); // 렌더 안정 후 복원
 }
 
 // ---------- 간단 분석: 생략 섹션 탭 잠금 + 안내 패널 ----------
@@ -808,6 +814,50 @@ function renderSeminar(sections) {
     (hasAdded ? ' <span class="sem-tag sem-tag-added">추가</span> 표시는 논문에 없어 논문 근거로 보완한 내용입니다.' : "");
   panel.appendChild(intro);
   arr.forEach((s) => panel.appendChild(buildSeminarSection(s)));
+  // P4: 긴 세미나(섹션 4개↑)엔 sticky 미니 목차 — 현재 위치 표시 + 클릭 점프
+  attachMiniToc(panel, [...panel.querySelectorAll(".sem-section")].map((el, i) => ({
+    el,
+    label: (arr[i] && (String(arr[i].section || "").trim() || (arr[i].title || "").slice(0, 10))) || String(i + 1),
+    title: el.querySelector(".sem-title")?.textContent || "",
+  })));
+}
+
+// ---------- P4: 긴 탭 미니 목차 (세미나 정리 · 정밀 강독 공용) ----------
+// 섹션이 4개 이상일 때만 패널 상단에 sticky 칩 바를 붙인다. IntersectionObserver로
+// 현재 읽는 섹션을 하이라이트, 클릭 시 그 섹션으로 스크롤.
+function attachMiniToc(panel, targets) {
+  panel.querySelector(".mini-toc")?.remove();
+  const valid = (targets || []).filter((t) => t && t.el);
+  if (valid.length < 4) return;
+  const bar = document.createElement("nav");
+  bar.className = "mini-toc";
+  bar.setAttribute("aria-label", "섹션 목차");
+  valid.forEach((t, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini-toc-item";
+    b.textContent = t.label;
+    b.title = t.title || t.label;
+    b.addEventListener("click", () => {
+      // sticky 바 높이만큼 여유를 두고 섹션 상단으로
+      const y = t.el.getBoundingClientRect().top + window.scrollY - bar.offsetHeight - 60;
+      window.scrollTo({ top: y, behavior: "smooth" });
+    });
+    bar.appendChild(b);
+  });
+  panel.prepend(bar);
+  const io = new IntersectionObserver((ents) => {
+    // 화면 상단 1/3에 걸친 섹션을 현재로 표시
+    for (const ent of ents) {
+      if (!ent.isIntersecting) continue;
+      const idx = valid.findIndex((t) => t.el === ent.target);
+      if (idx < 0) continue;
+      bar.querySelectorAll(".mini-toc-item").forEach((x, j) => x.classList.toggle("on", j === idx));
+      const on = bar.children[idx];
+      if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, { rootMargin: "-15% 0px -65% 0px" });
+  valid.forEach((t) => io.observe(t.el));
 }
 
 function buildSeminarSection(s) {
@@ -1224,10 +1274,12 @@ function buildFigureCard(f) {
   card.appendChild(head);
 
   // 실제 그림 이미지 — 서버(poppler)가 bbox 영역을 잘라 PNG로 제공 (src에 hash가 박혀 논문 전환 안전)
+  // bbox가 없어도 label+page만 있으면 요청한다 — 서버의 실측 레이어(캡션·이미지·잉크)가
+  // 모델 bbox 없이 위치를 찾는다(모델 bbox는 어차피 힌트일 뿐).
   const bbox =
     Array.isArray(f.bbox) && f.bbox.length === 4 && f.bbox.every((n) => Number.isFinite(Number(n)))
       ? f.bbox.map(Number)
-      : null;
+      : f.label ? [0.05, 0.05, 0.95, 0.95] : null; // 페이지 전체를 힌트로 — 서버가 좁혀 잡는다
   if (page && bbox && currentHash) {
     const imgWrap = document.createElement("div");
     imgWrap.className = "fig-img";
@@ -2010,8 +2062,32 @@ async function loadChat(hash) {
 function appendChat(role, text) {
   const div = document.createElement("div");
   div.className = role === "q" ? "chat-q" : "chat-a";
-  if (role === "q") div.dataset.text = typeof text === "string" ? text : String(text == null ? "" : text);
+  div.dataset.text = typeof text === "string" ? text : String(text == null ? "" : text);
   renderRich(div, text);
+  // P10: 답변 버블에 [📌 메모] — 좋은 답변을 개인 메모로 스크랩 (hover 시 표시)
+  if (role === "a" && typeof text === "string" && text.trim()) {
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "chat-pin";
+    pin.textContent = "📌";
+    pin.title = "이 답변을 개인 메모에 저장";
+    pin.addEventListener("click", async () => {
+      if (!currentHash) return;
+      try {
+        if (notesHashLoaded !== currentHash) await loadNotes(currentHash); // 다른 논문 메모 오염 방지
+        const raw = div.dataset.text.trim();
+        notesState.notes = (notesState.notes ? notesState.notes + "\n\n" : "") + `📌 [챗 답변] ${raw}`;
+        document.getElementById("notes-text").value = notesState.notes;
+        await saveNotes(currentHash, notesState);
+        pin.textContent = "✓";
+        setTimeout(() => { pin.textContent = "📌"; }, 1500);
+      } catch (e) {
+        pin.textContent = "⚠️";
+        setTimeout(() => { pin.textContent = "📌"; }, 1500);
+      }
+    });
+    div.appendChild(pin);
+  }
   chatMessages.querySelector(".chat-hint")?.remove();
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -2373,9 +2449,11 @@ function buildMethodDeepBlock(data) {
   wrap.appendChild(head);
 
   if (deep && Array.isArray(deep.sections) && deep.sections.length) {
+    const secEls = []; // P4 미니 목차용
     deep.sections.forEach((s) => {
       const det = document.createElement("details");
       det.className = "mdeep-sec";
+      secEls.push(det);
       det.open = true; // 기본 펼침 — "읽은 것처럼" 이어지는 흐름
       const sum = document.createElement("summary");
       sum.className = "mdeep-ref";
@@ -2405,6 +2483,14 @@ function buildMethodDeepBlock(data) {
     regen.textContent = "🔄 강독 다시 생성";
     regen.addEventListener("click", () => generateMethodDeep(wrap, true));
     wrap.appendChild(regen);
+    // P4: 서브섹션 4개↑면 미니 목차 (제목 줄 바로 아래로 이동)
+    attachMiniToc(wrap, deep.sections.map((s, i) => ({
+      el: secEls[i],
+      label: String(s.ref || i + 1).split(/\s+/)[0].slice(0, 8) || String(i + 1),
+      title: s.ref || "",
+    })));
+    const tocBar = wrap.querySelector(".mini-toc");
+    if (tocBar) wrap.insertBefore(tocBar, head.nextSibling);
   } else {
     const desc = document.createElement("p");
     desc.className = "muted mdeep-desc";
@@ -4736,7 +4822,42 @@ function switchTab(name) {
   );
   if (name === "figures") loadFigureImages(); // 그림 탭 열 때 크롭 이미지 로드
   updateHash();
+  markTabSeen(name); // P9: 읽음 점 + 마지막 탭 기억
 }
+
+// ---------- P9: 읽던 자리 복원 + 읽음 표시 ----------
+// 논문별로 {tab(마지막 탭), y(스크롤), seen(방문 탭)}을 localStorage에 남겨,
+// 다시 열면 읽던 곳부터. 방문한 탭 버튼엔 작은 점(·)이 붙는다.
+function readPos(hash) {
+  try { return JSON.parse(localStorage.getItem(`read-pos:${hash}`) || "null") || {}; } catch { return {}; }
+}
+function saveReadPos(hash, patch) {
+  if (!hash) return;
+  try {
+    const cur = readPos(hash);
+    localStorage.setItem(`read-pos:${hash}`, JSON.stringify({ ...cur, ...patch }));
+  } catch {}
+}
+function markTabSeen(name) {
+  if (!currentHash) return;
+  const cur = readPos(currentHash);
+  const seen = new Set(Array.isArray(cur.seen) ? cur.seen : []);
+  seen.add(name);
+  saveReadPos(currentHash, { tab: name, seen: [...seen] });
+  paintSeenDots(seen);
+}
+function paintSeenDots(seenSet) {
+  document.querySelectorAll("#tabs .tab").forEach((t) =>
+    t.classList.toggle("tab-seen", seenSet.has(t.dataset.tab))
+  );
+}
+// 스크롤 위치 저장(디바운스) — 읽는 중에만
+let _readScrollTimer = 0;
+window.addEventListener("scroll", () => {
+  if (!currentHash || !document.body.classList.contains("reading")) return;
+  clearTimeout(_readScrollTimer);
+  _readScrollTimer = setTimeout(() => saveReadPos(currentHash, { y: Math.round(window.scrollY) }), 400);
+}, { passive: true });
 
 // ---------- 히스토리 ----------
 // 현재 열린 논문을 사이드바에서 강조
@@ -5188,9 +5309,46 @@ function renderQaPrep(items) {
   });
   document.getElementById("qa-prep").classList.toggle("hidden", n === 0);
 }
+// ── P7: 채팅 진입 시 '지금 보던 탭' 맥락 추천 칩 ─────────────────────────────
+// 기록이 비어 있을 때만, 추천 질문 칩 줄(.chat-chips — renderChatLog가 생성)에
+// activeTab에 맞는 질문 1개를 덧붙인다. 첫 질문 전송 시 askQuestion이 칩 줄을 통째로 지운다.
+const CHAT_CTX_QUESTIONS = {
+  seminar: "발표에서 이 논문을 3문장으로 요약한다면 어떻게 말해야 할까?",
+  background: "이 논문 직전까지 이 분야의 흐름을 한 단락으로 정리해줘",
+  problem: "기존 방법들이 못 풀던 문제가 정확히 뭐야?",
+  method: "이 방법의 핵심 아이디어를 한 문장으로 말하면?",
+  results: "가장 중요한 실험 결과 하나만 꼽으면 뭐고, 왜 그게 중요해?",
+  equations: "핵심 수식의 유도 과정을 차근차근 설명해줘",
+  figures: "가장 중요한 그림 하나를 골라 어떻게 읽는지 설명해줘",
+};
+function ensureChatContextChip() {
+  if (!currentHash || chatHistory.length) return; // 이미 대화가 있으면 안 띄움
+  const q = CHAT_CTX_QUESTIONS[activeTab];
+  if (!q) return;
+  let chips = chatMessages.querySelector(".chat-chips");
+  if (!chips) {
+    chips = document.createElement("div");
+    chips.className = "chat-chips";
+    chatMessages.appendChild(chips);
+  }
+  // 탭을 오가며 여러 번 열어도 맥락 칩은 항상 1개 — 이전 것을 교체
+  chips.querySelector(".chat-chip-ctx")?.remove();
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "chat-chip chat-chip-ctx";
+  b.title = "지금 보던 탭에 대한 추천 질문";
+  b.textContent = `📎 ${q}`;
+  b.addEventListener("click", () => {
+    chatInput.value = q;
+    chatForm.requestSubmit();
+  });
+  chips.prepend(b);
+}
+
 function openChat() {
   chatDrawer.classList.add("open");
   chatDrawer.setAttribute("aria-hidden", "false");
+  ensureChatContextChip(); // P7: 빈 대화면 지금 탭 맥락 질문 칩 제시
   chatInput.focus();
 }
 function askSuggested(q) {
@@ -5201,6 +5359,171 @@ function askSuggested(q) {
   autoGrowChat();
   if (chatForm.requestSubmit) chatForm.requestSubmit();
   else chatForm.dispatchEvent(new Event("submit", { cancelable: true }));
+}
+
+// ── P5: 드래그한 구절 바로 질문 ──────────────────────────────────────────────
+// 분석 본문(#result)에서 텍스트를 선택하면 선택 위에 [💬 이 부분 질문] 버튼을 띄운다.
+// 클릭 → 채팅을 열고 인용을 프리필(자동 전송 안 함 — 사용자가 다듬어 보내게).
+// 메모 카드(선택 구절 북마크 bm-add)와 공존: 버튼 mousedown을 preventDefault해
+// 선택이 지워지지 않으므로 북마크 추가도 그대로 동작한다.
+let selAskBtn = null;
+let selAskText = "";
+function hideSelAsk() {
+  if (selAskBtn) selAskBtn.remove();
+  selAskBtn = null;
+}
+function maybeShowSelAsk() {
+  hideSelAsk();
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed) return;
+  const text = String(sel.toString() || "").replace(/\s+/g, " ").trim();
+  if (text.length < 8) return; // 더블클릭 단어 선택 같은 오탐 방지
+  // 분석 결과 영역 안에서의 선택만 (PDF 패널은 canvas라 선택 불가, 채팅 드로어·메모 입력 제외)
+  const node = sel.anchorNode;
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const resultEl = document.getElementById("result");
+  if (!el || !resultEl || !resultEl.contains(el)) return;
+  if (el.closest("#notes-card, textarea, input")) return;
+  let rect;
+  try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch { return; }
+  if (!rect || (!rect.width && !rect.height)) return;
+
+  selAskText = text;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.id = "sel-ask";
+  b.className = "sel-ask";
+  b.textContent = "💬 이 부분 질문";
+  b.title = "선택한 구절을 인용해 질문 입력란에 채웁니다";
+  b.addEventListener("mousedown", (e) => e.preventDefault()); // 클릭해도 선택 유지
+  b.addEventListener("click", () => {
+    const quote = selAskText.length > 120 ? selAskText.slice(0, 120) + "…" : selAskText;
+    hideSelAsk();
+    openChat();
+    if (chatBusy) return; // 답변 생성 중이면 입력을 덮어쓰지 않고 드로어만 연다
+    chatInput.value = `"${quote}" — 이 부분이 무슨 뜻이야?`;
+    autoGrowChat();
+    // 커서를 질문 부분에 두어 바로 다듬을 수 있게
+    chatInput.focus();
+    chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
+  });
+  document.body.appendChild(b);
+  const bw = b.offsetWidth || 120, bh = b.offsetHeight || 30;
+  b.style.left = `${Math.max(8, Math.min(rect.left + rect.width / 2 - bw / 2, window.innerWidth - bw - 8))}px`;
+  b.style.top = `${Math.max(8, rect.top - bh - 8)}px`;
+  selAskBtn = b;
+}
+document.addEventListener("mouseup", (e) => {
+  if (e.target && e.target.closest && e.target.closest("#sel-ask")) return; // 버튼 자체 클릭
+  setTimeout(maybeShowSelAsk, 0); // mouseup 직후 선택이 확정된 뒤 판정
+});
+document.addEventListener("selectionchange", () => {
+  const sel = window.getSelection ? window.getSelection() : null;
+  if (!sel || sel.isCollapsed) hideSelAsk(); // 선택 해제 → 버튼 제거
+});
+window.addEventListener("scroll", hideSelAsk, true); // 스크롤로 위치가 어긋나면 숨김
+
+// ---------- P2: 30초 오리엔테이션 카드 (문제→방법→결과) ----------
+// 기존 분석 데이터를 재조합(LLM 0원) — 3칸만 읽으면 논문 파악, 클릭 시 해당 탭.
+function firstSentences(t, max = 110) {
+  const s = cmdkStrip(t || "").trim();
+  if (!s) return "";
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  // 문장 경계(마침표류)에서 끊기 — 없으면 단어 경계 즈음에서 자르고 말줄임
+  const lastEnd = Math.max(cut.lastIndexOf("다."), cut.lastIndexOf("요."), cut.lastIndexOf(". "), cut.lastIndexOf("음."));
+  return lastEnd > 40 ? cut.slice(0, lastEnd + 2).trim() : cut.trim() + "…";
+}
+function renderTldr(data) {
+  document.getElementById("tldr3")?.remove();
+  const cards = [];
+  const prob = firstSentences(data.problem);
+  if (prob) cards.push({ icon: "❓", label: "무엇이 문제", text: prob, tab: "problem" });
+  // 방법: 스테퍼 1단계(제목+설명) 우선, 없으면 한 줄 요약(위에 이미 보이지만 폴백으로만)
+  const s0 = Array.isArray(data.method_steps) && data.method_steps[0];
+  const meth = s0 ? firstSentences(`${cmdkStrip(s0.title || "")} — ${s0.description || ""}`) : firstSentences(data.one_liner);
+  if (meth) cards.push({ icon: "🛠", label: "어떻게 풀었나", text: meth, tab: "method" });
+  const resu = firstSentences(data.experiments && data.experiments.takeaway);
+  if (resu) cards.push({ icon: "📊", label: "무엇을 얻었나", text: resu, tab: "results" });
+  if (cards.length < 2) return; // 재료가 부족하면(구버전 분석 등) 표시하지 않음
+  const row = document.createElement("div");
+  row.id = "tldr3";
+  row.className = "tldr3";
+  cards.forEach((c) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tldr-card";
+    b.title = "클릭하면 해당 탭으로 이동";
+    const h = document.createElement("div");
+    h.className = "tldr-label";
+    h.textContent = `${c.icon} ${c.label}`;
+    const p = document.createElement("div");
+    p.className = "tldr-text";
+    p.textContent = c.text;
+    b.append(h, p);
+    b.addEventListener("click", () => switchTab(c.tab));
+    row.appendChild(b);
+  });
+  const anchor = document.getElementById("contributions");
+  anchor.parentNode.insertBefore(row, anchor.nextSibling);
+}
+
+// ---------- P6: 본문 용어 자동 툴팁 ----------
+// 용어집 용어가 탭 본문에 처음 나타나는 자리에 점선 밑줄 + hover 툴팁(뜻),
+// 클릭 시 용어집 카드를 열어 그 용어로 필터. 수식·코드·버튼·링크 내부는 제외.
+function decorateGlossaryTerms() {
+  if (!glossaryItems.length) return;
+  const terms = glossaryItems
+    .filter((g) => g && g.term && String(g.term).length >= 3 && g.meaning)
+    .sort((a, b) => String(b.term).length - String(a.term).length); // 긴 용어 우선(부분 겹침 방지)
+  if (!terms.length) return;
+  TAB_ORDER.forEach((tab) => {
+    const panel = document.getElementById(`panel-${tab}`);
+    if (!panel) return;
+    const seen = new Set(); // 탭당 용어별 첫 등장만 (과도한 밑줄 방지)
+    const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT, {
+      acceptNode(n) {
+        if (!n.textContent || n.textContent.length < 3) return NodeFilter.FILTER_REJECT;
+        const p = n.parentElement;
+        if (!p || p.closest(".katex, code, pre, button, a, input, textarea, svg, iframe, .gloss-term, .eqflow-node, .tldr3")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      if (seen.size >= terms.length) break;
+      const text = node.textContent;
+      for (const g of terms) {
+        const term = String(g.term);
+        if (seen.has(term)) continue;
+        const esc = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        // 영문 용어는 단어 경계(attention ⊄ attentions 방지), 한글 포함이면 단순 포함
+        const re = new RegExp(/^[\x20-\x7e]+$/.test(term) ? `\\b${esc}\\b` : esc, "i");
+        const m = re.exec(text);
+        if (!m) continue;
+        seen.add(term);
+        const range = document.createRange();
+        range.setStart(node, m.index);
+        range.setEnd(node, m.index + m[0].length);
+        const span = document.createElement("span");
+        span.className = "gloss-term";
+        span.title = `${g.meaning}\n(클릭: 용어집에서 보기)`;
+        try { range.surroundContents(span); } catch (e) { seen.delete(term); break; } // 노드 경계 걸침 등 — 이 노드는 건너뜀
+        span.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const card = document.getElementById("glossary-card");
+          if (card.classList.contains("hidden")) toggleSideCard("glossary-card");
+          const gs = document.getElementById("glossary-search");
+          gs.value = term;
+          paintGlossary(term);
+        });
+        break; // surroundContents가 노드를 분할 — 다음 텍스트노드로 진행
+      }
+    }
+  });
 }
 
 // ---------- 용어집 (#6) ----------
@@ -5567,6 +5890,26 @@ function openComparePicker() {
   ov.querySelector(".cmp-search").focus();
 }
 document.getElementById("tool-compare").addEventListener("click", openComparePicker);
+
+// ── 🐣 더 쉽게 (P8): 지금 보는 탭을 학부 신입생 수준으로 재설명 ────────────────
+// 서버가 (hash, section)별로 캐시하므로 두 번째부터는 즉시. 원문 탭과 오버레이로 대조해 읽는다.
+const ELI_TABS = { background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리" };
+document.getElementById("tool-eli").addEventListener("click", () => {
+  if (!currentHash || !currentAnalysis) return;
+  const label = ELI_TABS[activeTab];
+  if (!label) return showError("이 탭은 '더 쉽게'를 지원하지 않아요 — 배경·문제·방법론·실험·수식 탭에서 눌러 주세요.");
+  openGenOverlay({
+    title: `🐣 ${label} — 더 쉽게`,
+    filename: `easy_${activeTab}_${(currentAnalysis.title || "paper").slice(0, 24).replace(/[^\w가-힣]+/g, "_")}.md`,
+    runFetch: (force, signal) =>
+      fetch(`${API_BASE}/api/explain/${currentHash}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section: activeTab, force }),
+        signal,
+      }),
+  });
+});
 // 비교할 다른 논문이 없으면 버튼 숨김 (loadHistory 후 호출)
 function refreshCompareButton() {
   const btn = document.getElementById("tool-compare");
@@ -5999,6 +6342,270 @@ async function regenSection(section) {
     if (panel) panel.classList.remove("regenerating");
   }
 }
+
+// ========== P3: 통합 검색 (⌘K / Ctrl+K) ==========
+// 분석 결과(모든 탭 텍스트) + 용어집 + 원문 PDF를 한 입력으로 동시 검색하는 커맨드 팔레트.
+// 분석·용어집은 클라 메모리라 즉시·무료, PDF는 기존 pdfPageTextOf 지연 캐시로 비동기 추가.
+const cmdk = { el: null, items: [], active: -1, token: 0, index: null, indexHash: null };
+
+// 원문 마크업(**볼드**/==형광==/$수식$/[[p7|…]])을 벗겨 화면 텍스트와 비교 가능하게
+function cmdkStrip(t) {
+  return String(t == null ? "" : t)
+    .replace(/\[\[\s*p\.?\s*\d+\s*(?:\|[^\]]*)?\]\]/gi, "")
+    .replace(/\*\*|==/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// currentAnalysis → 검색 항목 [{tab, where, text, lower}] — 논문이 바뀔 때만 재구축
+function cmdkBuildIndex() {
+  const a = currentAnalysis;
+  if (!a) return [];
+  if (cmdk.index && cmdk.indexHash === currentHash) return cmdk.index;
+  const items = [];
+  const add = (tab, where, text) => {
+    const t = cmdkStrip(text);
+    if (t.length >= 2) items.push({ tab, where, text: t, lower: t.toLowerCase() });
+  };
+  (Array.isArray(a.seminar) ? a.seminar : []).forEach((s) => {
+    if (!s) return;
+    (Array.isArray(s.points) ? s.points : []).forEach((p) => p && add("seminar", `세미나 ${s.section || ""} ${s.title || ""}`.trim(), p.text));
+  });
+  String(a.background || "").split("\n").forEach((line) => add("background", "연구 배경", line));
+  (Array.isArray(a.timeline) ? a.timeline : []).forEach((t) => t && add("background", "타임라인", `${t.year ?? ""} ${t.label ?? ""} — ${t.note ?? ""}`));
+  String(a.problem || "").split("\n").forEach((line) => add("problem", "해결하려는 것", line));
+  (Array.isArray(a.method_steps) ? a.method_steps : []).forEach((s, i) => s && add("method", `방법론 ${i + 1}. ${cmdkStrip(s.title)}`, `${s.title || ""} ${s.description || ""} ${s.analogy || ""}`));
+  const md = a.method_deep;
+  (md && Array.isArray(md.sections) ? md.sections : []).forEach((s) => s && add("method", `정밀 강독 ${s.ref || ""}`.trim(), `${s.title || ""} ${s.body || s.text || ""}`));
+  const e = a.experiments || {};
+  add("results", "실험 결론", e.takeaway);
+  (Array.isArray(e.metrics_explained) ? e.metrics_explained : []).forEach((m) => m && add("results", "측정 지표", `${m.name || ""} — ${m.meaning || ""}`));
+  (Array.isArray(e.datasets) ? e.datasets : []).forEach((d) => d && add("results", "데이터셋", `${d.name || ""} — ${d.detail || ""}`));
+  (Array.isArray(e.terms) ? e.terms : []).forEach((t) => t && add("results", "실험 용어", `${t.term || ""} — ${t.meaning || ""}`));
+  (Array.isArray(e.studies) ? e.studies : []).forEach((s, i) => s && add("results", `실험 ${i + 1}`, `${s.title || ""} ${s.purpose || ""} ${s.setup || ""} ${s.result || ""}`));
+  add("results", "한계", e.limitations);
+  (Array.isArray(a.equations) ? a.equations : []).forEach((eq, i) => eq && add("equations", `수식 ${i + 1}${eq.paper_ref ? ` (${eq.paper_ref})` : ""}`,
+    `${eq.explanation || ""} ${eq.analogy || ""} ${(Array.isArray(eq.variables) ? eq.variables : []).map((v) => v && `${v.symbol} ${v.meaning}`).join(" ")}`));
+  (Array.isArray(a.figure_guide) ? a.figure_guide : []).forEach((f) => f && add("figures", f.label || "그림", `${f.caption_ko || ""} ${f.explanation || ""} ${f.takeaway || ""}`));
+  cmdk.index = items;
+  cmdk.indexHash = currentHash;
+  return items;
+}
+
+// 매치 주변 문맥 스니펫 (<b>하이라이트)
+function cmdkSnippet(text, needle) {
+  const i = text.toLowerCase().indexOf(needle);
+  const span = document.createElement("span");
+  if (i < 0) { span.textContent = text.slice(0, 60); return span; }
+  span.append(document.createTextNode((i > 26 ? "…" : "") + text.slice(Math.max(0, i - 26), i)));
+  const b = document.createElement("b");
+  b.textContent = text.slice(i, i + needle.length);
+  span.append(b, document.createTextNode(text.slice(i + needle.length, i + needle.length + 40)));
+  return span;
+}
+
+// 탭 패널에서 needle 위치를 찾아 스크롤 + 하이라이트.
+// 1순위: 매치를 담은 텍스트 노드를 찾아 그 구간만 임시 <span>으로 감싸 플래시(끝나면 원복).
+// 2순위: 마크업(<strong> 등)으로 쪼개져 단일 노드 매치가 없으면, 포함하는 가장 깊은 요소를 플래시.
+function cmdkJump(tab, needles) {
+  switchTab(tab);
+  const panel = document.getElementById(`panel-${tab}`);
+  if (!panel) return;
+  const norm = (s) => String(s || "").replace(/\s+/g, " ").toLowerCase();
+  for (const nd of needles) {
+    const n = norm(nd);
+    if (n.length < 2) continue;
+
+    // 1) 단일 텍스트 노드 안의 매치 → 그 부분만 감싸 하이라이트
+    const walker = document.createTreeWalker(panel, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!norm(node.textContent).includes(n)) continue;
+      const raw = node.textContent;
+      const ri = raw.toLowerCase().indexOf(nd.toLowerCase()); // 공백 차이로 못 찾으면 노드 전체
+      const range = document.createRange();
+      if (ri >= 0) {
+        range.setStart(node, ri);
+        range.setEnd(node, Math.min(raw.length, ri + nd.length));
+      } else {
+        range.selectNodeContents(node);
+      }
+      const mark = document.createElement("span");
+      mark.className = "cmdk-flash";
+      try { range.surroundContents(mark); } catch { break; } // 경계가 어긋나면 요소 폴백으로
+      mark.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => {
+        const p = mark.parentNode;
+        if (p) { p.replaceChild(document.createTextNode(mark.textContent), mark); p.normalize(); }
+      }, 1900);
+      return;
+    }
+
+    // 2) 포함하는 가장 깊은 요소로 폴백
+    if (!norm(panel.textContent).includes(n)) continue;
+    let el = panel;
+    let child;
+    while ((child = [...el.children].find((c) => c.tagName !== "IFRAME" && norm(c.textContent).includes(n)))) el = child;
+    const target = el === panel ? panel : el.closest("p, li, h3, h4, td, .step-desc, div") || el;
+    if (target !== panel) {
+      target.classList.add("cmdk-flash");
+      setTimeout(() => target.classList.remove("cmdk-flash"), 1900);
+    }
+    target.scrollIntoView({ behavior: "smooth", block: target === panel ? "start" : "center" });
+    return;
+  }
+}
+
+function closeCmdk() {
+  if (cmdk.el) cmdk.el.remove();
+  cmdk.el = null;
+  cmdk.items = [];
+  cmdk.active = -1;
+  cmdk.token++;
+}
+
+function cmdkSetActive(i) {
+  if (!cmdk.items.length) { cmdk.active = -1; return; }
+  cmdk.active = (i + cmdk.items.length) % cmdk.items.length;
+  cmdk.items.forEach((el, j) => el.classList.toggle("active", j === cmdk.active));
+  cmdk.items[cmdk.active].scrollIntoView({ block: "nearest" });
+}
+
+function cmdkRun(q) {
+  const token = ++cmdk.token;
+  const box = document.getElementById("cmdk-results");
+  box.innerHTML = "";
+  cmdk.items = [];
+  cmdk.active = -1;
+  const needle = q.trim().toLowerCase();
+  if (!currentAnalysis) {
+    box.innerHTML = '<p class="cmdk-hint">먼저 논문을 열어주세요 — 히스토리에서 선택하거나 PDF를 드롭하면 검색할 수 있어요.</p>';
+    return;
+  }
+  if (needle.length < 2) {
+    box.innerHTML = '<p class="cmdk-hint">2자 이상 입력하면 분석 내용 · 용어집 · 원문 PDF를 한 번에 검색합니다.</p>';
+    return;
+  }
+  const group = (label) => {
+    const h = document.createElement("div");
+    h.className = "cmdk-group";
+    h.textContent = label;
+    box.appendChild(h);
+    return h;
+  };
+  const addItem = (whereText, snippetEl, onPick) => {
+    const it = document.createElement("button");
+    it.type = "button";
+    it.className = "cmdk-item";
+    const w = document.createElement("span");
+    w.className = "cmdk-where";
+    w.textContent = whereText;
+    const s = document.createElement("span");
+    s.className = "cmdk-snippet";
+    s.appendChild(snippetEl);
+    it.append(w, s);
+    it.addEventListener("click", () => { closeCmdk(); onPick(); });
+    it.addEventListener("mousemove", () => cmdkSetActive(cmdk.items.indexOf(it)));
+    box.appendChild(it);
+    cmdk.items.push(it);
+  };
+
+  // ── 1) 분석 섹션 (즉시) ──
+  const TAB_KO = { seminar: "Ⅰ", background: "Ⅱ", problem: "Ⅲ", method: "Ⅳ", results: "Ⅴ", equations: "Ⅵ", figures: "Ⅶ" };
+  const hits = cmdkBuildIndex().filter((it) => it.lower.includes(needle)).slice(0, 8);
+  if (hits.length) {
+    group("📑 분석 내용");
+    hits.forEach((h) => addItem(`${TAB_KO[h.tab] || ""} ${h.where}`, cmdkSnippet(h.text, needle), () => cmdkJump(h.tab, [q.trim(), h.text.slice(0, 30)])));
+  }
+
+  // ── 2) 용어집 (즉시) ──
+  const gHits = (glossaryItems || []).filter((g) => g && `${g.term || ""} ${g.meaning || ""}`.toLowerCase().includes(needle)).slice(0, 5);
+  if (gHits.length) {
+    group("📖 용어집");
+    gHits.forEach((g) => addItem(g.term || g.latex || "용어", cmdkSnippet(`${g.term || ""} — ${g.meaning || ""}`, needle), () => {
+      document.getElementById("notes-card").classList.add("hidden");
+      const card = document.getElementById("glossary-card");
+      card.classList.remove("hidden");
+      const gs = document.getElementById("glossary-search");
+      gs.value = g.term || "";
+      paintGlossary(gs.value);
+      card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }));
+  }
+
+  if (!hits.length && !gHits.length) {
+    const none = document.createElement("p");
+    none.className = "cmdk-hint";
+    none.textContent = "분석 내용·용어집에는 없어요. 원문 PDF를 찾는 중…";
+    box.appendChild(none);
+  }
+
+  // ── 3) 원문 PDF (비동기 — 기존 페이지 텍스트 캐시 재사용) ──
+  if (pdfDoc && pdfAvailable) {
+    const ph = document.createElement("div");
+    ph.className = "cmdk-group";
+    ph.textContent = "📄 원문 PDF — 검색 중…";
+    box.appendChild(ph);
+    (async () => {
+      const found = [];
+      for (let n = 1; n <= pdfDoc.numPages && found.length < 6; n++) {
+        let text;
+        try { text = await pdfPageTextOf(n); } catch { continue; }
+        if (token !== cmdk.token) return; // 그 사이 재입력/닫힘
+        const i = text.toLowerCase().indexOf(needle);
+        if (i >= 0) found.push({ page: n, text, anchor: text.slice(i, i + 40) });
+      }
+      if (token !== cmdk.token) return;
+      ph.textContent = found.length ? "📄 원문 PDF" : "📄 원문 PDF — 결과 없음";
+      found.forEach((r) => addItem(`p.${r.page}`, cmdkSnippet(r.text, needle), () => {
+        workspaceEl.classList.remove("pdf-collapsed"); // 접힌 PDF 패널 펼치기
+        document.getElementById("pdf-toggle").textContent = "접기 ◀";
+        jumpToPdfPageText(r.page, r.anchor);
+      }));
+      if (cmdk.active < 0 && cmdk.items.length) cmdkSetActive(0);
+    })();
+  }
+  if (cmdk.items.length) cmdkSetActive(0);
+}
+
+function openCmdk() {
+  if (cmdk.el) { cmdk.el.querySelector("input").focus(); return; }
+  const ov = document.createElement("div");
+  ov.className = "cmdk-overlay";
+  ov.id = "cmdk-overlay";
+  ov.innerHTML =
+    '<div class="cmdk-box" role="dialog" aria-label="통합 검색">' +
+    '<input id="cmdk-input" type="text" placeholder="분석 내용 · 용어집 · 원문 PDF 통합 검색…" autocomplete="off" spellcheck="false" />' +
+    '<div id="cmdk-results" class="cmdk-results"></div>' +
+    '<div class="cmdk-foot">↑↓ 이동 · Enter 열기 · Esc 닫기</div></div>';
+  ov.addEventListener("click", (e) => { if (e.target === ov) closeCmdk(); });
+  document.body.appendChild(ov);
+  cmdk.el = ov;
+  const input = ov.querySelector("input");
+  let debounce = 0;
+  input.addEventListener("input", () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => cmdkRun(input.value), 140);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeCmdk(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); cmdkSetActive(cmdk.active + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); cmdkSetActive(cmdk.active - 1); }
+    else if (e.key === "Enter") { e.preventDefault(); if (cmdk.active >= 0 && cmdk.items[cmdk.active]) cmdk.items[cmdk.active].click(); }
+  });
+  cmdkRun("");
+  input.focus();
+}
+// ⌘K(맥)/Ctrl+K — 다른 수식키 검사보다 먼저 잡아야 해서 별도 리스너
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "k" || e.key === "K")) {
+    e.preventDefault();
+    if (cmdk.el) closeCmdk();
+    else openCmdk();
+  }
+});
+document.getElementById("tool-cmdk")?.addEventListener("click", openCmdk);
 
 // ---------- 키보드 단축키 (#8) ----------
 const TAB_ORDER = ["seminar", "background", "problem", "method", "results", "equations", "figures"];
