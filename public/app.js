@@ -717,7 +717,6 @@ function renderResult(data) {
   renderRelated(data.related_papers);
   renderQaPrep(data.suggested_questions); // 예상 Q&A 준비 패널
   renderGlossary(data.glossary); // 용어집
-  renderTldr(data); // P2: 30초 오리엔테이션 카드 (문제→방법→결과)
   decorateGlossaryTerms(); // P6: 본문 용어 점선 밑줄+툴팁 (renderGlossary 뒤 — glossaryItems 필요)
   if (!sameHash) loadNotes(currentHash); // 개인 메모·북마크
   if (!sameHash) loadPdf(currentHash);
@@ -5527,51 +5526,6 @@ document.addEventListener("selectionchange", () => {
 });
 window.addEventListener("scroll", hideSelAsk, true); // 스크롤로 위치가 어긋나면 숨김
 
-// ---------- P2: 30초 오리엔테이션 카드 (문제→방법→결과) ----------
-// 기존 분석 데이터를 재조합(LLM 0원) — 3칸만 읽으면 논문 파악, 클릭 시 해당 탭.
-function firstSentences(t, max = 110) {
-  const s = cmdkStrip(t || "").trim();
-  if (!s) return "";
-  if (s.length <= max) return s;
-  const cut = s.slice(0, max);
-  // 문장 경계(마침표류)에서 끊기 — 없으면 단어 경계 즈음에서 자르고 말줄임
-  const lastEnd = Math.max(cut.lastIndexOf("다."), cut.lastIndexOf("요."), cut.lastIndexOf(". "), cut.lastIndexOf("음."));
-  return lastEnd > 40 ? cut.slice(0, lastEnd + 2).trim() : cut.trim() + "…";
-}
-function renderTldr(data) {
-  document.getElementById("tldr3")?.remove();
-  const cards = [];
-  const prob = firstSentences(data.problem);
-  if (prob) cards.push({ icon: "❓", label: "무엇이 문제", text: prob, tab: "problem" });
-  // 방법: 스테퍼 1단계(제목+설명) 우선, 없으면 한 줄 요약(위에 이미 보이지만 폴백으로만)
-  const s0 = Array.isArray(data.method_steps) && data.method_steps[0];
-  const meth = s0 ? firstSentences(`${cmdkStrip(s0.title || "")} — ${s0.description || ""}`) : firstSentences(data.one_liner);
-  if (meth) cards.push({ icon: "🛠", label: "어떻게 풀었나", text: meth, tab: "method" });
-  const resu = firstSentences(data.experiments && data.experiments.takeaway);
-  if (resu) cards.push({ icon: "📊", label: "무엇을 얻었나", text: resu, tab: "results" });
-  if (cards.length < 2) return; // 재료가 부족하면(구버전 분석 등) 표시하지 않음
-  const row = document.createElement("div");
-  row.id = "tldr3";
-  row.className = "tldr3";
-  cards.forEach((c) => {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "tldr-card";
-    b.title = "클릭하면 해당 탭으로 이동";
-    const h = document.createElement("div");
-    h.className = "tldr-label";
-    h.textContent = `${c.icon} ${c.label}`;
-    const p = document.createElement("div");
-    p.className = "tldr-text";
-    p.textContent = c.text;
-    b.append(h, p);
-    b.addEventListener("click", () => switchTab(c.tab));
-    row.appendChild(b);
-  });
-  const anchor = document.getElementById("contributions");
-  anchor.parentNode.insertBefore(row, anchor.nextSibling);
-}
-
 // ---------- P6: 본문 용어 자동 툴팁 ----------
 // 용어집 용어가 탭 본문에 처음 나타나는 자리에 점선 밑줄 + hover 툴팁(뜻),
 // 클릭 시 용어집 카드를 열어 그 용어로 필터. 수식·코드·버튼·링크 내부는 제외.
@@ -5589,7 +5543,7 @@ function decorateGlossaryTerms() {
       acceptNode(n) {
         if (!n.textContent || n.textContent.length < 3) return NodeFilter.FILTER_REJECT;
         const p = n.parentElement;
-        if (!p || p.closest(".katex, code, pre, button, a, input, textarea, svg, iframe, .gloss-term, .eqflow-node, .tldr3")) {
+        if (!p || p.closest(".katex, code, pre, button, a, input, textarea, svg, iframe, .gloss-term, .eqflow-node")) {
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -6303,13 +6257,20 @@ async function regenSection(section) {
     .then((r) => (r.ok ? r.json() : null))
     .then((d) => { if (d && Number.isFinite(d.estMs) && d.estMs > 0) estMs = d.estMs; })
     .catch(() => {});
-  let regenBar = null, regenFill = null, regenTimer = null;
+  // 진행 표시: [바 | 남은 시간] 한 줄 — 탭 바와 겹치지 않게 여백을 두고 패널 위에 삽입
+  let regenBar = null, regenFill = null, regenEta = null, regenTimer = null;
   if (panel && panel.parentNode) {
     regenBar = document.createElement("div");
-    regenBar.className = "regen-bar";
+    regenBar.className = "regen-wrap";
+    const track = document.createElement("div");
+    track.className = "regen-bar";
     regenFill = document.createElement("div");
     regenFill.className = "regen-fill";
-    regenBar.appendChild(regenFill);
+    track.appendChild(regenFill);
+    regenEta = document.createElement("span");
+    regenEta.className = "regen-eta";
+    regenEta.textContent = "준비 중…";
+    regenBar.append(track, regenEta);
     panel.parentNode.insertBefore(regenBar, panel); // 패널 바로 위(디밍 영향 없음)
   }
   const t0 = performance.now();
@@ -6318,6 +6279,7 @@ async function regenSection(section) {
     const fRaw = el / estMs;
     const f = fRaw < 0.9 ? fRaw : 0.9 + 0.1 * (1 - Math.exp(-(fRaw - 0.9) * 2));
     if (regenFill) regenFill.style.width = `${Math.min(99, f * 100)}%`;
+    if (regenEta) regenEta.textContent = fmtRemaining(estMs - el);
     btn.textContent = `재생성 중 · ${fmtRemaining(estMs - el)}`;
   };
   regenTimer = setInterval(tickRegen, 250);

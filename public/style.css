@@ -1373,23 +1373,6 @@ mark {
 .mdeep-page:hover { border-color: var(--accent); }
 .mdeep-body { padding: 2px 2px 16px; font-size: 0.93rem; line-height: 1.8; }
 
-/* ── P2: 30초 오리엔테이션 카드 ─────────────────────────────────────────── */
-.tldr3 { display: flex; gap: 10px; margin: 14px 0 6px; flex-wrap: wrap; }
-.tldr-card {
-  flex: 1;
-  min-width: 200px;
-  text-align: left;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 14px;
-  cursor: pointer;
-  font-family: inherit;
-  transition: border-color 0.12s, transform 0.12s;
-}
-.tldr-card:hover { border-color: var(--accent); transform: translateY(-1px); }
-.tldr-label { font-family: var(--sans); font-weight: 700; font-size: 0.76rem; color: var(--accent); margin-bottom: 5px; }
-.tldr-text { font-size: 0.84rem; line-height: 1.55; color: var(--ink); }
 
 /* ── P6: 본문 용어 툴팁 ─────────────────────────────────────────────────── */
 .gloss-term {
@@ -2891,9 +2874,19 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 .bm-del:hover { color: var(--accent); }
 .bm-empty { font-size: 0.82rem; padding: 6px 0; }
 
-/* 섹션 재생성 중 표시 */
-.regen-bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 0 0 12px; }
+/* 섹션 재생성 진행: [바 | 남은 시간] 한 줄 — 탭 바와 겹치지 않게 위 여백 확보 */
+.regen-wrap { display: flex; align-items: center; gap: 12px; margin: 16px 0 14px; }
+.regen-bar { flex: 1; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .regen-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+.regen-eta {
+  flex: none;
+  font-family: var(--sans);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .panel.regenerating { position: relative; min-height: 160px; opacity: 0.5; pointer-events: none; }
 .panel.regenerating::after {
   content: "이 섹션 다시 생성 중…";
