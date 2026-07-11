@@ -202,6 +202,24 @@ async function main() {
     });
     if (stepResult.emptyJourney > 0) violations.push({ rule: "§9.10 empty_step", detail: `${stepResult.emptyJourney}개 스텝에서 여정 패널이 비어 렌더됨` });
 
+    // raw LaTeX 노출: 독립 HTML엔 KaTeX가 없어 $...$ 소스가 화면에 그대로 보인다.
+    // (달러 금액 오탐 방지: $ 뒤가 숫자로 시작하는 매치는 제외 — "$5,000" 등)
+    const rawLatex = await page.evaluate(() => {
+      const text = document.body.innerText || "";
+      const hits = [];
+      const re = /\$([^$\n]{1,60})\$|\\\(([^)\n]{1,60})\\\)/g;
+      let m;
+      while ((m = re.exec(text)) && hits.length < 8) {
+        const inner = m[1] ?? m[2] ?? "";
+        if (/^\s*[\d,.]+\s*$/.test(inner)) continue; // 금액/숫자
+        hits.push(m[0].slice(0, 40));
+      }
+      return hits;
+    });
+    if (rawLatex.length) {
+      violations.push({ rule: "§7 raw_latex", detail: `LaTeX 소스가 화면에 노출됨(KaTeX 없음 — sub/sup·유니코드로 바꿔라) ${rawLatex.length}건: ${rawLatex.slice(0, 3).join(" · ")}` });
+    }
+
     // 콘솔·페이지 에러
     if (pageErrors.length) violations.push({ rule: "§8.2 page_error", detail: `페이지 JS 에러 ${pageErrors.length}건: ${pageErrors.slice(0, 3).join(" | ").slice(0, 200)}` });
     if (consoleErrors.length) violations.push({ rule: "§8.2 console_error", detail: `콘솔 에러 ${consoleErrors.length}건: ${consoleErrors.slice(0, 3).join(" | ").slice(0, 200)}` });

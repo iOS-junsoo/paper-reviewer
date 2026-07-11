@@ -2356,6 +2356,11 @@ function renderMethod(data) {
   if (_mvizHtmlCleanup) { try { _mvizHtmlCleanup(); } catch (e) {} _mvizHtmlCleanup = null; } // 이전 iframe 높이 리스너 정리
   panel.innerHTML = "";
 
+  // 작업 A: 논문의 원본 방법 그림(architecture/method kind 크롭)을 접이식으로 대조 표시.
+  // 재구성 시각화 ↔ 논문 실제 Figure를 오가며 볼 수 있게 — 세미나에선 결국 원문 그림으로 설명한다.
+  const origBlock = buildMethodOrigFigures(data);
+  if (origBlock) panel.appendChild(origBlock);
+
   // 최우선: 타입별 독립 HTML 시각화(method_viz_html) — 있으면 iframe으로 렌더
   let vizEl = null;
   if (data.method_viz_html && typeof data.method_viz_html === "string" && data.method_viz_html.trim()) {
@@ -2425,6 +2430,63 @@ function renderMethod(data) {
 
   // 🔬 정밀 강독 — 원문 방법 섹션을 서브섹션 구조 그대로 따라가는 주해식 해설 (온디맨드)
   panel.appendChild(buildMethodDeepBlock(data));
+}
+
+// ---------- 작업 A: 원본 방법 그림 대조 블록 ----------
+// figure_guide에서 방법 관련 그림(kind architecture/method, 폴백: section_ref가 가리키는
+// Figure 라벨)을 골라 접이식으로 표시. 이미지는 처음 펼칠 때만 로드(크롭 생성 비용 절약).
+function buildMethodOrigFigures(data) {
+  const figs = Array.isArray(data.figure_guide) ? data.figure_guide : [];
+  let picks = figs.filter((f) => f && f.page && (f.kind === "architecture" || f.kind === "method"));
+  if (!picks.length && data.method_visualization && data.method_visualization.section_ref) {
+    // 폴백: section_ref 안의 "Fig. 2"/"Figure 2" 라벨을 figure_guide에서 찾는다
+    const nums = [...String(data.method_visualization.section_ref).matchAll(/fig(?:ure)?\.?\s*(\d+)/gi)].map((m) => m[1]);
+    picks = figs.filter((f) => {
+      const n = ((f && f.label) || "").match(/\d+/);
+      return f && f.page && n && nums.includes(n[0]) && /fig/i.test(f.label);
+    });
+  }
+  if (!picks.length || !currentHash) return null;
+  picks = picks.slice(0, 4); // 과밀 방지
+
+  const det = document.createElement("details");
+  det.className = "mviz-orig";
+  const sum = document.createElement("summary");
+  sum.textContent = `📄 논문의 원본 그림과 대조 (${picks.length}장)`;
+  sum.title = "아래 재구성 시각화와 논문의 실제 Figure를 나란히 비교";
+  det.appendChild(sum);
+  const row = document.createElement("div");
+  row.className = "mviz-orig-row";
+  picks.forEach((f) => {
+    const cell = document.createElement("figure");
+    cell.className = "mviz-orig-cell";
+    const img = document.createElement("img");
+    img.alt = `${f.label} 원문 이미지`;
+    img.title = "클릭하면 원문의 이 그림으로 이동";
+    const bbox =
+      Array.isArray(f.bbox) && f.bbox.length === 4 && f.bbox.every((n) => Number.isFinite(Number(n)))
+        ? f.bbox.map(Number)
+        : [0.05, 0.05, 0.95, 0.95]; // bbox 없으면 전면 힌트 — 서버 실측 레이어가 좁혀 잡는다
+    img.dataset.src = `${API_BASE}/api/figure/${currentHash}?page=${f.page}&box=${bbox.join(",")}&label=${encodeURIComponent(f.label || "")}`;
+    img.addEventListener("click", () => jumpToPdfPageText(f.page, f.label || ""));
+    img.addEventListener("error", () => {
+      cell.innerHTML = '<span class="muted">그림을 불러오지 못했습니다 — 원문에서 확인하세요.</span>';
+    });
+    const cap = document.createElement("figcaption");
+    cap.textContent = `${f.label}${f.takeaway ? " — " + f.takeaway : ""}`;
+    cell.append(img, cap);
+    row.appendChild(cell);
+  });
+  det.appendChild(row);
+  // 처음 펼칠 때만 크롭 로드 (안 보는 논문의 크롭을 만들지 않음 — 그림 탭과 동일 원칙)
+  det.addEventListener("toggle", () => {
+    if (!det.open) return;
+    det.querySelectorAll("img[data-src]").forEach((im) => {
+      im.src = im.dataset.src;
+      im.removeAttribute("data-src");
+    });
+  }, { once: false });
+  return det;
 }
 
 // ---------- 방법론 정밀 강독 (method_deep) ----------
