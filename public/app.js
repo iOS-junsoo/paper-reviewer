@@ -1447,6 +1447,59 @@ function renderVisiblePdfPages() {
 }
 document.getElementById("pdf-zoom-in").addEventListener("click", () => setPdfZoom(pdfZoom + 0.2));
 document.getElementById("pdf-zoom-out").addEventListener("click", () => setPdfZoom(pdfZoom - 0.2));
+
+// ── 트랙패드 핀치 줌 ─────────────────────────────────────────────────────
+// macOS 크롬/엣지의 핀치는 ctrlKey+wheel로 들어온다(마우스 Ctrl+휠도 동일 경로).
+// 커서 아래 지점이 고정되도록 줌 후 스크롤을 보정하고, 캔버스 재렌더 비용 제어를 위해
+// 90ms 간격으로 커밋(그 사이 델타는 누적). 기존 setPdfZoom 재사용 — 점프/체크/검색 무영향.
+function zoomAtPoint(targetZoom, clientX, clientY) {
+  if (!pdfDoc || !pdfBaseW) return;
+  const rect = pdfScroll.getBoundingClientRect();
+  const offX = clientX - rect.left;
+  const offY = clientY - rect.top;
+  const prevTop = pdfScroll.scrollTop;
+  const prevLeft = pdfScroll.scrollLeft;
+  const before = pdfZoom;
+  setPdfZoom(targetZoom); // 내부에서 scrollTop을 top 기준 비례 보정
+  const factor = pdfZoom / before;
+  if (factor === 1) return;
+  // top-left 비례 보정을 '커서 지점 고정'으로 재보정
+  pdfScroll.scrollTop = (prevTop + offY) * factor - offY;
+  pdfScroll.scrollLeft = (prevLeft + offX) * factor - offX;
+}
+let _pinchAccum = 1;
+let _pinchLast = 0;
+let _pinchTrail = 0;
+function pinchZoomTo(scaleDelta, clientX, clientY) {
+  _pinchAccum *= scaleDelta;
+  const commit = () => {
+    if (_pinchAccum === 1) return;
+    const t = pdfZoom * _pinchAccum;
+    _pinchAccum = 1;
+    _pinchLast = performance.now();
+    zoomAtPoint(t, clientX, clientY);
+  };
+  clearTimeout(_pinchTrail);
+  if (performance.now() - _pinchLast > 90) commit();
+  else _pinchTrail = setTimeout(commit, 100); // 마지막 델타 유실 방지(트레일링 커밋)
+}
+pdfScroll.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey || !pdfDoc) return; // 일반 스크롤·두 손가락 팬은 그대로
+  e.preventDefault(); // 브라우저 페이지 줌 방지
+  // 트랙패드 핀치는 작은 델타 연속(±1~10), 마우스 Ctrl+휠은 틱당 ±100+ —
+  // 이벤트당 배율을 [0.85, 1.18]로 클램프해 마우스에서도 과격하게 튀지 않게.
+  const factor = Math.min(1.18, Math.max(0.85, Math.exp(-e.deltaY * 0.012)));
+  pinchZoomTo(factor, e.clientX, e.clientY);
+}, { passive: false });
+// Safari는 핀치를 gesture* 이벤트로 준다
+let _gestureBaseZoom = null;
+pdfScroll.addEventListener("gesturestart", (e) => { if (!pdfDoc) return; e.preventDefault(); _gestureBaseZoom = pdfZoom; });
+pdfScroll.addEventListener("gesturechange", (e) => {
+  if (_gestureBaseZoom == null) return;
+  e.preventDefault();
+  pinchZoomTo((_gestureBaseZoom * e.scale) / (pdfZoom * _pinchAccum), e.clientX, e.clientY);
+});
+pdfScroll.addEventListener("gestureend", (e) => { if (_gestureBaseZoom == null) return; e.preventDefault(); _gestureBaseZoom = null; });
 document.getElementById("pdf-zoom-reset").addEventListener("click", () => setPdfZoom(1));
 
 async function renderPdfPage(n, token) {
