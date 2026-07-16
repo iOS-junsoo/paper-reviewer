@@ -1,10 +1,19 @@
 require("dotenv").config();
 
+// ── 구독 인증 강제 + 키체인 계정 전환 활성화 ──────────────────────────────────
+// - ANTHROPIC_API_KEY 제거: API 과금 경로를 차단해 항상 구독(OAuth)만 쓰게 한다.
+// - CLAUDE_CODE_OAUTH_TOKEN 제거: SDK가 .env 고정 토큰 대신 macOS 키체인의 OAuth
+//   자격증명(= `claude auth login`이 관리하는, 설정 화면에서 전환하는 그 계정)을 쓴다.
+//   → '계정 전환'이 서버 재시작 없이 다음 분석부터 실제로 반영된다. .env 값은 백업으로 남음.
+//   (자격증명은 서버가 읽지/저장하지 않는다 — CLI/SDK가 키체인에서 직접 가져간다.)
+if (process.env.ANTHROPIC_API_KEY) delete process.env.ANTHROPIC_API_KEY;
+if (process.env.CLAUDE_CODE_OAUTH_TOKEN) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const zlib = require("zlib");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 const express = require("express");
 const multer = require("multer");
 const { query } = require("@anthropic-ai/claude-agent-sdk");
@@ -31,6 +40,53 @@ const AUTH_ERROR_RE =
 const isAuthError = (s) => AUTH_ERROR_RE.test(String(s || ""));
 const AUTH_ERROR_MSG =
   "Claude 인증 토큰이 만료되었거나 유효하지 않습니다. 터미널에서 `claude setup-token`을 다시 실행해 새 토큰을 발급한 뒤, .env의 CLAUDE_CODE_OAUTH_TOKEN을 교체하고 서버를 재시작하세요.";
+
+// 구독 사용량(세션) 한도 감지 — Max 구독 한도에 걸리면 리셋 전까지 재시도해도 실패한다.
+// 리셋 시각을 파싱해 클라이언트가 그 시각에 자동 재개하도록 구조화된 신호를 보낸다.
+// (인증 오류와 구분: 인증은 토큰 재발급이 필요, 한도는 기다리면 풀린다)
+const LIMIT_ERROR_RE =
+  /usage limit|session limit|rate[ _-]?limit|limit reached|(?:5|five)[- ]hour limit|too many requests|quota (?:exceeded|reached)|\b429\b/i;
+const isLimitError = (s) => LIMIT_ERROR_RE.test(String(s || ""));
+
+function fmtClock(ms) {
+  const d = new Date(ms);
+  let h = d.getHours();
+  const min = d.getMinutes();
+  const ap = h >= 12 ? "pm" : "am";
+  h = h % 12 || 12;
+  return `${h}${min ? ":" + String(min).padStart(2, "0") : ""}${ap}`;
+}
+// 한도 메시지에서 리셋 시각을 뽑아 { resetAt(ms|null), resetText(string|null) } 로.
+// 지원: 유닉스 epoch("...reset...1700000000"), 시계표기("resets at 4:20pm" / "resets 3am" / "reset at 16:20").
+function parseLimitReset(text) {
+  const s = String(text || "");
+  // 1) 유닉스 epoch(초/밀리초) — 'reset' 근처의 10~13자리 숫자
+  let m = s.match(/reset[^0-9]{0,24}(\d{10,13})/i);
+  if (m) {
+    let n = Number(m[1]);
+    if (n < 1e12) n *= 1000; // 초 → ms
+    if (n > Date.now() - 3600e3 && n < Date.now() + 30 * 3600e3) {
+      return { resetAt: n, resetText: fmtClock(n) };
+    }
+  }
+  // 2) 시계 표기 — "resets (at) 4:20pm", "resets 3am", "reset at 16:20"
+  m = s.match(/reset[s]?(?:\s+at)?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    const ap = (m[3] || "").toLowerCase();
+    if (ap === "pm" && h < 12) h += 12;
+    if (ap === "am" && h === 12) h = 0;
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) {
+      const d = new Date();
+      d.setHours(h, min, 0, 0);
+      // 이미 지난 시각(또는 1분 이내)이면 다음 날 — 롤링 한도는 보통 24h 안에 리셋
+      if (d.getTime() <= Date.now() + 60e3) d.setDate(d.getDate() + 1);
+      return { resetAt: d.getTime(), resetText: fmtClock(d.getTime()) };
+    }
+  }
+  return { resetAt: null, resetText: null };
+}
 
 // 업로드된 원문 PDF 보관 (뷰어·재분석·질문 답변에 사용)
 const PDF_DIR = path.join(__dirname, "pdfs");
@@ -700,6 +756,13 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
       if (e && e.code === "AUTH") {
         console.error("[인증 오류] CLAUDE_CODE_OAUTH_TOKEN이 만료/무효한 것으로 보입니다.");
         sseSend(res, { type: "error", error: AUTH_ERROR_MSG });
+        return res.end();
+      }
+      // 구독 세션 한도: 리셋 전엔 재시도해도 실패 → 리셋 시각을 파싱해 클라가 자동 재개하게 한다
+      if (isLimitError(e.message)) {
+        const { resetAt, resetText } = parseLimitReset(e.message);
+        console.warn(`[세션 한도 도달] 리셋 ${resetText || "미상"} — 클라이언트 자동 재개 대기`);
+        sseSend(res, { type: "limit", resetAt, resetText, error: (e.message || "").slice(0, 200) });
         return res.end();
       }
       if (attempt === 1) {
@@ -1596,6 +1659,85 @@ app.put("/api/notes/:hash", async (req, res) => {
   }
 });
 
+// --- 설정: 구독 계정 상태 조회 + 재로그인 전환 (CLI 위임) -----------------------
+// 자격증명은 서버가 절대 읽거나 저장하지 않는다. 로그인은 `claude` CLI에 위임하고,
+// 서버는 CLI를 실행해 상태만 조회한다. macOS 키체인은 계정 1칸이라 전환 = 다시 로그인(직렬).
+// 보호: 이 앱은 앱 레벨 인증이 없고 네트워크 경계(로컬/Tailscale 전용, 공개 인터넷 미노출)로
+// 보호된다 — /settings/* 도 동일 서버·동일 경계를 탄다(별도 미들웨어 없음). 로그인 트리거는
+// 서버 머신에 브라우저 OAuth를 띄우는 민감 동작이므로 공개 배포 금지.
+function resolveClaudeBin() {
+  // env → PATH("claude") → homebrew → usr/local 순. launchd는 PATH가 빈약할 수 있어
+  // 절대경로 후보는 존재할 때만 채택하고, 없으면 PATH의 "claude"로 폴백한다.
+  const cands = [process.env.CLAUDE_CLI_PATH, "/opt/homebrew/bin/claude", "/usr/local/bin/claude"];
+  for (const p of cands) { try { if (p && fs.existsSync(p)) return p; } catch (e) {} }
+  return "claude";
+}
+function getAuthStatus() {
+  return new Promise((resolve) => {
+    execFile(
+      resolveClaudeBin(),
+      ["auth", "status", "--json"],
+      { timeout: 15000, env: { ...process.env, CI: "1" } },
+      (err, stdout) => {
+        if (err) return resolve({ loggedIn: false });
+        try {
+          const j = JSON.parse(String(stdout));
+          resolve(j && typeof j === "object" ? j : { loggedIn: false });
+        } catch (e) { resolve({ loggedIn: false }); }
+      }
+    );
+  });
+}
+function startLogin(email) {
+  // --claudeai(구독) 강제. --console(API 과금)은 쓰지 않는다. 이메일은 로그인 페이지 미리채움용.
+  const args = ["auth", "login", "--claudeai"];
+  if (email && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) args.push("--email", email);
+  // detached / stdio 무시 / unref — 프로세스가 브라우저를 열고 로컬 콜백으로 알아서 완료.
+  // 서버는 기다리지 않는다(상태 폴링으로 완료 감지). launchd GUI 세션이라 브라우저는 이 Mac 화면에 뜬다.
+  const child = spawn(resolveClaudeBin(), args, { detached: true, stdio: "ignore", env: { ...process.env } });
+  child.on("error", (e) => console.error("[로그인 spawn 실패]", e.message));
+  child.unref();
+  return { ok: true };
+}
+// 자주 쓰는 계정 바로가기 — email은 전환 시 미리채우는 편의값일 뿐 자격증명이 아니다.
+const ACCOUNTS_FILE = path.join(__dirname, ".stats", "accounts.json");
+function readAccounts() {
+  try { const a = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, "utf8")); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function writeAccounts(arr) {
+  try { fs.mkdirSync(path.dirname(ACCOUNTS_FILE), { recursive: true }); fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(arr)); } catch (e) {}
+}
+
+app.get("/settings/status", async (req, res) => {
+  res.json({ auth: await getAuthStatus(), accounts: readAccounts(), model: MODEL });
+});
+app.post("/settings/login", (req, res) => {
+  const email = req.body && typeof req.body.email === "string" ? req.body.email.trim().slice(0, 120) : "";
+  console.log(`[계정 전환] 로그인 트리거${email ? " (" + email + ")" : ""} — 서버 머신에 브라우저가 열립니다`);
+  startLogin(email);
+  res.json({ ok: true });
+});
+app.post("/settings/logout", (req, res) => {
+  const child = spawn(resolveClaudeBin(), ["auth", "logout"], { detached: true, stdio: "ignore", env: { ...process.env } });
+  child.on("error", () => {});
+  child.unref();
+  res.json({ ok: true });
+});
+app.post("/settings/accounts", (req, res) => {
+  const b = req.body || {};
+  const email = typeof b.email === "string" ? b.email.trim().slice(0, 120) : "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: "유효한 이메일이 필요합니다." });
+  const label = (typeof b.label === "string" && b.label.trim() ? b.label.trim() : email).slice(0, 40);
+  const arr = readAccounts().filter((a) => a.email !== email); // 같은 이메일 중복 방지
+  arr.push({ id: crypto.randomUUID(), label, email });
+  writeAccounts(arr.slice(0, 20));
+  res.json({ ok: true, accounts: readAccounts() });
+});
+app.delete("/settings/accounts/:id", (req, res) => {
+  writeAccounts(readAccounts().filter((a) => a.id !== req.params.id));
+  res.json({ ok: true, accounts: readAccounts() });
+});
+
 // --- 라이브러리: 폴더 목록 + 논문→폴더 배정 (전역, 기기 간 공유) -----------------
 app.get("/api/library", async (req, res) => {
   try {
@@ -1918,12 +2060,16 @@ process.on("unhandledRejection", (reason) => {
   console.error("[unhandledRejection] 처리되지 않은 Promise 거부:", reason);
 });
 
-if (!process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-  console.warn(
-    "[경고] CLAUDE_CODE_OAUTH_TOKEN이 설정되어 있지 않습니다.\n" +
-      "       `claude setup-token`으로 발급한 토큰을 .env에 넣어야 분석이 동작합니다."
-  );
-}
+// 인증은 이제 macOS 키체인 OAuth(`claude auth login`)를 쓴다 — 시작 시 상태를 로그로 안내.
+getAuthStatus().then((a) => {
+  if (a.loggedIn && a.apiProvider === "firstParty") {
+    console.log(`[인증] 구독 계정 ${a.email || "?"} (${a.subscriptionType || "?"}) · 키체인 OAuth 사용`);
+  } else if (a.loggedIn) {
+    console.warn(`[경고] 로그인됐으나 구독 계정이 아닙니다(apiProvider=${a.apiProvider}) — 설정에서 구독 계정으로 전환하세요.`);
+  } else {
+    console.warn("[경고] Claude 구독 로그인이 안 돼 있습니다 — 웹 설정의 '계정 전환' 또는 터미널 `claude auth login --claudeai`로 로그인하세요.");
+  }
+}).catch(() => {});
 
 app.listen(PORT, () => {
   console.log(

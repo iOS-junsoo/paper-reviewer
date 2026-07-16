@@ -26,6 +26,7 @@
       <div class="sb-top">
         <div class="sb-brand">📄 Paper&nbsp;Reviewer</div>
         <div class="sb-top-btns">
+          <button id="settings-btn" class="sb-iconbtn" type="button" title="설정 · 구독 계정 전환" aria-label="설정">⚙️</button>
           <button id="theme-toggle" class="sb-iconbtn" type="button" title="읽기 테마 전환 (기본 → 세피아 → 다크)" aria-label="테마 전환">🌗</button>
           <button id="sb-collapse" class="sb-collapse" type="button" title="사이드바 접기" aria-label="사이드바 접기">◀</button>
         </div>
@@ -55,6 +56,8 @@
     </aside>
 
     <button id="sb-open" class="sb-open" type="button" title="사이드바 열기" aria-label="사이드바 열기">☰</button>
+    <!-- 모바일 사이드바 드로어 오버레이 (열렸을 때 바깥 탭하면 닫힘) -->
+    <div id="sb-overlay" class="sb-overlay" aria-hidden="true"></div>
 
     <main class="app-main">
       <header>
@@ -94,14 +97,24 @@
       <section id="workspace" class="workspace hidden">
         <aside class="pdf-pane" id="pdf-pane">
           <div class="pdf-head">
-            <span>📄 원문 PDF</span>
-            <div class="pdf-zoom">
-              <button id="pdf-zoom-out" class="pdf-zbtn" type="button" title="축소" aria-label="축소">−</button>
-              <button id="pdf-zoom-reset" class="pdf-zlabel" type="button" title="폭 맞춤으로">100%</button>
-              <button id="pdf-zoom-in" class="pdf-zbtn" type="button" title="확대" aria-label="확대">＋</button>
+            <div class="pdf-head-l">
+              <span class="pdf-head-icon" aria-hidden="true">📄</span>
+              <span class="pdf-pageinfo" title="현재 페이지 / 전체 · 숫자 입력 후 Enter로 이동">
+                <input id="pdf-page-cur" class="pdf-page-cur" type="text" inputmode="numeric" value="–" aria-label="현재 페이지 (입력 후 Enter로 이동)" />
+                <span class="pdf-page-sep">/</span>
+                <span id="pdf-page-total" class="pdf-page-total">–</span>
+              </span>
             </div>
-            <button id="pdf-search-toggle" class="pdf-zbtn" type="button" title="원문에서 검색 (S)" aria-label="원문 검색">🔍</button>
-            <button id="pdf-toggle" type="button" title="PDF 패널 접기/펼치기">접기 ◀</button>
+            <div class="pdf-head-r">
+              <div class="pdf-zoom">
+                <button id="pdf-zoom-out" class="pdf-zbtn" type="button" title="축소" aria-label="축소">−</button>
+                <button id="pdf-zoom-reset" class="pdf-zlabel" type="button" title="폭 맞춤으로">100%</button>
+                <button id="pdf-zoom-in" class="pdf-zbtn" type="button" title="확대" aria-label="확대">＋</button>
+              </div>
+              <button id="pdf-dark-toggle" class="pdf-zbtn" type="button" title="PDF 다크 모드 (야간 읽기)" aria-label="PDF 다크 모드">🌙</button>
+              <button id="pdf-search-toggle" class="pdf-zbtn" type="button" title="원문에서 검색 (S)" aria-label="원문 검색">🔍</button>
+              <button id="pdf-toggle" type="button" title="PDF 패널 접기/펼치기">접기 ◀</button>
+            </div>
           </div>
           <div id="pdf-search-bar" class="pdf-search-bar hidden">
             <input id="pdf-search-input" type="search" placeholder="원문에서 찾기… (Enter)" autocomplete="off" />
@@ -206,6 +219,20 @@
         <p>로컬에서 실행 중 · 분석 결과는 Firestore에 캐시됩니다</p>
       </footer>
     </main>
+  </div>
+
+  <!-- 세션 한도 자동 재개 배너 (구독 한도 도달 시 리셋 시각에 자동 재시도) -->
+  <div id="limit-banner" class="limit-banner hidden" role="status" aria-live="polite">
+    <span class="limit-ic" aria-hidden="true">⏳</span>
+    <div class="limit-body">
+      <div class="limit-title">구독 세션 한도 도달 — 자동 재개 대기 중</div>
+      <div class="limit-sub"><span id="limit-when"></span> <span id="limit-countdown" class="limit-countdown"></span></div>
+      <div class="limit-hint">이 탭을 열어두면 리셋 시각에 자동으로 다시 분석합니다.</div>
+    </div>
+    <div class="limit-btns">
+      <button id="limit-resume-now" class="limit-btn" type="button">지금 재개</button>
+      <button id="limit-cancel" class="limit-btn limit-btn-ghost" type="button">취소</button>
+    </div>
   </div>
 
   <!-- 질문하기: 우하단 플로팅 버튼 + 우측 슬라이드 채팅 패널 -->

@@ -65,6 +65,166 @@ document.getElementById("theme-toggle").addEventListener("click", () => {
   try { localStorage.setItem("theme", next); } catch {}
 });
 
+// ── 설정: 구독 계정 상태 + 재로그인 전환 ─────────────────────────────────────
+// 자격증명은 다루지 않는다 — 서버가 `claude` CLI에 위임한다. 전환 = 다시 로그인(직렬).
+let _settingsPoll = null;
+function stopSettingsPoll() { if (_settingsPoll) { clearInterval(_settingsPoll); _settingsPoll = null; } }
+async function fetchSettings() {
+  const r = await fetch(`${API_BASE}/settings/status`);
+  if (!r.ok) throw new Error(`상태 조회 실패 (HTTP ${r.status})`);
+  return r.json();
+}
+async function openSettings() {
+  document.getElementById("settings-overlay")?.remove();
+  stopSettingsPoll();
+  const ov = document.createElement("div");
+  ov.className = "mode-overlay";
+  ov.id = "settings-overlay";
+  ov.innerHTML =
+    '<div class="settings-box" role="dialog" aria-label="설정">' +
+    '<div class="settings-head"><span class="settings-title">⚙️ 설정 · 구독 계정</span>' +
+    '<button type="button" class="settings-close" title="닫기 (Esc)">✕</button></div>' +
+    '<div class="settings-body"><div class="muted">불러오는 중…</div></div></div>';
+  const close = () => { stopSettingsPoll(); document.removeEventListener("keydown", onKey, true); ov.remove(); };
+  const onKey = (e) => { if (e.key === "Escape" && !document.querySelector(".settings-polling")) { e.preventDefault(); e.stopPropagation(); close(); } };
+  document.addEventListener("keydown", onKey, true);
+  ov.addEventListener("click", (e) => {
+    if (document.querySelector(".settings-polling")) return; // 전환 중엔 바깥클릭 무시
+    if (e.target === ov || e.target.closest(".settings-close")) close();
+  });
+  document.body.appendChild(ov);
+  try { renderSettings(ov, await fetchSettings()); }
+  catch (e) { ov.querySelector(".settings-body").innerHTML = `<div class="settings-warn">⚠️ ${e.message}</div>`; }
+}
+function renderSettings(ov, data) {
+  const body = ov.querySelector(".settings-body");
+  const a = data.auth || {};
+  const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+  const isSub = a.loggedIn && a.apiProvider === "firstParty";
+  body.innerHTML = "";
+
+  // 현재 계정 카드
+  const card = document.createElement("div");
+  card.className = "settings-card";
+  if (!a.loggedIn) {
+    card.innerHTML = '<div class="settings-card-label">현재 계정</div><div class="settings-warn">로그인되어 있지 않습니다. 아래에서 구독 계정으로 로그인하세요.</div>';
+  } else {
+    card.innerHTML =
+      '<div class="settings-card-label">현재 로그인 계정</div>' +
+      `<div class="settings-email">${(a.email || "(이메일 없음)").replace(/</g, "&lt;")}</div>` +
+      `<div class="settings-sub">${isSub ? "구독" : "⚠️ 구독 아님"}${a.subscriptionType ? " · " + a.subscriptionType : ""}${a.orgName ? " · " + String(a.orgName).replace(/</g, "&lt;").slice(0, 40) : ""}</div>` +
+      (isSub ? "" : '<div class="settings-warn">API 과금 계정으로 보입니다 — 구독(claude.ai) 계정으로 전환하세요.</div>');
+  }
+  body.appendChild(card);
+
+  // 전환 안내
+  const note = document.createElement("p");
+  note.className = "settings-note muted";
+  note.innerHTML = "계정 전환은 <b>다시 로그인</b>입니다(키체인은 한 계정만 저장 — 기존 계정은 로그아웃). " +
+    "로그인 창은 <b>이 앱이 실행 중인 컴퓨터(서버 Mac) 화면</b>에 열립니다 — 폰·다른 기기로 접속 중이어도 그 Mac에서 승인해야 합니다.";
+  body.appendChild(note);
+
+  // 저장된 바로가기
+  if (accounts.length) {
+    const list = document.createElement("div");
+    list.className = "settings-accts";
+    accounts.forEach((ac) => {
+      const row = document.createElement("div");
+      row.className = "settings-acct";
+      const isCur = a.email && ac.email === a.email;
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "settings-acct-go";
+      go.innerHTML = `<b>${(ac.label || ac.email).replace(/</g, "&lt;")}</b><span class="muted">${ac.email.replace(/</g, "&lt;")}</span>`;
+      go.disabled = isCur;
+      go.title = isCur ? "현재 이 계정입니다" : `${ac.email}로 전환`;
+      go.addEventListener("click", () => startSwitch(ov, ac.email, a.email));
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "settings-acct-del";
+      del.textContent = "✕";
+      del.title = "바로가기 삭제";
+      del.addEventListener("click", async () => {
+        await fetch(`${API_BASE}/settings/accounts/${ac.id}`, { method: "DELETE" });
+        renderSettings(ov, await fetchSettings());
+      });
+      row.append(go, del);
+      if (isCur) row.classList.add("on");
+      list.appendChild(row);
+    });
+    body.appendChild(list);
+  }
+
+  // 이메일 입력 + 전환/저장
+  const form = document.createElement("div");
+  form.className = "settings-switch";
+  form.innerHTML =
+    '<input type="email" class="settings-input" placeholder="전환할 계정 이메일 (선택 — 로그인 페이지에 미리 채움)" autocomplete="off" />' +
+    '<div class="settings-btns">' +
+    '<button type="button" class="rtool settings-do">🔄 이 계정으로 전환 (다시 로그인)</button>' +
+    '<button type="button" class="rtool settings-save">➕ 바로가기 저장</button>' +
+    '</div>';
+  const input = form.querySelector(".settings-input");
+  form.querySelector(".settings-do").addEventListener("click", () => startSwitch(ov, input.value.trim(), a.email));
+  form.querySelector(".settings-save").addEventListener("click", async () => {
+    const email = input.value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return showError("바로가기로 저장할 유효한 이메일을 입력하세요.");
+    await fetch(`${API_BASE}/settings/accounts`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) });
+    input.value = "";
+    renderSettings(ov, await fetchSettings());
+  });
+  body.appendChild(form);
+}
+async function startSwitch(ov, targetEmail, prevEmail) {
+  const body = ov.querySelector(".settings-body");
+  // 전환 진행 오버레이(닫기 차단)
+  const poll = document.createElement("div");
+  poll.className = "settings-polling";
+  poll.innerHTML =
+    '<div class="settings-spin"></div>' +
+    '<div class="settings-poll-title">브라우저에서 로그인을 승인해 주세요</div>' +
+    '<div class="settings-poll-note muted">로그인 창은 <b>이 앱이 도는 컴퓨터(서버 Mac) 화면</b>에 열립니다.<br>' +
+    (targetEmail ? `대상: ${targetEmail.replace(/</g, "&lt;")}<br>` : "") +
+    '승인이 끝나면 자동으로 새 계정이 반영됩니다.</div>' +
+    '<button type="button" class="rtool settings-poll-cancel">취소</button>';
+  body.appendChild(poll);
+  poll.querySelector(".settings-poll-cancel").addEventListener("click", async () => {
+    stopSettingsPoll();
+    try { renderSettings(ov, await fetchSettings()); } catch {}
+  });
+
+  try {
+    const r = await fetch(`${API_BASE}/settings/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: targetEmail || "" }) });
+    if (!r.ok) throw new Error(`로그인 시작 실패 (HTTP ${r.status})`);
+  } catch (e) {
+    poll.querySelector(".settings-poll-title").textContent = "⚠️ " + e.message;
+    return;
+  }
+
+  // 완료 감지: email이 이전과 달라지거나 목표 이메일과 같아지면 완료 (~3분 타임아웃)
+  const t0 = Date.now();
+  stopSettingsPoll();
+  _settingsPoll = setInterval(async () => {
+    if (Date.now() - t0 > 180000) {
+      stopSettingsPoll();
+      poll.querySelector(".settings-poll-title").textContent = "시간이 초과됐어요 — 승인 창을 확인하거나 다시 시도하세요.";
+      poll.querySelector(".settings-poll-cancel").textContent = "닫기";
+      return;
+    }
+    let s;
+    try { s = await fetchSettings(); } catch { return; }
+    const cur = s.auth && s.auth.email;
+    const done = s.auth && s.auth.loggedIn && cur &&
+      ((targetEmail && cur.toLowerCase() === targetEmail.toLowerCase()) || (prevEmail && cur !== prevEmail) || (!prevEmail));
+    if (done) {
+      stopSettingsPoll();
+      renderSettings(ov, s);
+      hideError();
+    }
+  }, 2000);
+}
+document.getElementById("settings-btn").addEventListener("click", openSettings);
+
 // ── 히스토리 검색 필터 (제목·요약 부분일치) ──
 let historyFilter = "";
 const historySearch = document.getElementById("history-search");
@@ -270,12 +430,13 @@ async function analyzeFile(file) {
     if (!mode) { fileInput.value = ""; return; } // 취소
   }
   ensureNotifyPermission(); // 모드 선택 제스처 직후 — 완료 데스크톱 알림 권한
-  await runUpload(file, mode);
+  await runUploadResumable(file, mode);
 }
 
 // 업로드→SSE→렌더 코어 (단일/일괄 큐 공용). label: 큐 진행 표시("(2/5) 제목").
 // 반환: { ok, error?, aborted? } — 큐가 이어갈지/멈출지 판단하는 데 쓴다.
 async function runUpload(file, mode, label) {
+  clearResume(); // 새 분석 시작 = 대기 중이던 자동 재개 예약 취소(수동 조작 우선)
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
   setActiveAnalysis(label || file.name.replace(/\.pdf$/i, ""));
@@ -307,6 +468,8 @@ async function runUpload(file, mode, label) {
     return { ok: true };
   } catch (e) {
     if (e.name === "AbortError") { loadHistory(); return { ok: false, aborted: true }; } // 사용자가 취소
+    // 세션 한도: 호출부(단일/큐)가 리셋 후 재개를 예약하도록 표식만 얹어 반환(빨간 에러는 표시 안 함)
+    if (e.limit) return { ok: false, limit: e.limit, error: e.message };
     showError(e.message);
     return { ok: false, error: e.message };
   } finally {
@@ -321,6 +484,15 @@ async function runUpload(file, mode, label) {
   }
 }
 
+// 단일 업로드 + 세션 한도 시 자동 재개(리셋 후 스스로 다시 시도). analyzeFile이 사용.
+async function runUploadResumable(file, mode, label) {
+  const r = await runUpload(file, mode, label);
+  if (r && r.limit) {
+    scheduleResume(r.limit, () => runUploadResumable(file, mode, label), file.name.replace(/\.pdf$/i, ""));
+  }
+  return r;
+}
+
 // ── 여러 논문 일괄(큐) 분석 — 모드 한 번 선택 후 순차 진행, 오류는 건너뛰고 계속 ──
 async function analyzeQueue(files) {
   const pdfs = [...files].filter((f) => f.name.toLowerCase().endsWith(".pdf"));
@@ -330,19 +502,23 @@ async function analyzeQueue(files) {
   const mode = await showModeDialog(`${pdfs.length}편 일괄 분석`, null);
   if (!mode) { fileInput.value = ""; return; }
   ensureNotifyPermission();
-  const failures = [];
-  for (let i = 0; i < pdfs.length; i++) {
+  runQueueFrom(pdfs, 0, mode, []);
+}
+
+// 큐를 start 인덱스부터 진행. 세션 한도에 걸리면 남은 편(현재 편 포함)을 리셋 후 자동 재개.
+async function runQueueFrom(pdfs, start, mode, failures) {
+  for (let i = start; i < pdfs.length; i++) {
     const f = pdfs[i];
     const r = await runUpload(f, mode, `(${i + 1}/${pdfs.length}) ${f.name.replace(/\.pdf$/i, "")}`);
-    if (r.aborted) break; // 취소 = 큐 전체 중단
+    if (r.aborted) return; // 취소 = 큐 전체 중단
+    // 구독 세션 한도 — 남은 편을 지금 돌려봐야 전부 실패하므로 리셋 시각에 이 지점부터 자동 재개
+    if (r.limit) {
+      scheduleResume(r.limit, () => runQueueFrom(pdfs, i, mode, failures), `일괄 분석 — 남은 ${pdfs.length - i}편`);
+      return;
+    }
     if (!r.ok) {
       failures.push(f.name);
       appendLoadingLog(`✗ ${f.name}: ${(r.error || "실패").slice(0, 80)}`);
-      // 구독 세션 한도 도달 — 남은 파일을 돌려봐야 전부 실패하므로 멈춘다
-      if (/한도|session limit|429/i.test(r.error || "")) {
-        showError(`구독 세션 한도에 도달했습니다 — 남은 ${pdfs.length - i - 1}편은 한도 리셋 후 다시 올려 주세요. (실패: ${failures.join(", ")})`);
-        return;
-      }
     }
   }
   if (failures.length) showError(`일괄 분석 완료 — ${failures.length}편 실패: ${failures.join(", ")}`);
@@ -543,6 +719,69 @@ function notifyDone(title, ok = true) {
   } catch {}
 }
 
+// ── 세션 한도 자동 재개 ─────────────────────────────────────────────────
+// 구독 사용량 한도에 걸리면 서버가 보낸 리셋 시각까지 기다렸다 자동으로 다시 분석한다.
+// 클라이언트 구동(탭이 열려 있어야 함) — "밤에 여러 편 걸어두고 자기"를 지원.
+const _resume = { timer: null, fireAt: 0, fn: null };
+function fmtRemain(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+function clearResume() {
+  if (_resume.timer) clearInterval(_resume.timer);
+  _resume.timer = null;
+  _resume.fn = null;
+  document.getElementById("limit-banner").classList.add("hidden");
+}
+function scheduleResume(info, resumeFn, contextLabel) {
+  clearResume();
+  const RESET_BUFFER = 60 * 1000;      // 리셋 직후 여유 60초 (경계에서 재실패 방지)
+  const UNKNOWN_WAIT = 20 * 60 * 1000; // 리셋 시각 미상이면 20분 후 재시도
+  _resume.fireAt = info && info.resetAt ? info.resetAt + RESET_BUFFER : Date.now() + UNKNOWN_WAIT;
+  _resume.fn = resumeFn;
+  const when = info && info.resetText ? `${info.resetText}에 자동 재개` : "잠시 후 자동 재개";
+  document.getElementById("limit-when").textContent = (contextLabel ? contextLabel + " · " : "") + when;
+  document.getElementById("limit-banner").classList.remove("hidden");
+  const tick = () => {
+    const rem = _resume.fireAt - Date.now();
+    if (rem <= 0) { fireResumeNow(); return; }
+    document.getElementById("limit-countdown").textContent = `${fmtRemain(rem)} 후`;
+  };
+  _resume.timer = setInterval(tick, 1000);
+  tick();
+  notifyLimit(when); // 백그라운드 탭이면 데스크톱 알림
+}
+function fireResumeNow() {
+  const fn = _resume.fn;
+  clearResume();
+  if (fn) { notifyResumeStart(); fn(); }
+}
+// limit 에러면 자동 재개를 예약하고 true 반환. 아니면 false(호출부가 기존 에러 처리).
+function maybeScheduleResume(err, resumeFn, contextLabel) {
+  if (err && err.limit) { scheduleResume(err.limit, resumeFn, contextLabel); return true; }
+  return false;
+}
+function notifyLimit(when) {
+  if (!document.hidden) return;
+  try {
+    if ("Notification" in window && Notification.permission === "granted")
+      new Notification("⏳ 구독 한도 도달", { body: `${when} 예정`, tag: "paper-reviewer-limit" });
+  } catch {}
+}
+function notifyResumeStart() {
+  try {
+    if ("Notification" in window && Notification.permission === "granted")
+      new Notification("▶️ 분석 자동 재개", { body: "구독 한도가 풀려 분석을 다시 시작합니다.", tag: "paper-reviewer-limit" });
+  } catch {}
+}
+document.getElementById("limit-resume-now").addEventListener("click", fireResumeNow);
+document.getElementById("limit-cancel").addEventListener("click", () => {
+  clearResume();
+  showError("자동 재개를 취소했습니다. 한도가 풀린 뒤 다시 분석해 주세요.");
+});
+
 // 서버가 보내는 SSE 스트림(progress/partial/result/error)을 소비하고 최종 결과를 반환.
 // partial(텍스트 분석 완료본)이 오면 즉시 렌더해 시각화(~5분)를 기다리지 않고 읽게 한다 —
 // 호출자는 analysisPartialShown을 보고 최종 렌더 시 보던 탭을 유지한다.
@@ -593,6 +832,12 @@ async function consumeAnalysisStream(res) {
         result = ev.data;
         stopEta(true); // 100% 스냅 + "완료!"
         notifyDone(result && result.title, true); // 백그라운드 탭이면 데스크톱 알림
+      } else if (ev.type === "limit") {
+        // 구독 세션 한도 — 리셋 시각을 error에 실어 던지면 호출부가 자동 재개를 예약한다
+        stopEta(false);
+        const err = new Error(ev.error || "구독 세션 한도에 도달했습니다.");
+        err.limit = { resetAt: ev.resetAt || null, resetText: ev.resetText || null };
+        throw err;
       } else if (ev.type === "error") {
         stopEta(false);
         notifyDone(ev.error || "분석 실패", false);
@@ -1340,6 +1585,7 @@ let pdfFitScale = 1; // 패널 폭에 맞춘 기준 스케일
 let pdfBaseW = 0, pdfBaseH = 0; // 1페이지 원본 크기(scale=1)
 let pdfRenderToken = 0; // 논문 전환 시 이전 렌더 무효화
 let pdfRenderSeq = 0; // 각 페이지 렌더 고유 마크 (줌 중 중복 캔버스 방지)
+let pdfCurrentPage = 1; // 스크롤 위치 기준 현재 페이지(헤더 표시·국소 탐색 시작점)
 const pdfPageEls = new Map(); // pageNum -> wrap div
 
 // PDF.js 문서 정리 — 워커가 쥔 이전 논문 데이터·폰트를 해제(논문 전환 시 메모리 누적 방지)
@@ -1359,6 +1605,9 @@ async function loadPdf(hash) {
   pdfDoc = null;
   pdfPageEls.clear();
   pdfScroll.innerHTML = "";
+  pdfCurrentPage = 1;
+  document.getElementById("pdf-page-total").textContent = "–";
+  setCurrentPageLabel("–");
   resetPdfSearch(); // 이전 논문 검색 인덱스·UI 초기화
   const token = ++pdfRenderToken;
   if (!hash) return pdfMissing.classList.remove("hidden");
@@ -1384,6 +1633,9 @@ async function loadPdf(hash) {
     pdfZoom = 1; // 새 논문은 폭 맞춤으로 시작
     pdfScale = pdfFitScale * pdfZoom;
     updatePdfZoomLabel();
+    pdfCurrentPage = 1;
+    document.getElementById("pdf-page-total").textContent = doc.numPages;
+    setCurrentPageLabel(1);
     const phH = baseVp.height * pdfScale;
 
     const lazy = new IntersectionObserver(
@@ -1501,6 +1753,90 @@ pdfScroll.addEventListener("gesturechange", (e) => {
 });
 pdfScroll.addEventListener("gestureend", (e) => { if (_gestureBaseZoom == null) return; e.preventDefault(); _gestureBaseZoom = null; });
 document.getElementById("pdf-zoom-reset").addEventListener("click", () => setPdfZoom(1));
+
+// ── 현재 페이지 표시 + 페이지 점프 ───────────────────────────────────────
+// 헤더의 "N / 전체" 입력에 스크롤 위치 기준 현재 페이지를 표시하고, 숫자 입력→Enter로 이동.
+const pdfPageCurEl = document.getElementById("pdf-page-cur");
+function setCurrentPageLabel(n) {
+  if (typeof n === "number") pdfCurrentPage = n;
+  // 사용자가 입력 중(포커스)일 땐 덮어쓰지 않는다
+  if (pdfPageCurEl && document.activeElement !== pdfPageCurEl) pdfPageCurEl.value = String(n);
+}
+// 스크롤 위치의 '읽는 줄'(상단에서 ~30%)에 걸린 페이지를 이전 현재값 주변에서 국소 탐색
+// (600p 논문에서도 매 스크롤마다 전체 순회하지 않도록).
+function updateCurrentPage() {
+  if (!pdfDoc || !pdfPageEls.size) return;
+  const sr = pdfScroll.getBoundingClientRect();
+  const anchorY = sr.top + Math.min(140, sr.height * 0.3);
+  const topOf = (k) => { const w = pdfPageEls.get(k); return w ? w.getBoundingClientRect().top : Infinity; };
+  let n = Math.min(pdfDoc.numPages, Math.max(1, pdfCurrentPage));
+  while (n > 1 && topOf(n) > anchorY) n--;
+  while (n < pdfDoc.numPages && topOf(n + 1) <= anchorY) n++;
+  setCurrentPageLabel(n);
+}
+let _pdfPageRaf = 0;
+function updateCurrentPageSoon() {
+  if (_pdfPageRaf) return;
+  _pdfPageRaf = requestAnimationFrame(() => { _pdfPageRaf = 0; updateCurrentPage(); });
+}
+function scrollToPdfPage(n) {
+  if (!pdfDoc) return;
+  n = Math.max(1, Math.min(pdfDoc.numPages, Math.round(n)));
+  const wrap = pdfPageEls.get(n);
+  if (!wrap) return;
+  const sr = pdfScroll.getBoundingClientRect();
+  const wr = wrap.getBoundingClientRect();
+  pdfScroll.scrollTop = pdfScroll.scrollTop + (wr.top - sr.top) - 8;
+  setCurrentPageLabel(n);
+}
+pdfScroll.addEventListener("scroll", updateCurrentPageSoon, { passive: true });
+if (pdfPageCurEl) {
+  pdfPageCurEl.addEventListener("focus", () => pdfPageCurEl.select());
+  pdfPageCurEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const v = parseInt(pdfPageCurEl.value, 10);
+      if (Number.isFinite(v)) scrollToPdfPage(v);
+      pdfPageCurEl.blur();
+    } else if (e.key === "Escape") {
+      pdfPageCurEl.blur();
+    }
+  });
+  pdfPageCurEl.addEventListener("blur", () => setCurrentPageLabel(pdfCurrentPage)); // 표시 복원
+}
+
+// ── 더블클릭 줌 토글 ────────────────────────────────────────────────────
+// PDF를 더블클릭하면 폭 맞춤(100%) ↔ 150%를 커서 지점 기준으로 오간다. 핀치 줌과 세트.
+pdfScroll.addEventListener("dblclick", (e) => {
+  if (!pdfDoc || !pdfBaseW) return;
+  e.preventDefault();
+  const target = pdfZoom > 1.05 ? 1 : 1.5;
+  zoomAtPoint(target, e.clientX, e.clientY);
+});
+
+// ── PDF 다크 모드 토글 ──────────────────────────────────────────────────
+// 저장된 설정이 없으면 앱 읽기 테마가 다크일 때 PDF도 다크로 시작.
+let pdfDark = (() => {
+  const saved = localStorage.getItem("pdfDark");
+  if (saved === "1") return true;
+  if (saved === "0") return false;
+  return document.documentElement.dataset.theme === "dark";
+})();
+function applyPdfDark() {
+  pdfScroll.classList.toggle("pdf-dark", pdfDark);
+  const btn = document.getElementById("pdf-dark-toggle");
+  if (btn) {
+    btn.textContent = pdfDark ? "☀️" : "🌙";
+    btn.title = pdfDark ? "PDF 밝게 (기본 배경)" : "PDF 다크 모드 (야간 읽기)";
+    btn.setAttribute("aria-pressed", pdfDark ? "true" : "false");
+  }
+}
+document.getElementById("pdf-dark-toggle").addEventListener("click", () => {
+  pdfDark = !pdfDark;
+  localStorage.setItem("pdfDark", pdfDark ? "1" : "0");
+  applyPdfDark();
+});
+applyPdfDark();
 
 async function renderPdfPage(n, token) {
   const wrap = pdfPageEls.get(n);
@@ -1845,16 +2181,29 @@ document.addEventListener("click", (e) => {
   if (page > 0) jumpToPdfPage(page);
 });
 
-// 사이드바 열기/접기 (localStorage에 상태 저장)
+// 사이드바 열기/접기 — 데스크톱은 폭 접기(localStorage 저장), 모바일(≤820px)은 오버레이 드로어
+let closeMobileSidebar = () => {};
 (() => {
   const app = document.querySelector(".app");
+  const mq = window.matchMedia("(max-width: 820px)");
+  const isMobile = () => mq.matches;
   const setCollapsed = (c) => {
     app.classList.toggle("sb-collapsed", c);
     localStorage.setItem("sbCollapsed", c ? "1" : "0");
   };
-  document.getElementById("sb-collapse").addEventListener("click", () => setCollapsed(true));
-  document.getElementById("sb-open").addEventListener("click", () => setCollapsed(false));
-  setCollapsed(localStorage.getItem("sbCollapsed") === "1");
+  const openMobile = (o) => app.classList.toggle("sb-mobile-open", o);
+  closeMobileSidebar = () => openMobile(false);
+  document.getElementById("sb-collapse").addEventListener("click", () => {
+    if (isMobile()) openMobile(false); else setCollapsed(true);
+  });
+  document.getElementById("sb-open").addEventListener("click", () => {
+    if (isMobile()) openMobile(true); else setCollapsed(false);
+  });
+  document.getElementById("sb-overlay").addEventListener("click", () => openMobile(false));
+  // 데스크톱↔모바일 뷰포트 전환 시 드로어 상태 리셋(모바일 드로어가 데스크톱에 남지 않게)
+  const onMq = () => openMobile(false);
+  if (mq.addEventListener) mq.addEventListener("change", onMq); else if (mq.addListener) mq.addListener(onMq);
+  setCollapsed(localStorage.getItem("sbCollapsed") === "1"); // 데스크톱 저장 상태(모바일에선 시각적으로 무시)
 })();
 
 // 사이드바 "새 논문 분석" → 워크스페이스 닫고 드롭존으로
@@ -1863,6 +2212,8 @@ document.getElementById("sb-new").addEventListener("click", () => {
   if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
   if (sectionRegenAbort) { sectionRegenAbort.abort(); sectionRegenAbort = null; }
   if (chatAbort) chatAbort.abort();
+  clearResume(); // 대기 중이던 세션 한도 자동 재개 예약도 취소
+  closeMobileSidebar(); // 모바일 드로어 닫기
   cancelBtn.classList.add("hidden");
   hideReanalyzeBanner();
   loadingEl.classList.add("hidden");
@@ -1926,7 +2277,10 @@ async function analyzeUrl(url, title) {
   const mode = await showModeDialog(title || url.replace(/^https?:\/\//, ""), null);
   if (!mode) return;
   ensureNotifyPermission();
-
+  return runAnalyzeUrl(url, title, mode); // 모드 확정 후 코어 실행(자동 재개 시 재프롬프트 없이 재사용)
+}
+async function runAnalyzeUrl(url, title, mode) {
+  clearResume(); // 새 분석 시작 = 대기 중이던 자동 재개 예약 취소
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
   setActiveAnalysis(title || "arXiv 논문");
@@ -1956,7 +2310,10 @@ async function analyzeUrl(url, title) {
     }
     loadHistory();
   } catch (e) {
-    if (e.name !== "AbortError") showError(e.message);
+    // 세션 한도면 리셋 후 자동 재개(모드 유지), 아니면 일반 에러
+    if (!maybeScheduleResume(e, () => runAnalyzeUrl(url, title, mode), title || "arXiv 논문")) {
+      if (e.name !== "AbortError") showError(e.message);
+    }
     workspaceEl.classList.toggle("hidden", !currentHash);
   } finally {
     if (endCancellable(ac)) {
@@ -5366,7 +5723,10 @@ async function reanalyzePaper(hash, title, opts = {}) {
     loadHistory();
     if (!inline && !analysisPartialShown) window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (err) {
-    if (err.name !== "AbortError") showError(err.message); // 취소는 조용히
+    // 세션 한도면 리셋 후 이 재분석을 자동 재개, 아니면 일반 에러 표시(취소는 조용히)
+    if (!maybeScheduleResume(err, () => reanalyzePaper(hash, title, opts), title || "재분석")) {
+      if (err.name !== "AbortError") showError(err.message);
+    }
   } finally {
     // 새 흐름으로 대체됐으면(두 번째 재분석 등) UI 정리를 건너뛴다 — 새 흐름의 배너/표시 유지
     if (endCancellable(ac)) {
@@ -5391,6 +5751,7 @@ document.getElementById("tool-upgrade").addEventListener("click", upgradeToFull)
 
 async function openHistory(hash) {
   hideError();
+  closeMobileSidebar(); // 모바일: 히스토리에서 논문 선택 시 드로어 닫기
   // 저장된 결과 열람은 취소 대상이 아니다. 진행 중이던 분석이 있으면 취소하고(사용자가 다른 글로 이동),
   // 취소 버튼은 숨긴다 — 이 fetch는 취소 버튼이 제어하지 않으므로 엉뚱한 중단을 막는다.
   if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
