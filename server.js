@@ -29,6 +29,7 @@ const { PDFDocument } = require("pdf-lib");
 // ---------------------------------------------------------------------------
 const MAX_PDF_BYTES = 23 * 1024 * 1024;
 const MAX_PDF_PAGES = 600;
+const HISTORY_LIST_LIMIT = 500; // 히스토리 목록 상한(메타만이라 가벼움). 근접 시 경고 로그.
 
 const MODEL = process.env.MODEL || "claude-opus-4-8";
 const PORT = process.env.PORT || 3000;
@@ -94,16 +95,52 @@ fs.mkdirSync(PDF_DIR, { recursive: true });
 // 그림 해설용으로 잘라낸 그림 이미지 캐시 (poppler pdftoppm으로 페이지 영역 크롭)
 const CROP_DIR = path.join(PDF_DIR, "crops");
 fs.mkdirSync(CROP_DIR, { recursive: true });
-// 시작 시 30일 넘은 크롭 청소 — 보정 로직 버전(v*)이 바뀔 때마다 옛 키의 파일이 다시는 안 읽히므로
-// 그대로 두면 무한 증가한다. 지워져도 요청 시 poppler가 즉시 재생성하므로 안전.
-fs.promises.readdir(CROP_DIR).then(async (files) => {
-  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
-  for (const f of files) {
-    const p = path.join(CROP_DIR, f);
-    const st = await fs.promises.stat(p).catch(() => null);
-    if (st && st.mtimeMs < cutoff) fs.promises.rm(p, { force: true }).catch(() => {});
-  }
-}).catch(() => {});
+
+// 캐시 디렉터리 정리 (재생성 가능한 파생물 전용) — ① maxAgeDays 초과 파일 삭제
+// ② 그러고도 총량이 maxBytes를 넘으면 mtime 오래된 순으로 상한 아래까지 삭제(LRU).
+// 크롭·시각화 산출물은 지워져도 요청/재분석 시 다시 만들어지므로 안전.
+// 보정 로직 버전(v9→v12 등)이 바뀌면 옛 키 파일은 30일 전이어도 다시는 안 읽혀 쌓이므로
+// 나이 기준만으로는 부족 — 크기 상한이 실질적 방어선이다.
+async function pruneCacheDir(dir, maxAgeDays, maxBytes) {
+  try {
+    const files = await fs.promises.readdir(dir);
+    const cutoff = Date.now() - maxAgeDays * 24 * 3600 * 1000;
+    const kept = [];
+    for (const f of files) {
+      const p = path.join(dir, f);
+      const st = await fs.promises.stat(p).catch(() => null);
+      if (!st || !st.isFile()) continue;
+      if (st.mtimeMs < cutoff) { await fs.promises.rm(p, { force: true }).catch(() => {}); continue; }
+      kept.push({ p, mtime: st.mtimeMs, size: st.size });
+    }
+    let total = kept.reduce((s, x) => s + x.size, 0);
+    if (total > maxBytes) {
+      kept.sort((a, b) => a.mtime - b.mtime); // 오래된 것부터
+      for (const x of kept) {
+        if (total <= maxBytes) break;
+        await fs.promises.rm(x.p, { force: true }).catch(() => {});
+        total -= x.size;
+      }
+      console.log(`[캐시 정리] ${path.basename(dir)}: 상한 ${(maxBytes / 1048576) | 0}MB 초과분 삭제 → ${(total / 1048576).toFixed(1)}MB`);
+    }
+  } catch (e) { /* 정리 실패는 무해 */ }
+}
+pruneCacheDir(CROP_DIR, 30, 120 * 1024 * 1024); // 크롭 캐시 상한 120MB
+
+// launchd 로그(무한 append)가 지나치게 커지면 시작 시 꼬리만 남긴다. launchd가 append 모드로
+// 열어 새 로그는 파일 끝에 붙으므로 앞부분을 잘라도 안전. 실패해도 무해(try/catch).
+function rotateLogIfHuge(logPath, maxBytes, keepBytes) {
+  try {
+    const st = fs.statSync(logPath);
+    if (st.size <= maxBytes) return;
+    const fd = fs.openSync(logPath, "r");
+    const buf = Buffer.alloc(keepBytes);
+    fs.readSync(fd, buf, 0, keepBytes, st.size - keepBytes);
+    fs.closeSync(fd);
+    fs.writeFileSync(logPath, `[로그 회전 — 이전 ${(st.size / 1048576).toFixed(1)}MB 중 뒤 ${(keepBytes / 1048576) | 0}MB만 보존]\n` + buf.toString("utf8"));
+  } catch (e) { /* 로그 없거나 실패 — 무해 */ }
+}
+rotateLogIfHuge(path.join(process.env.HOME || "", "Library/Logs/paper-reviewer.log"), 15 * 1024 * 1024, 3 * 1024 * 1024);
 
 // ---------------------------------------------------------------------------
 // 저장소: Firebase 서비스 계정 키가 있으면 Firestore, 없으면 메모리 캐시 폴백
@@ -213,7 +250,12 @@ if (fs.existsSync(serviceAccountPath)) {
       await notes.doc(hash).delete().catch(() => {});
     },
     async list() {
-      const snap = await analyses.orderBy("createdAt", "desc").limit(100).get();
+      // 상한 도달 시 오래된 논문이 조용히 목록에서 사라지는 것을 막는다 — 상한을 넉넉히 두되
+      // 근접하면 경고 로그(상한 상향/페이지네이션 시점 판단용). 목록은 메타만이라 500건도 가볍다.
+      const snap = await analyses.orderBy("createdAt", "desc").limit(HISTORY_LIST_LIMIT).get();
+      if (snap.size >= HISTORY_LIST_LIMIT) {
+        console.warn(`[히스토리] 목록이 상한(${HISTORY_LIST_LIMIT})에 도달 — 더 오래된 논문은 목록에서 누락됩니다. 상한 상향 또는 페이지네이션 필요.`);
+      }
       return snap.docs.map((d) => {
         const { hash, title, one_liner, venue, year, createdAt, analysis_mode } = d.data();
         return {
@@ -316,6 +358,7 @@ const METHOD_VIZ_HTML_GEN = fs.readFileSync(path.join(__dirname, "prompts", "met
 // 생성 HTML 산출 디렉터리(자가검증·디버깅용으로 파일 보존; .gitignore 대상).
 const MVIZ_GEN_DIR = path.join(__dirname, ".mviz_gen");
 try { fs.mkdirSync(MVIZ_GEN_DIR, { recursive: true }); } catch (e) {}
+pruneCacheDir(MVIZ_GEN_DIR, 30, 30 * 1024 * 1024); // 시각화 산출물 캐시 상한 30MB
 
 // ── ETA(예상 남은 시간) 예측 통계 ─────────────────────────────────────────────
 // 성공한 분석의 실측 소요 {pages, analysis_ms, viz_ms}를 롤링 보관해 다음 실행의 ETA를
@@ -332,13 +375,23 @@ const ETA_SEED = {
 function readDurations() {
   try { return JSON.parse(fs.readFileSync(STATS_FILE, "utf8")); } catch (e) { return []; }
 }
+// 통계 파일 원자적 쓰기 — 임시파일에 쓰고 rename(같은 디렉터리 내 rename은 원자적)이라
+// 동시 재분석이 read-modify-write로 서로 덮어쓰는 레이스에서도 파일이 깨지지 않는다.
+// (JS 이벤트 루프상 append 자체는 단일 스레드로 순차 실행되지만, 각 append가 자기 시점의
+//  스냅샷으로 전체 파일을 재기록하므로 마지막 승자만 남는 lost-update는 가능 — 여기선
+//  통계라 무해하되, 최소한 '깨진 JSON'은 원자적 rename으로 원천 차단한다.)
+function writeJsonAtomic(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data));
+  fs.renameSync(tmp, file);
+}
 function appendDuration(rec) {
   try {
     const arr = readDurations();
     arr.push(rec);
     while (arr.length > STATS_MAX) arr.shift();
-    fs.mkdirSync(path.dirname(STATS_FILE), { recursive: true });
-    fs.writeFileSync(STATS_FILE, JSON.stringify(arr));
+    writeJsonAtomic(STATS_FILE, arr);
   } catch (e) { /* 통계 실패는 분석에 영향 없음 */ }
 }
 function median(xs) {
@@ -1091,8 +1144,7 @@ function appendSectionDuration(section, ms) {
     arr.push(Math.round(ms));
     while (arr.length > 10) arr.shift();
     all[section] = arr;
-    fs.mkdirSync(path.dirname(SECTION_STATS_FILE), { recursive: true });
-    fs.writeFileSync(SECTION_STATS_FILE, JSON.stringify(all));
+    writeJsonAtomic(SECTION_STATS_FILE, all); // 원자적 쓰기 — 깨진 JSON 차단
   } catch (e) { /* 통계 실패는 무해 */ }
 }
 function predictSectionMs(section) {
@@ -1202,6 +1254,34 @@ app.get("/api/figure/:hash", async (req, res) => {
   }
 });
 
+// 예산(바이트) 안에서 '항상 유효한 JSON' 컨텍스트를 만든다. 기존 JSON.stringify(...).slice(N)은
+// 문자열 중간을 잘라 깨진 JSON을 모델에 넣었다 — 여기선 문자열/배열을 캡하고, 그래도 초과하면
+// 낮은 우선순위 키를 통째 제거하고, 최후엔 문자열 캡을 더 조여 유효성을 유지한다.
+function capValue(v, strMax, arrMax) {
+  if (typeof v === "string") return v.length > strMax ? v.slice(0, strMax) + "…" : v;
+  if (Array.isArray(v)) return v.slice(0, arrMax).map((x) => capValue(x, strMax, arrMax));
+  if (v && typeof v === "object") { const o = {}; for (const k in v) o[k] = capValue(v[k], strMax, arrMax); return o; }
+  return v;
+}
+function jsonContextUnderBudget(obj, budget, dropOrder = []) {
+  const raw = JSON.stringify(obj);
+  if (raw.length <= budget) return raw; // 예산 이내면 원형 보존(불필요한 캡 방지)
+  let capped = capValue(obj, 2200, 30);
+  let s = JSON.stringify(capped);
+  let i = 0;
+  while (s.length > budget && i < dropOrder.length) { // 낮은 우선순위 키부터 제거
+    delete capped[dropOrder[i++]];
+    s = JSON.stringify(capped);
+  }
+  let strMax = 1600;
+  while (s.length > budget && strMax >= 200) { // 그래도 초과면 문자열 캡을 조인다
+    capped = capValue(capped, strMax, 18);
+    s = JSON.stringify(capped);
+    strMax -= 400;
+  }
+  return s; // 항상 유효 JSON (예산 초과 여지는 극단적 입력에서만, 그마저 유효성은 보장)
+}
+
 // --- POST /api/ask/:hash — 분석된 논문에 대한 후속 질문 -------------------------
 app.post("/api/ask/:hash", async (req, res) => {
   const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
@@ -1218,7 +1298,7 @@ app.post("/api/ask/:hash", async (req, res) => {
 
     const a = record.analysis;
     const simpleRec = (record.analysis_mode || a.analysis_mode || "full") === "simple";
-    const context = JSON.stringify({
+    const context = jsonContextUnderBudget({
       title: a.title,
       one_liner: a.one_liner,
       analysis_mode: simpleRec ? "simple(간단 분석 — 실험·그림·세미나 정리 섹션 없음)" : "full",
@@ -1228,7 +1308,7 @@ app.post("/api/ask/:hash", async (req, res) => {
       method_steps: a.method_steps,
       experiments: a.experiments,
       equations: (a.equations || []).map((e) => ({ latex: e.latex, explanation: e.explanation })),
-    }).slice(0, 14000);
+    }, 14000, ["experiments", "background", "contributions", "equations"]); // 초과 시 이 순서로 통째 제거
     const histText = (history || [])
       .slice(-6)
       .map((h) => `Q: ${h.q}\nA: ${h.a}`)
@@ -1391,7 +1471,8 @@ function analysisDigest(a, { withSeminar = false } = {}) {
       : null,
   };
   if (withSeminar) d.seminar = a.seminar;
-  return JSON.stringify(d).slice(0, withSeminar ? 15000 : 9000);
+  // 유효 JSON 유지(중간 절단 금지). 초과 시 seminar → studies가 담긴 experiments 순으로 제거.
+  return jsonContextUnderBudget(d, withSeminar ? 15000 : 9000, ["seminar", "experiments", "contributions"]);
 }
 
 // --- POST /api/compare — 분석된 두 논문 비교 (B1) ------------------------------
