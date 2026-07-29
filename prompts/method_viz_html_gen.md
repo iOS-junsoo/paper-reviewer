@@ -27,6 +27,9 @@
 
 3. **설계 기반 추출 — overview figure 위상 우선 (§6.1·§6.2, 정직성 §7)**:
    `pdfs/<hash>.pdf`에서 아래를 추출한다.
+   - **범위: 본문까지만.** 부록(Appendix)·보충자료(Supplementary)의 그림·표·수치는 쓰지 않는다
+     (예: Figure A1, Table S2). 본문에 근거가 없으면 그 값은 `(예시)`로 표기하되, 부록에서
+     끌어오지 마라 — 부록은 사용자가 필요할 때 따로 분석한다.
    - **(a) 실제 수치**: 차원·층수·하이퍼파라미터 기본값·스케줄 상수·데이터셋 규모·대표 결과. Read로 읽어라.
    - **(b) overview figure 위상 = 설계의 뼈대 (§6.2)**: Figure 캡션을 전부 뽑아
      (`Overview`/`pipeline`/`framework`/`architecture`/`our approach`/`our method` 든 캡션 우선)

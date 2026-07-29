@@ -31,7 +31,7 @@ const MAX_PDF_BYTES = 23 * 1024 * 1024;
 const MAX_PDF_PAGES = 600;
 const HISTORY_LIST_LIMIT = 500; // 히스토리 목록 상한(메타만이라 가벼움). 근접 시 경고 로그.
 
-const MODEL = process.env.MODEL || "claude-opus-4-8";
+const MODEL = process.env.MODEL || "claude-opus-5";
 const PORT = process.env.PORT || 3000;
 
 // 인증(토큰) 만료·실패 감지 — Agent SDK/CLI가 던지는 메시지나 결과 텍스트에서
@@ -562,7 +562,8 @@ ${METHOD_VIZ_V4}
 2. 설명문은 한국어로 쓰되, ==기법·모델·구성요소 같은 고유명사는 영어 원어를 그대로 쓰고 괄호에 한국어 번역(뜻)을 붙이세요==. 예: "**Scaled Dot-Product Attention**(스케일링된 내적 어텐션)", "**residual connection**(잔차 연결)". 같은 용어가 반복되면 번역 괄호는 처음 한 번만. 논문 내부 인용 키(예: hochreiter1997)나 참조 번호([1], [2])는 절대 쓰지 마세요.
 2-1. 비유(analogy)는 전문 용어 없이, 읽는 즉시 장면이 그려지는 일상 상황(도서관, 회의, 요리, 택배 등)으로 쓰세요.
 3. latex 문자열 안의 백슬래시는 JSON 규칙에 맞게 이스케이프하세요 (예: "\\\\frac{a}{b}").
-4. 정확하고 구체적으로 쓰되 불필요한 수사는 빼세요. 강조 마크업은 위 두 종류만 사용하고 다른 마크다운 문법은 쓰지 마세요.`;
+4. 정확하고 구체적으로 쓰되 불필요한 수사는 빼세요. 강조 마크업은 위 두 종류만 사용하고 다른 마크다운 문법은 쓰지 마세요.
+5. ==분석 범위는 논문 본문까지입니다 — 부록(Appendix)·보충자료(Supplementary/Supplemental Material)는 분석하지 마세요.== 본문 마지막 절(대개 Conclusion/Discussion) 뒤에 "Appendix"·"Supplementary"·"부록" 제목이 나오면 그 이후 내용은 ==어떤 필드에도 넣지 마세요== — seminar 절 목록, figure_guide의 그림·표(예: Figure A1, Table S2), equations, experiments.studies 모두 본문 것만 담습니다. (사용자가 필요하면 나중에 부록만 따로 분석하는 기능을 씁니다.) 단 References/참고문헌 목록 자체는 원래 분석 대상이 아닙니다.`;
 
 // ── 최적화 프롬프트 (검증 완료: 결과 불변, 토큰 절감) ──────────────────────────
 // SYSTEM_PROMPT_CORE: 방법론 시각화(method_visualization)는 별도 HTML 파이프라인이
@@ -628,13 +629,18 @@ function logUsage(tag, msg) {
 
 async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac, mode = "full") {
   const simple = mode === "simple";
+  // 읽기 범위: 본문까지만(부록·보충자료 제외 — 시스템 프롬프트 규칙 5). 부록에서 읽기를
+  // 멈추므로 토큰도 아낀다. 부록이 필요해지면 사용자가 나중에 /api/appendix로 따로 분석한다.
+  const readRule =
+    `Read 도구로 논문을 앞에서부터 읽으세요. 10페이지가 넘으면 pages 파라미터로 최대 20페이지씩 나눠 읽습니다 (예: "1-20", "21-40", ...).\n` +
+    `==단, 본문까지만 읽으세요== — 본문 마지막 절(Conclusion/Discussion) 다음에 "Appendix"·"Supplementary"·"부록" 제목이 나오면 그 지점에서 읽기를 멈추고 더 읽지 마세요(참고문헌 목록도 읽을 필요 없음). 부록 여부가 불분명하면 그대로 끝까지 읽되 분석에는 본문 내용만 씁니다.\n`;
   const prompt = simple
     ? `${pdfPath} 경로에 ${pageCount}페이지짜리 논문 PDF가 있습니다.\n` +
-      `Read 도구로 논문 전체를 읽으세요. 10페이지가 넘으면 pages 파라미터로 최대 20페이지씩 나눠 끝까지 읽어야 합니다 (예: "1-20", "21-40", ...).\n` +
-      `전부 읽은 뒤 시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요. (간단 분석 — 웹 검색 없이 논문만 근거로)`
+      readRule +
+      `읽은 뒤 시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요. (간단 분석 — 웹 검색 없이 논문만 근거로)`
     : `${pdfPath} 경로에 ${pageCount}페이지짜리 논문 PDF가 있습니다.\n` +
-      `Read 도구로 논문 전체를 읽으세요. 10페이지가 넘으므로 pages 파라미터로 최대 20페이지씩 나눠 끝까지 읽어야 합니다 (예: "1-20", "21-40", ...).\n` +
-      `전부 읽은 뒤 inner_viz 제작 전에 WebSearch로 이 논문의 시각화·해설 자료를 1~2회 검색해 참고하고,\n` +
+      readRule +
+      `읽은 뒤 inner_viz 제작 전에 WebSearch로 이 논문의 시각화·해설 자료를 1~2회 검색해 참고하고,\n` +
       `시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요.`;
 
   let resultText = null;
@@ -1707,6 +1713,167 @@ app.post("/api/method-deep/:hash", async (req, res) => {
   } catch (e) {
     if (ac.signal.aborted) return;
     genErrorReply(res, e, "method-deep");
+  } finally {
+    inFlight.delete(inflightKey);
+  }
+});
+
+// --- POST /api/appendix/:hash — 부록(Appendix) 온디맨드 분석 ---------------------
+// 초기 분석은 본문까지만 다룬다(SYSTEM_PROMPT 규칙 5). 부록이 필요해지면 이 라우트로 그
+// 부분만 따로 읽어 정리하고 analysis.appendix에 영구 저장한다(1회 생성 후 캐시).
+// 부록 시작 페이지는 서버가 pdftotext로 먼저 찾아 넘겨 — 모델이 앞부분을 다시 읽지 않게 한다.
+function pdfPagesText(pdfPath) {
+  return new Promise((resolve) => {
+    execFile("pdftotext", [pdfPath, "-"], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) =>
+      resolve(err ? null : String(stdout).split("\f"))
+    );
+  });
+}
+// 부록 시작 페이지(1-indexed) 또는 null. 두 신호를 순서대로 본다.
+//  1순위 — 명시적 "Appendix"/"Supplementary"/"부록" 헤딩. 짧은 줄만 인정해 본문의
+//    "see Appendix A for details" 인용을 배제하고, 공백을 지워 비교해 small-caps 추출
+//    아티팩트("A PPENDIX")도 잡는다.
+//  2순위 — 참고문헌 뒤에 이어지는 내용(ICLR/NeurIPS식으로 부록을 A·B·C 절로만 표기해
+//    "Appendix"라는 단어가 아예 없는 논문. 예: ViT). References 헤딩을 찾고, 인용 목록처럼
+//    보이지 않는 첫 페이지를 부록 시작으로 본다.
+const _normHeading = (s) => s.replace(/\s+/g, "").toLowerCase();
+const _headingLines = (pageText) =>
+  String(pageText).split("\n").map((l) => l.trim()).filter((t) => t.length > 0 && t.length < 60);
+function _looksLikeRefList(pageText) {
+  const lines = String(pageText).split("\n").filter((l) => l.trim().length > 2);
+  if (lines.length < 5) return false;
+  const cite = lines.filter((l) => /\b(19|20)\d{2}[a-z]?\b/.test(l) || /arxiv|in proceedings|preprint|\bpp\.\s*\d|doi:/i.test(l)).length;
+  return cite / lines.length > 0.3;
+}
+async function findAppendixStartPage(pdfPath) {
+  let pages = await pdfPagesText(pdfPath);
+  if (!pages || pages.length < 3) return null;
+  // pdftotext는 마지막 페이지 뒤에도 \f를 붙여 빈 조각이 남는다 — 그대로 두면 '참고문헌이
+  // 끝까지인 논문'에서 이 빈 조각을 부록 시작으로 오인한다. 뒤쪽 빈 페이지를 잘라낸다.
+  while (pages.length && !String(pages[pages.length - 1]).trim()) pages.pop();
+  if (pages.length < 3) return null;
+  const hasBody = (t) => String(t).replace(/\s/g, "").length >= 200; // 실질 내용이 있는 페이지만 부록 시작 후보
+  const from = Math.floor(pages.length * 0.35); // 앞쪽 목차·인용 오탐 방지
+  for (let i = from; i < pages.length; i++) {
+    if (_headingLines(pages[i]).some((t) => /^(appendix|supplementary|supplemental)/.test(_normHeading(t)) || t.includes("부록"))) {
+      return i + 1;
+    }
+  }
+  let refPage = -1;
+  for (let i = from; i < pages.length; i++) {
+    if (_headingLines(pages[i]).some((t) => /^(references|bibliography|참고문헌)$/.test(_normHeading(t)))) { refPage = i; break; }
+  }
+  if (refPage < 0) return null;
+  for (let i = refPage + 1; i < pages.length; i++) {
+    // 참고문헌이 끝나고 '실질 내용'이 다시 시작되는 페이지 = 부록 시작.
+    // 그림/표만 있는 페이지는 hasBody에 걸리지 않으므로 계속 훑는다.
+    if (!_looksLikeRefList(pages[i]) && hasBody(pages[i])) return i + 1;
+  }
+  return null;
+}
+app.post("/api/appendix/:hash", async (req, res) => {
+  const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+  if (!isValidHash(hash)) return res.status(400).json({ error: "잘못된 hash" });
+  if (hashBusy(hash)) return res.status(409).json({ error: "이 논문은 이미 분석/생성이 진행 중입니다." });
+  const inflightKey = `${hash}:appendix`;
+  inFlight.add(inflightKey);
+  const ac = new AbortController();
+  abortOnDisconnect(res, ac, "부록 분석");
+  try {
+    const record = await store.get(hash);
+    if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
+    const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
+    if (!fs.existsSync(pdfPath)) return res.status(404).json({ error: "저장된 원문 PDF가 없어 부록을 분석할 수 없습니다." });
+    const a = record.analysis || {};
+    const force = !!(req.body && req.body.force);
+    sseInit(res);
+    if (!force && a.appendix && Array.isArray(a.appendix.sections) && a.appendix.sections.length) {
+      sseSend(res, { type: "result", data: a.appendix, cached: true });
+      return res.end();
+    }
+    sseSend(res, { type: "step", msg: "부록 위치를 찾는 중…" });
+    const doc = await PDFDocument.load(await fs.promises.readFile(pdfPath), { updateMetadata: false });
+    const pageCount = doc.getPageCount();
+    const startPage = await findAppendixStartPage(pdfPath);
+    if (!startPage) {
+      // 부록이 없는 논문 — 빈 결과를 저장하지 않고 그대로 알린다(다음에 다시 눌러도 즉시 응답).
+      sseSend(res, { type: "result", data: { generated_at: new Date().toISOString(), sections: [], none: true }, cached: false });
+      return res.end();
+    }
+
+    sseSend(res, { type: "step", msg: `부록 ${startPage}쪽부터 읽는 중…` });
+    const prompt = [
+      `${pdfPath} 경로에 "${a.title || record.title || ""}" 논문 PDF(${pageCount}페이지)가 있습니다.` +
+        ` 이 논문의 ==부록(Appendix)/보충자료만== 정리하려 합니다. 부록은 ${startPage}페이지에서 시작합니다.`,
+      `Read 도구로 ==${startPage}페이지부터 끝까지만== 읽으세요(pages 파라미터, 20페이지씩). 본문(1~${startPage - 1}쪽)은 이미 분석돼 있으니 읽지 마세요.`,
+      `정리 원칙:\n` +
+        `- 부록의 ==실제 소제목 구조를 그대로== 따른다(A.1, B, Supplementary Table 1 …). 제목이 없으면 내용 단위로 나눈다.\n` +
+        `- 각 절마다 ==본문의 무엇을 보완하는지== 한 문장으로 먼저 밝힌다(예: "4.2의 하이퍼파라미터 설정을 상세화").\n` +
+        `- 증명·유도는 결론과 핵심 아이디어를 우선 서술하고, 긴 전개는 요지만. 표·그림은 무엇을 보여주는지와 대표 수치.\n` +
+        `- 수식은 $...$ 없이 유니코드·아래첨자로 쓴다(예: L = Σ ℓ + λ·R). **볼드**/==형광펜== 사용 가능.\n` +
+        `- 문단마다 근거 페이지 칩 [[p숫자|원문 짧은 구절]]을 1개 이상 — 실제 읽은 위치만, 지어내기 금지.\n` +
+        `- 절당 300~900자. 리스트·표·코드펜스 금지. 원문에 없는 내용을 보태지 않는다.`,
+      `최종 출력은 JSON 객체 하나만:\n{"sections":[{"ref":"A.1 부록 소제목(원어)","page":시작페이지,"body":"정리 본문"}]}`,
+    ].join("\n\n");
+
+    let raw = null;
+    for await (const msg of query({
+      prompt,
+      options: {
+        model: MODEL, allowedTools: ["Read"], maxTurns: 30, cwd: PDF_DIR,
+        abortController: ac, includePartialMessages: true,
+      },
+    })) {
+      if (msg.type === "stream_event" && !msg.parent_tool_use_id) {
+        const ev = msg.event;
+        if (ev && ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && ev.delta.text) {
+          sseSend(res, { type: "delta", text: ev.delta.text });
+        }
+      }
+      if (msg.type === "assistant" && msg.message && Array.isArray(msg.message.content)) {
+        for (const b of msg.message.content) {
+          if (b.type === "tool_use" && b.name === "Read") {
+            const pages = (b.input && b.input.pages) || "";
+            sseSend(res, { type: "step", msg: pages ? `📎 부록 ${pages}쪽을 읽는 중…` : "📎 부록을 읽는 중…" });
+          }
+        }
+      }
+      if (msg.type === "result") {
+        logUsage("부록", msg);
+        if (msg.subtype !== "success") {
+          const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
+          const e = new Error(`부록 분석 실패 (${msg.subtype})`);
+          if (isAuthError(detail)) e.code = "AUTH";
+          throw e;
+        }
+        raw = msg.result;
+      }
+    }
+    if (ac.signal.aborted) return;
+    const parsed = parseModelJson(raw);
+    const sections = (Array.isArray(parsed.sections) ? parsed.sections : [])
+      .filter((s) => s && s.body)
+      .map((s) => ({ ref: String(s.ref || "").slice(0, 120), page: Number(s.page) || null, body: String(s.body) }));
+    if (!sections.length) throw new Error("부록 내용을 정리하지 못했습니다.");
+    const data = { generated_at: new Date().toISOString(), start_page: startPage, sections };
+
+    const merged = { ...a, appendix: data };
+    await store.set(hash, {
+      hash,
+      title: merged.title || record.title,
+      one_liner: merged.one_liner || record.one_liner,
+      venue: record.venue ?? null,
+      year: record.year ?? null,
+      analysis_mode: record.analysis_mode || a.analysis_mode || "full",
+      createdAt: record.createdAt,
+      analysis: merged,
+    });
+    console.log(`[부록 분석] ${a.title || record.title}: p${startPage}~ · ${sections.length}개 절`);
+    sseSend(res, { type: "result", data, cached: false });
+    res.end();
+  } catch (e) {
+    if (ac.signal.aborted) return;
+    genErrorReply(res, e, "appendix");
   } finally {
     inFlight.delete(inflightKey);
   }

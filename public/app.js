@@ -2839,6 +2839,138 @@ function renderMethod(data) {
   // 🔬 정밀 강독 — 원문 방법 섹션을 서브섹션 구조 그대로 따라가는 주해식 해설 (온디맨드)
   panel.appendChild(buildMethodDeepBlock(data));
   attachStepDeepLinks(data); // 작업 C: 스테퍼 각 단계 → 강독 해당 절 점프 링크
+  // 📎 부록 — 초기 분석은 본문까지만 다루므로, 필요할 때만 따로 생성한다(온디맨드).
+  // 논문 전체의 부록이지만 '온디맨드 심화 분석'을 한자리에 모으려고 강독 아래에 둔다.
+  panel.appendChild(buildAppendixBlock(data));
+}
+
+// ---------- 부록(Appendix) 온디맨드 분석 ----------
+// 초기 분석(간단·정밀 모두)은 본문까지만 본다. 부록이 필요하면 여기서 생성 → analysis.appendix에
+// 영구 저장되고 다음부터는 바로 렌더된다. 강독(mdeep-*)과 같은 스타일을 재사용한다.
+let appendixBusy = false;
+function buildAppendixBlock(data) {
+  const wrap = document.createElement("section");
+  wrap.className = "mdeep";
+  wrap.id = "appendix-block";
+  const ap = data.appendix;
+
+  const head = document.createElement("div");
+  head.className = "mdeep-head";
+  const title = document.createElement("h3");
+  title.className = "mdeep-title";
+  title.textContent = "📎 부록 (Appendix)";
+  const sub = document.createElement("span");
+  sub.className = "mdeep-sub muted";
+  sub.textContent = "본문 분석에는 포함되지 않는 부분 — 필요할 때만 따로 정리합니다";
+  head.append(title, sub);
+  wrap.appendChild(head);
+
+  if (ap && Array.isArray(ap.sections) && ap.sections.length) {
+    ap.sections.forEach((s) => {
+      const det = document.createElement("details");
+      det.className = "mdeep-sec";
+      const sum = document.createElement("summary");
+      sum.className = "mdeep-ref";
+      sum.textContent = s.ref || "(제목 없음)";
+      if (s.page) {
+        const pg = document.createElement("button");
+        pg.type = "button";
+        pg.className = "mdeep-page";
+        pg.textContent = `p.${s.page} ↗`;
+        pg.title = "원문의 이 부록 절로 이동";
+        pg.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          jumpToPdfPageText(s.page, (s.ref || "").replace(/^[\d.A-Z\s]+/, "").slice(0, 30));
+        });
+        sum.appendChild(pg);
+      }
+      const body = document.createElement("div");
+      body.className = "mdeep-body";
+      renderRich(body, s.body || "");
+      det.append(sum, body);
+      wrap.appendChild(det);
+    });
+    const regen = document.createElement("button");
+    regen.type = "button";
+    regen.className = "rtool mdeep-btn";
+    regen.textContent = "🔄 부록 다시 정리";
+    regen.addEventListener("click", () => generateAppendix(wrap, true));
+    wrap.appendChild(regen);
+  } else if (ap && ap.none) {
+    const p = document.createElement("p");
+    p.className = "muted mdeep-desc";
+    p.textContent = "이 논문에는 부록이 없습니다.";
+    wrap.appendChild(p);
+  } else {
+    const desc = document.createElement("p");
+    desc.className = "muted mdeep-desc";
+    desc.textContent = "부록·보충자료(증명, 추가 실험, 하이퍼파라미터 표 등)를 절 구조대로 정리합니다. 원문에서 부록 부분만 읽어 생성해요.";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rtool mdeep-btn";
+    btn.textContent = "📎 부록 분석하기 (1~3분)";
+    btn.addEventListener("click", () => generateAppendix(wrap, false));
+    wrap.append(desc, btn);
+  }
+  return wrap;
+}
+async function generateAppendix(wrap, force) {
+  if (!currentHash || appendixBusy) return;
+  if (force && !confirm("부록을 다시 정리할까요? (1~3분, 기존 정리를 교체)")) return;
+  appendixBusy = true;
+  const startedHash = currentHash;
+  wrap.querySelectorAll(".mdeep-btn, .mdeep-desc").forEach((el) => el.remove());
+  const stat = document.createElement("p");
+  stat.className = "mdeep-stat";
+  stat.textContent = "⏳ 준비 중…";
+  wrap.appendChild(stat);
+  try {
+    const res = await fetch(`${API_BASE}/api/appendix/${startedHash}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    if (!res.ok) {
+      const d = await safeJson(res);
+      throw new Error((d && d.error) || `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", chars = 0, data = null, lastStep = "생성 중";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (!line) continue;
+        let ev;
+        try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        if (ev.type === "step") { lastStep = ev.msg; stat.textContent = `⏳ ${lastStep}`; }
+        else if (ev.type === "delta") { chars += ev.text.length; stat.textContent = `⏳ ${lastStep} (${chars.toLocaleString()}자 작성)`; }
+        else if (ev.type === "result") data = ev.data;
+        else if (ev.type === "error") throw new Error(ev.error);
+      }
+    }
+    if (!data) throw new Error("서버 연결이 중간에 끊어졌습니다.");
+    if (currentHash !== startedHash) return; // 그 사이 다른 논문으로 이동
+    currentAnalysis.appendix = data;
+    wrap.replaceWith(buildAppendixBlock(currentAnalysis));
+  } catch (e) {
+    stat.textContent = `⚠️ ${e.message}`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "rtool mdeep-btn";
+    retry.textContent = "📎 다시 시도";
+    retry.addEventListener("click", () => { stat.remove(); retry.remove(); generateAppendix(wrap, force); });
+    wrap.appendChild(retry);
+  } finally {
+    appendixBusy = false;
+  }
 }
 
 // ---------- 작업 C: 스테퍼 ↔ 정밀 강독 연동 ----------
