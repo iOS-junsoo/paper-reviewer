@@ -105,15 +105,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 4px 6px 14px;
+  gap: 4px;
+  /* 사이드바 자체 좌우 패딩(14px)이 이미 있어 여기선 좌우를 최소화 —
+     제목+아이콘 3개(설정·테마·접기)가 잘리지 않고 한 줄에 들어가도록 폭을 확보한다. */
+  padding: 4px 2px 14px;
 }
 .sb-brand {
   font-family: var(--serif);
   font-weight: 900;
-  font-size: 1.02rem;
+  font-size: 0.95rem;
   color: var(--ink);
   white-space: nowrap;
+  /* 아이콘 버튼(설정·테마·접기)이 밀려 사이드바 밖으로 나가지 않도록 제목이 먼저 줄어든다.
+     min-width:0이 없으면 flex 항목이 콘텐츠 폭 아래로 못 줄어 오른쪽 버튼이 잘린다. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sb-collapse {
   flex: none;
@@ -122,7 +129,7 @@ body {
   color: var(--ink-faint);
   cursor: pointer;
   font-size: 0.82rem;
-  padding: 4px 7px;
+  padding: 4px 5px;
   border-radius: 6px;
   transition: color 0.12s, background 0.12s;
 }
@@ -2618,14 +2625,16 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 .sb-fm-new { border-top: 1px solid var(--line); margin-top: 2px; color: var(--accent); }
 
 /* ── 사이드바 상단 버튼 (테마 전환) + 히스토리 검색 ───────────────── */
-.sb-top-btns { display: inline-flex; align-items: center; gap: 4px; }
+/* 아이콘 버튼 묶음은 절대 줄어들지 않는다 — 공간이 부족하면 제목(.sb-brand)이 줄어든다 */
+.sb-top-btns { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .sb-iconbtn {
   border: none;
   background: transparent;
   color: var(--ink-soft);
-  font-size: 1rem;
+  font-size: 0.95rem;
   line-height: 1;
-  padding: 4px 6px;
+  flex: none;
+  padding: 4px 3px;
   border-radius: 7px;
   cursor: pointer;
   transition: background 0.15s;
