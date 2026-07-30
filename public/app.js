@@ -430,7 +430,9 @@ async function analyzeFile(file) {
     if (!mode) { fileInput.value = ""; return; } // 취소
   }
   ensureNotifyPermission(); // 모드 선택 제스처 직후 — 완료 데스크톱 알림 권한
-  await runUploadResumable(file, mode);
+  fileInput.value = "";
+  // 진행 중인 분석이 있으면 취소하지 않고 대기열에 붙는다(순서대로 자동 진행)
+  enqueueJobs([{ kind: "file", file, title: file.name.replace(/\.pdf$/i, ""), mode }]);
 }
 
 // 업로드→SSE→렌더 코어 (단일/일괄 큐 공용). label: 큐 진행 표시("(2/5) 제목").
@@ -457,6 +459,11 @@ async function runUpload(file, mode, label) {
       throw new Error(formatApiError(data, res.status));
     }
     const data = await consumeAnalysisStream(res); // SSE: 진행 메시지 → (부분 렌더) → 최종 결과
+    // 대기열 진행 중 사용자가 수동으로 다른 논문을 열었으면 읽고 있는 화면을 가로채지 않는다
+    if (queueNavigated) {
+      loadHistory();
+      return { ok: true };
+    }
     if (analysisPartialShown) {
       const keep = activeTab; // 부분 렌더 후 사용자가 읽던 탭 유지 — 시각화만 갈아끼움
       renderResult(data);
@@ -485,15 +492,96 @@ async function runUpload(file, mode, label) {
 }
 
 // 단일 업로드 + 세션 한도 시 자동 재개(리셋 후 스스로 다시 시도). analyzeFile이 사용.
-async function runUploadResumable(file, mode, label) {
-  const r = await runUpload(file, mode, label);
-  if (r && r.limit) {
-    scheduleResume(r.limit, () => runUploadResumable(file, mode, label), file.name.replace(/\.pdf$/i, ""));
+
+// ── 분석 대기열 ────────────────────────────────────────────────────────────
+// 분석 중에 새 논문을 주면 진행 중인 것을 취소하지 않고 대기열에 넣어 '추가된 순서대로' 잇는다.
+// 한 번에 여러 개를 드롭한 경우도 같은 대기열로 흘려보내 경로를 하나로 통일한다.
+// jobQueue[0]은 '지금 돌고 있는 편'(진행 중에는 shift하지 않고 peek) — 사이드바는 그 뒤부터 보여준다.
+const jobQueue = []; // { kind:"file"|"url", file?, url?, title, mode }
+let queueRunning = false;
+let queueDone = 0; // 이번 대기열에서 끝낸 편 수(라벨 "(2/5)"용) — 비면 0으로 초기화
+let queueNavigated = false; // 대기열 진행 중 사용자가 수동으로 다른 논문을 열었나(화면 가로채기 방지)
+const queueFailures = [];
+
+function enqueueJobs(jobs) {
+  if (!jobs.length) return;
+  jobQueue.push(...jobs);
+  renderQueue();
+  if (!queueRunning) drainQueue();
+}
+function renderQueue() {
+  const box = document.getElementById("sb-queue");
+  if (!box) return;
+  const pending = queueRunning ? jobQueue.slice(1) : jobQueue.slice(0);
+  box.innerHTML = "";
+  box.classList.toggle("hidden", !pending.length);
+  if (!pending.length) return;
+  const head = document.createElement("li");
+  head.className = "sb-queue-head";
+  head.textContent = `대기 중 ${pending.length}편 — 순서대로 진행`;
+  box.appendChild(head);
+  pending.forEach((job) => {
+    const li = document.createElement("li");
+    li.className = "sb-queue-item";
+    const t = document.createElement("span");
+    t.className = "sb-queue-title";
+    t.textContent = job.title;
+    t.title = job.title;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "sb-queue-x";
+    x.textContent = "×";
+    x.title = "대기 취소";
+    x.addEventListener("click", () => {
+      const i = jobQueue.indexOf(job);
+      if (i >= 0) { jobQueue.splice(i, 1); renderQueue(); }
+    });
+    li.append(t, x);
+    box.appendChild(li);
+  });
+}
+// 대기열을 순서대로 비운다. 개별 취소는 그 편만 건너뛰고 계속, 세션 한도는 남은 전체를 리셋 후 재개.
+async function drainQueue() {
+  if (queueRunning) return;
+  queueRunning = true;
+  queueNavigated = false;
+  try {
+    while (jobQueue.length) {
+      const job = jobQueue[0]; // 진행 중 표시를 위해 아직 빼지 않는다
+      renderQueue();
+      const total = queueDone + jobQueue.length;
+      const label = total > 1 ? `(${queueDone + 1}/${total}) ${job.title}` : job.title;
+      const r =
+        job.kind === "url"
+          ? await runAnalyzeUrl(job.url, job.title, job.mode, label)
+          : await runUpload(job.file, job.mode, label);
+      // 세션 한도: 이 편을 대기열 맨 앞에 남긴 채 리셋 시각에 자동 재개
+      if (r && r.limit) {
+        renderQueue();
+        scheduleResume(r.limit, () => drainQueue(), `대기 ${jobQueue.length}편`);
+        return;
+      }
+      jobQueue.shift();
+      queueDone++;
+      if (r && !r.ok && !r.aborted) {
+        queueFailures.push(job.title);
+        appendLoadingLog(`✗ ${job.title}: ${(r.error || "실패").slice(0, 80)}`);
+      }
+      renderQueue();
+    }
+    if (queueFailures.length) {
+      showError(`대기열 완료 — ${queueFailures.length}편 실패: ${queueFailures.join(", ")}`);
+      queueFailures.length = 0;
+    }
+    queueDone = 0;
+    loadHistory();
+  } finally {
+    queueRunning = false;
+    renderQueue();
   }
-  return r;
 }
 
-// ── 여러 논문 일괄(큐) 분석 — 모드 한 번 선택 후 순차 진행, 오류는 건너뛰고 계속 ──
+// 여러 논문을 한 번에 드롭/선택 — 모드 한 번만 물어 전부 대기열에 넣는다.
 async function analyzeQueue(files) {
   const pdfs = [...files].filter((f) => f.name.toLowerCase().endsWith(".pdf"));
   if (!pdfs.length) return showError("PDF 파일만 업로드할 수 있습니다.");
@@ -502,27 +590,8 @@ async function analyzeQueue(files) {
   const mode = await showModeDialog(`${pdfs.length}편 일괄 분석`, null);
   if (!mode) { fileInput.value = ""; return; }
   ensureNotifyPermission();
-  runQueueFrom(pdfs, 0, mode, []);
-}
-
-// 큐를 start 인덱스부터 진행. 세션 한도에 걸리면 남은 편(현재 편 포함)을 리셋 후 자동 재개.
-async function runQueueFrom(pdfs, start, mode, failures) {
-  for (let i = start; i < pdfs.length; i++) {
-    const f = pdfs[i];
-    const r = await runUpload(f, mode, `(${i + 1}/${pdfs.length}) ${f.name.replace(/\.pdf$/i, "")}`);
-    if (r.aborted) return; // 취소 = 큐 전체 중단
-    // 구독 세션 한도 — 남은 편을 지금 돌려봐야 전부 실패하므로 리셋 시각에 이 지점부터 자동 재개
-    if (r.limit) {
-      scheduleResume(r.limit, () => runQueueFrom(pdfs, i, mode, failures), `일괄 분석 — 남은 ${pdfs.length - i}편`);
-      return;
-    }
-    if (!r.ok) {
-      failures.push(f.name);
-      appendLoadingLog(`✗ ${f.name}: ${(r.error || "실패").slice(0, 80)}`);
-    }
-  }
-  if (failures.length) showError(`일괄 분석 완료 — ${failures.length}편 실패: ${failures.join(", ")}`);
-  loadHistory();
+  fileInput.value = "";
+  enqueueJobs(pdfs.map((f) => ({ kind: "file", file: f, title: f.name.replace(/\.pdf$/i, ""), mode })));
 }
 
 let lastLoadingPct = 0;
@@ -2274,16 +2343,19 @@ function renderRelated(papers) {
 // ── arXiv URL로 바로 분석 (관련 논문 버튼·랜딩 화면 URL 붙여넣기 공용) ──────────
 async function analyzeUrl(url, title) {
   hideError();
-  const mode = await showModeDialog(title || url.replace(/^https?:\/\//, ""), null);
+  const label = title || url.replace(/^https?:\/\//, "");
+  const mode = await showModeDialog(label, null);
   if (!mode) return;
   ensureNotifyPermission();
-  return runAnalyzeUrl(url, title, mode); // 모드 확정 후 코어 실행(자동 재개 시 재프롬프트 없이 재사용)
+  // 업로드와 같은 대기열을 쓴다 — 진행 중이면 취소 대신 뒤에 붙는다
+  enqueueJobs([{ kind: "url", url, title: label, mode }]);
 }
-async function runAnalyzeUrl(url, title, mode) {
+// 반환값은 runUpload와 동일한 { ok, aborted?, limit?, error? } — 대기열이 한 방식으로 처리한다.
+async function runAnalyzeUrl(url, title, mode, label) {
   clearResume(); // 새 분석 시작 = 대기 중이던 자동 재개 예약 취소
   workspaceEl.classList.add("hidden");
   loadingEl.classList.remove("hidden");
-  setActiveAnalysis(title || "arXiv 논문");
+  setActiveAnalysis(label || title || "arXiv 논문");
   resetLoadingProgress();
   setLoadingProgress("arXiv에서 PDF를 내려받는 중…", 0);
 
@@ -2300,6 +2372,11 @@ async function runAnalyzeUrl(url, title, mode) {
       throw new Error(formatApiError(data, res.status));
     }
     const data = await consumeAnalysisStream(res);
+    // 대기열 진행 중 사용자가 수동으로 다른 논문을 열었으면 화면을 가로채지 않는다(알림·히스토리로만)
+    if (queueNavigated) {
+      loadHistory();
+      return { ok: true };
+    }
     if (analysisPartialShown) {
       const keep = activeTab;
       renderResult(data);
@@ -2309,12 +2386,14 @@ async function runAnalyzeUrl(url, title, mode) {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
     loadHistory();
+    return { ok: true };
   } catch (e) {
-    // 세션 한도면 리셋 후 자동 재개(모드 유지), 아니면 일반 에러
-    if (!maybeScheduleResume(e, () => runAnalyzeUrl(url, title, mode), title || "arXiv 논문")) {
-      if (e.name !== "AbortError") showError(e.message);
-    }
+    if (e.name === "AbortError") { loadHistory(); return { ok: false, aborted: true }; }
+    // 세션 한도는 대기열이 리셋 후 재개하도록 표식만 얹어 반환(빨간 에러는 표시 안 함)
+    if (e.limit) { workspaceEl.classList.toggle("hidden", !currentHash); return { ok: false, limit: e.limit, error: e.message }; }
+    showError(e.message);
     workspaceEl.classList.toggle("hidden", !currentHash);
+    return { ok: false, error: e.message };
   } finally {
     if (endCancellable(ac)) {
       loadingEl.classList.add("hidden");
@@ -3754,13 +3833,24 @@ document.getElementById("tool-upgrade").addEventListener("click", upgradeToFull)
 async function openHistory(hash) {
   hideError();
   closeMobileSidebar(); // 모바일: 히스토리에서 논문 선택 시 드로어 닫기
-  // 저장된 결과 열람은 취소 대상이 아니다. 진행 중이던 분석이 있으면 취소하고(사용자가 다른 글로 이동),
-  // 취소 버튼은 숨긴다 — 이 fetch는 취소 버튼이 제어하지 않으므로 엉뚱한 중단을 막는다.
-  if (analysisAbort) { analysisAbort.abort(); analysisAbort = null; }
+  // 저장된 결과 열람은 취소 대상이 아니다.
+  // ⚠️ 대기열이 돌고 있으면 진행 중인 분석을 절대 건드리지 않는다 — 예전엔 히스토리를 열기만 해도
+  // 분석이 취소됐다. 대신 '수동 이동' 표식을 남겨 완료 결과가 읽던 화면을 가로채지 않게 한다.
+  if (queueRunning) {
+    queueNavigated = true;
+  } else if (analysisAbort) {
+    analysisAbort.abort();
+    analysisAbort = null;
+    cancelBtn.classList.add("hidden");
+    setActiveAnalysis(null);
+  }
   if (sectionRegenAbort) { sectionRegenAbort.abort(); sectionRegenAbort = null; } // 진행 중 섹션 재생성 중단
-  cancelBtn.classList.add("hidden");
-  setActiveAnalysis(null); // 취소된 흐름의 '분석 중' 표시 정리 — 여기서 컨트롤러를 비웠으므로 그쪽 finally는 건너뜀
-  hideReanalyzeBanner();
+  // 대기열이 돌고 있으면 '분석 중' 표시와 취소 버튼을 유지한다(분석이 계속되므로).
+  if (!queueRunning) {
+    cancelBtn.classList.add("hidden");
+    setActiveAnalysis(null); // 취소된 흐름의 '분석 중' 표시 정리
+    hideReanalyzeBanner();
+  }
   loadingEl.classList.remove("hidden");
   document.getElementById("loading-text").textContent = "저장된 분석 결과를 불러오는 중…";
   let ok = false;
