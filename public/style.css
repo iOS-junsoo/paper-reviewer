@@ -2623,6 +2623,54 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 .sb-fm-row:hover { background: var(--paper-deep); color: var(--ink); }
 .sb-fm-row.marked { color: var(--accent); font-weight: 600; }
 .sb-fm-new { border-top: 1px solid var(--line); margin-top: 2px; color: var(--accent); }
+/* ── 다중 선택 (여러 논문 일괄 폴더 이동·삭제) ───────────────────────────── */
+.sb-selbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+.sb-selcount { flex: 1; font-family: var(--sans); font-size: 0.74rem; font-weight: 700; color: var(--accent); white-space: nowrap; }
+.sb-selbtn {
+  flex: none;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink-soft);
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.sb-selbtn:hover { border-color: var(--accent); color: var(--accent); }
+.sb-selbtn-danger:hover { border-color: #b3261e; color: #b3261e; }
+/* 체크박스: 평소엔 hover에서만, 선택 중일 땐 전부 보이게 */
+.h-check {
+  position: absolute;
+  top: 8px;
+  left: 6px;
+  border: none;
+  background: none;
+  color: var(--ink-faint);
+  font-size: 0.86rem;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+  z-index: 2;
+}
+#history-list li[data-hash] { position: relative; }
+#history-list li[data-hash]:hover .h-check,
+#history-list.selecting .h-check { opacity: 1; }
+.h-check:hover { color: var(--accent); }
+#history-list li.h-selected { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+#history-list.selecting li[data-hash] { padding-left: 26px; }
+
 /* ── 분석 대기열 (진행 중 추가된 논문들) ─────────────────────────────────── */
 .sb-queue {
   list-style: none;

@@ -3393,6 +3393,10 @@ async function loadHistory() {
 function renderHistory() {
   closeFolderMenu();
   historyList.classList.toggle("has-folders", library.folders.length > 0);
+  // 사라진 논문(삭제 등)이 선택에 남지 않게 정리한 뒤 선택 바 갱신
+  for (const h of [...selectedHashes]) if (!historyItems.some((it) => it.hash === h)) selectedHashes.delete(h);
+  historyList.classList.toggle("selecting", selectedHashes.size > 0);
+  renderSelBar();
   historyList.innerHTML = "";
   if (!historyItems.length) {
     historyList.innerHTML = `<li class="muted">아직 분석한 논문이 없습니다.</li>`;
@@ -3514,6 +3518,15 @@ function buildHistoryItem(it) {
   li.dataset.hash = it.hash;
   li.draggable = true;
   if (it.hash === currentHash) li.classList.add("h-active");
+  if (selectedHashes.has(it.hash)) li.classList.add("h-selected");
+  // 다중 선택 체크박스 — 평소엔 hover에서만 보이고, 선택이 하나라도 있으면 계속 보인다
+  const chk = document.createElement("button");
+  chk.type = "button";
+  chk.className = "h-check";
+  chk.title = "선택 (⌘/Ctrl+클릭, Shift+클릭으로 범위 선택)";
+  chk.textContent = selectedHashes.has(it.hash) ? "☑" : "☐";
+  chk.addEventListener("click", (e) => { e.stopPropagation(); toggleSelect(it.hash, e); });
+  li.appendChild(chk);
   const title = document.createElement("div");
   title.className = "h-title";
   title.textContent = it.title || "(제목 없음)";
@@ -3541,7 +3554,12 @@ function buildHistoryItem(it) {
   }
   parts.push(date);
   li.append(...parts);
-  li.addEventListener("click", () => openHistory(it.hash));
+  li.addEventListener("click", (e) => {
+    // ⌘/Ctrl·Shift 클릭은 선택 토글, 그 외에는 평소대로 논문 열기.
+    // 이미 선택 중이면 일반 클릭도 선택 토글로 동작해 여러 편 고르기가 쉽다.
+    if (e.metaKey || e.ctrlKey || e.shiftKey || selectedHashes.size) return toggleSelect(it.hash, e);
+    openHistory(it.hash);
+  });
   li.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/plain", it.hash);
     e.dataTransfer.effectAllowed = "move";
@@ -3605,6 +3623,64 @@ function buildHistoryItem(it) {
   li.appendChild(del);
   return li;
 }
+
+// ── 다중 선택 (여러 논문을 한 번에 폴더 이동·삭제) ──────────────────────────
+// 선택 상태는 hash 집합으로 들고 있어 재렌더(폴더 이동·검색)에도 유지된다.
+const selectedHashes = new Set();
+let lastSelectedHash = null; // Shift+클릭 범위 선택의 기준점
+function toggleSelect(hash, e) {
+  // Shift+클릭: 화면에 보이는 순서 기준으로 직전 선택 지점까지 한 번에 선택
+  if (e && e.shiftKey && lastSelectedHash && lastSelectedHash !== hash) {
+    const order = [...document.querySelectorAll("#history-list li[data-hash]")].map((li) => li.dataset.hash);
+    const a = order.indexOf(lastSelectedHash);
+    const b = order.indexOf(hash);
+    if (a >= 0 && b >= 0) {
+      order.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((h) => selectedHashes.add(h));
+      lastSelectedHash = hash;
+      renderHistory();
+      return;
+    }
+  }
+  if (selectedHashes.has(hash)) selectedHashes.delete(hash);
+  else selectedHashes.add(hash);
+  lastSelectedHash = hash;
+  renderHistory();
+}
+function clearSelection() {
+  selectedHashes.clear();
+  lastSelectedHash = null;
+  renderHistory();
+}
+function renderSelBar() {
+  const bar = document.getElementById("sb-selbar");
+  if (!bar) return;
+  bar.classList.toggle("hidden", selectedHashes.size === 0);
+  const cnt = document.getElementById("sb-selcount");
+  if (cnt) cnt.textContent = `${selectedHashes.size}편 선택`;
+}
+async function bulkDeleteSelected() {
+  const list = [...selectedHashes];
+  if (!list.length) return;
+  const titles = list.map((h) => (historyItems.find((x) => x.hash === h) || {}).title || h.slice(0, 8));
+  if (!confirm(`선택한 ${list.length}편을 삭제할까요?\n\n${titles.slice(0, 6).join("\n")}${titles.length > 6 ? `\n… 외 ${titles.length - 6}편` : ""}\n\n(분석 결과·원문 PDF·메모가 함께 삭제됩니다)`)) return;
+  let failed = 0;
+  for (const h of list) {
+    try {
+      const r = await fetch(`${API_BASE}/api/history/${h}`, { method: "DELETE" });
+      if (!r.ok) failed++;
+      else if (h === currentHash) location.hash = ""; // 보고 있던 논문이 지워지면 딥링크 정리
+    } catch { failed++; }
+  }
+  clearSelection();
+  await loadHistory();
+  if (failed) showError(`${failed}편 삭제 실패 — 다시 시도해 주세요.`);
+}
+document.getElementById("sb-sel-clear").addEventListener("click", clearSelection);
+document.getElementById("sb-sel-del").addEventListener("click", bulkDeleteSelected);
+document.getElementById("sb-sel-move").addEventListener("click", (e) => {
+  e.stopPropagation();
+  openFolderMenu([...selectedHashes], e.currentTarget); // 선택 전체를 한 번에 이동
+});
 
 // ── 폴더 동작 (생성·이름변경·삭제·이동) ────────────────────────────────
 // parentId를 주면 그 폴더의 하위 폴더로 만든다(없으면 최상위).
@@ -3710,21 +3786,37 @@ function setFolderParent(folder, parentId) {
   saveLibrary();
   renderHistory();
 }
-function moveToFolder(hash, fid) {
-  if (fid) library.assignments[hash] = fid;
-  else delete library.assignments[hash];
+// hash 하나 또는 여러 개(배열)를 한 번에 옮긴다 — 다중 선택 일괄 이동이 같은 경로를 쓴다.
+function moveToFolder(hashOrList, fid) {
+  const list = Array.isArray(hashOrList) ? hashOrList : [hashOrList];
+  for (const h of list) {
+    if (fid) library.assignments[h] = fid;
+    else delete library.assignments[h];
+  }
   saveLibrary();
-  renderHistory();
+  if (Array.isArray(hashOrList) && hashOrList.length > 1) clearSelection(); // 일괄 이동 후 선택 해제(내부에서 재렌더)
+  else renderHistory();
 }
 
 // 논문을 옮길 폴더 선택 메뉴 (📁 버튼 클릭 시)
 function closeFolderMenu() { document.getElementById("sb-foldermenu")?.remove(); }
-function openFolderMenu(hash, anchor) {
+// hash 하나 또는 배열(다중 선택 일괄 이동)을 받는다.
+function openFolderMenu(hashOrList, anchor) {
   closeFolderMenu();
+  const list = Array.isArray(hashOrList) ? hashOrList : [hashOrList];
+  const hash = hashOrList; // moveToFolder가 단일/배열을 모두 처리
   const menu = document.createElement("div");
   menu.className = "sb-foldermenu";
   menu.id = "sb-foldermenu";
-  const cur = library.assignments[hash] || null;
+  // 여러 편이면 '현재 폴더' 표시는 전부 같은 폴더일 때만 의미가 있다
+  const firstFid = library.assignments[list[0]] || null;
+  const cur = list.length > 1 ? (list.every((h) => (library.assignments[h] || null) === firstFid) ? firstFid : null) : firstFid;
+  if (list.length > 1) {
+    const t = document.createElement("div");
+    t.className = "sb-fm-title";
+    t.textContent = `${list.length}편을 옮길 폴더`;
+    menu.appendChild(t);
+  }
   const row = (label, onClick, marked) => {
     const b = document.createElement("button");
     b.type = "button";

@@ -55,6 +55,13 @@
         <button id="hf-mode" class="hf-chip" type="button" title="분석 모드로 거르기">모드: 전체</button>
         <select id="hf-year" class="hf-chip" title="논문 연도로 거르기"><option value="">연도: 전체</option></select>
       </div>
+      <!-- 다중 선택 시 나타나는 일괄 작업 바 -->
+      <div id="sb-selbar" class="sb-selbar hidden">
+        <span id="sb-selcount" class="sb-selcount"></span>
+        <button id="sb-sel-move" class="sb-selbtn" type="button" title="선택한 논문을 폴더로 옮기기">📁 폴더로</button>
+        <button id="sb-sel-del" class="sb-selbtn sb-selbtn-danger" type="button" title="선택한 논문 삭제">🗑</button>
+        <button id="sb-sel-clear" class="sb-selbtn" type="button" title="선택 해제">해제</button>
+      </div>
       <ul id="history-list" class="sb-history"><li class="muted">불러오는 중…</li></ul>
     </aside>
 
