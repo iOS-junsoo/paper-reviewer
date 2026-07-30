@@ -21,13 +21,16 @@ const { PDFDocument } = require("pdf-lib");
 
 // ---------------------------------------------------------------------------
 // 제한 상수
-// 출처: https://platform.claude.com/docs/en/build-with-claude/pdf-support
-//   (2026-06-11 확인)
-//   - API document 블록 기준: 요청 전체 32MB / 최대 600페이지
-//   - 현재는 Claude Agent SDK(Read 도구, 20페이지씩 분할 읽기) 경로를 쓰지만
-//     동일한 상한을 업로드 가드로 유지한다 (과대 PDF 거부 목적)
+// 페이지 상한 출처: https://platform.claude.com/docs/en/build-with-claude/pdf-support
+//   (2026-06-11 확인) — API document 블록 기준 요청 전체 32MB / 최대 600페이지.
+// 용량 상한(50MB)의 근거:
+//   - 이 서비스는 API document 블록이 아니라 Claude Agent SDK(Read 도구로 로컬 PDF를
+//     20페이지씩 분할 읽기) 경로다. 파일 전체가 한 요청에 base64로 실리지 않으므로
+//     "32MB ÷ 4/3 = 23MB" 같은 인코딩 여유분 계산이 적용되지 않는다.
+//   - 따라서 상한은 디스크·처리시간 가드 목적. 스캔본처럼 용량만 큰 논문을 받기 위해 50MB.
+//   - 실질적 제약은 대개 페이지 수(600p)와 분석 시간 쪽에서 먼저 걸린다.
 // ---------------------------------------------------------------------------
-const MAX_PDF_BYTES = 23 * 1024 * 1024;
+const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const MAX_PDF_PAGES = 600;
 const HISTORY_LIST_LIMIT = 500; // 히스토리 목록 상한(메타만이라 가벼움). 근접 시 경고 로그.
 const MAX_FOLDER_DEPTH = 3; // 폴더 중첩 상한(조상 3개 = 최대 4단계) — 사이드바 들여쓰기 한계
