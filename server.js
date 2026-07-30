@@ -30,6 +30,7 @@ const { PDFDocument } = require("pdf-lib");
 const MAX_PDF_BYTES = 23 * 1024 * 1024;
 const MAX_PDF_PAGES = 600;
 const HISTORY_LIST_LIMIT = 500; // 히스토리 목록 상한(메타만이라 가벼움). 근접 시 경고 로그.
+const MAX_FOLDER_DEPTH = 3; // 폴더 중첩 상한(조상 3개 = 최대 4단계) — 사이드바 들여쓰기 한계
 
 const MODEL = process.env.MODEL || "claude-opus-5";
 const PORT = process.env.PORT || 3000;
@@ -2026,9 +2027,30 @@ app.put("/api/library", async (req, res) => {
     const body = req.body || {};
     const folders = (Array.isArray(body.folders) ? body.folders : [])
       .slice(0, 200)
-      .map((f) => ({ id: String((f && f.id) || "").slice(0, 40), name: String((f && f.name) || "").trim().slice(0, 60) }))
+      .map((f) => ({
+        id: String((f && f.id) || "").slice(0, 40),
+        name: String((f && f.name) || "").trim().slice(0, 60),
+        parent: f && f.parent ? String(f.parent).slice(0, 40) : null, // 하위 폴더 — 최상위는 null
+      }))
       .filter((f) => f.id && f.name);
     const ids = new Set(folders.map((f) => f.id));
+    // 부모 정합성: 없는 부모·자기 자신 참조는 최상위로 되돌린다.
+    for (const f of folders) if (f.parent && (!ids.has(f.parent) || f.parent === f.id)) f.parent = null;
+    // 순환(A→B→A)·과도한 깊이 차단 — 순환이 저장되면 프론트 트리 렌더가 무한 루프에 빠진다.
+    // UI가 순환을 못 만들게 막지만, 저장소가 최종 방어선이 되도록 서버에서도 검사한다.
+    const byId = new Map(folders.map((f) => [f.id, f]));
+    for (const f of folders) {
+      const seen = new Set([f.id]);
+      let p = f.parent, depth = 0;
+      while (p) {
+        if (seen.has(p) || depth >= MAX_FOLDER_DEPTH) { f.parent = null; break; }
+        seen.add(p);
+        const up = byId.get(p);
+        if (!up) { f.parent = null; break; }
+        p = up.parent;
+        depth++;
+      }
+    }
     const assignments = {};
     const src = body.assignments && typeof body.assignments === "object" ? body.assignments : {};
     let n = 0;

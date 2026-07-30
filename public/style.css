@@ -2623,6 +2623,17 @@ a.rel-title::after { content: " ↗"; font-size: 0.8em; color: var(--accent); }
 .sb-fm-row:hover { background: var(--paper-deep); color: var(--ink); }
 .sb-fm-row.marked { color: var(--accent); font-weight: 600; }
 .sb-fm-new { border-top: 1px solid var(--line); margin-top: 2px; color: var(--accent); }
+/* 폴더 이동 메뉴 제목 (하위 폴더 기능) */
+.sb-fm-title {
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-faint);
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 
 /* ── 사이드바 상단 버튼 (테마 전환) + 히스토리 검색 ───────────────── */
 /* 아이콘 버튼 묶음은 절대 줄어들지 않는다 — 공간이 부족하면 제목(.sb-brand)이 줄어든다 */

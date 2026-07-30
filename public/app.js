@@ -3333,36 +3333,59 @@ function renderHistory() {
     historyItems.forEach((it) => { if (matches(it)) historyList.appendChild(buildHistoryItem(it)); });
     return;
   }
-  const renderGroup = (folder) => {
+  // 하위 폴더 지원: 부모별로 묶어 트리로 렌더한다. 카운트는 '자기 논문 + 모든 하위 폴더 논문'
+  // 이라 접어둔 폴더의 총량이 보인다. 검색 중에는 매칭된 것이 하나도 없는 가지를 통째로 숨긴다.
+  const childrenOf = (pid) => library.folders.filter((x) => (x.parent || null) === (pid || null));
+  const visibleCountOf = (folder) => {
+    const own = historyItems.filter((it) => folderOf(it.hash) === folder.id).filter(matches).length;
+    return own + childrenOf(folder.id).reduce((n, c) => n + visibleCountOf(c), 0);
+  };
+  const totalCountOf = (folder) => {
+    const own = historyItems.filter((it) => folderOf(it.hash) === folder.id).length;
+    return own + childrenOf(folder.id).reduce((n, c) => n + totalCountOf(c), 0);
+  };
+  const renderGroup = (folder, depth) => {
     const fid = folder ? folder.id : null;
     const key = fid || UNFILED;
     const members = historyItems.filter((it) => folderOf(it.hash) === fid);
+    const kids = folder ? childrenOf(folder.id) : [];
     if (!folder && !members.length) return; // 미분류는 비어 있으면 머리글 생략
     const visible = members.filter(matches);
-    if (f && !visible.length) return; // 검색 중 매칭 없는 그룹 숨김
+    // 검색 중: 이 폴더도 하위 폴더도 매칭이 없으면 가지 전체를 숨긴다
+    if (f && folder && visibleCountOf(folder) === 0) return;
+    if (f && !folder && !visible.length) return;
     const collapsed = !f && collapsedFolders.has(key);
-    // 검색 중에는 '보이는 수', 평소엔 전체 멤버 수를 카운트로 표시
-    historyList.appendChild(buildFolderHead(folder, f ? visible.length : members.length, collapsed));
+    const count = folder ? (f ? visibleCountOf(folder) : totalCountOf(folder)) : (f ? visible.length : members.length);
+    historyList.appendChild(buildFolderHead(folder, count, collapsed, depth));
     if (collapsed) return;
+    if (folder) kids.forEach((k) => renderGroup(k, depth + 1)); // 하위 폴더 먼저, 그 아래 논문
     if (!visible.length) {
-      const empty = document.createElement("li");
-      empty.className = "sb-folder-empty muted";
-      empty.textContent = "(비어 있음 — 논문을 끌어다 놓거나 📁로 옮기세요)";
-      historyList.appendChild(empty);
+      if (!kids.length) { // 하위 폴더도 논문도 없을 때만 '비어 있음'
+        const empty = document.createElement("li");
+        empty.className = "sb-folder-empty muted";
+        empty.textContent = "(비어 있음 — 논문을 끌어다 놓거나 📁로 옮기세요)";
+        empty.style.paddingLeft = `${10 + depth * 12}px`;
+        historyList.appendChild(empty);
+      }
     } else {
-      visible.forEach((it) => historyList.appendChild(buildHistoryItem(it)));
+      visible.forEach((it) => {
+        const li = buildHistoryItem(it);
+        if (depth > 0) li.style.paddingLeft = `${10 + depth * 12}px`; // 하위 폴더의 논문도 들여쓴다
+        historyList.appendChild(li);
+      });
     }
   };
-  library.folders.forEach((folder) => renderGroup(folder));
-  renderGroup(null); // 미분류
+  childrenOf(null).forEach((folder) => renderGroup(folder, 0)); // 최상위 폴더부터 트리로
+  renderGroup(null, 0); // 미분류
 }
 
-function buildFolderHead(folder, count, collapsed) {
+function buildFolderHead(folder, count, collapsed, depth = 0) {
   const fid = folder ? folder.id : null;
   const key = fid || UNFILED;
   const li = document.createElement("li");
   li.className = "sb-folder" + (collapsed ? " collapsed" : "");
   li.dataset.folderHead = key;
+  if (depth > 0) li.style.paddingLeft = `${8 + depth * 12}px`; // 중첩 단계만큼 들여쓰기
   const tw = document.createElement("span");
   tw.className = "sb-folder-tw";
   tw.textContent = collapsed ? "▸" : "▾";
@@ -3386,9 +3409,13 @@ function buildFolderHead(folder, count, collapsed) {
       b.addEventListener("click", (e) => { e.stopPropagation(); fn(); });
       return b;
     };
+    const depthOf = (fo) => { let d = 0, p = fo.parent; while (p) { const up = library.folders.find((x) => x.id === p); if (!up) break; d++; p = up.parent; } return d; };
+    li.append(mk("✎", "폴더 이름 변경", () => renameFolder(folder)));
+    // 깊이 상한(서버 MAX_FOLDER_DEPTH=3, 최대 4단계)에 닿으면 하위 폴더 버튼을 숨긴다
+    if (depthOf(folder) < 3) li.append(mk("＋", "이 폴더 안에 하위 폴더 만들기", () => createFolder(folder.id)));
     li.append(
-      mk("✎", "폴더 이름 변경", () => renameFolder(folder)),
-      mk("×", "폴더 삭제(논문은 미분류로 이동)", () => deleteFolder(folder))
+      mk("⤵", "이 폴더를 다른 폴더 안으로 이동", (e) => openFolderParentMenu(folder, li)),
+      mk("×", "폴더 삭제(하위 폴더·논문은 한 단계 위로 이동)", () => deleteFolder(folder))
     );
   }
   // 드롭 타깃 — 논문을 끌어다 놓으면 이 폴더로 이동(미분류 머리글은 배정 해제)
@@ -3501,10 +3528,13 @@ function buildHistoryItem(it) {
 }
 
 // ── 폴더 동작 (생성·이름변경·삭제·이동) ────────────────────────────────
-function createFolder() {
-  const name = (prompt("새 폴더 이름") || "").trim();
+// parentId를 주면 그 폴더의 하위 폴더로 만든다(없으면 최상위).
+function createFolder(parentId = null) {
+  const parent = parentId ? library.folders.find((x) => x.id === parentId) : null;
+  const name = (prompt(parent ? `'${parent.name}' 안에 만들 하위 폴더 이름` : "새 폴더 이름") || "").trim();
   if (!name) return;
-  library.folders.push({ id: newFolderId(), name: name.slice(0, 60) });
+  library.folders.push({ id: newFolderId(), name: name.slice(0, 60), parent: parent ? parent.id : null });
+  if (parent) collapsedFolders.delete(parent.id), saveCollapsed(); // 새 하위 폴더가 보이게 부모를 펼친다
   saveLibrary();
   renderHistory();
 }
@@ -3515,14 +3545,89 @@ function renameFolder(folder) {
   saveLibrary();
   renderHistory();
 }
+// 폴더만 지우고 내용물은 보존한다 — 하위 폴더와 논문을 '한 단계 위'로 승격(비파괴적).
 function deleteFolder(folder) {
-  if (!confirm(`'${folder.name}' 폴더를 삭제할까요?\n(폴더 안 논문은 삭제되지 않고 '미분류'로 이동합니다)`)) return;
+  const kids = library.folders.filter((x) => (x.parent || null) === folder.id);
+  const papers = Object.values(library.assignments).filter((v) => v === folder.id).length;
+  const up = folder.parent ? library.folders.find((x) => x.id === folder.parent) : null;
+  const destName = up ? up.name : "미분류";
+  // '으로/로' 조사 — 마지막 글자 종성 유무로 선택(ㄹ 받침은 '로'). 한글이 아니면 안전하게 '(으)로'.
+  const ro = (() => {
+    const ch = destName.trim().slice(-1).charCodeAt(0);
+    if (!(ch >= 0xac00 && ch <= 0xd7a3)) return "(으)로";
+    const jong = (ch - 0xac00) % 28;
+    return jong === 0 || jong === 8 ? "로" : "으로";
+  })();
+  const parts = [];
+  if (papers) parts.push(`논문 ${papers}편`);
+  if (kids.length) parts.push(`하위 폴더 ${kids.length}개`);
+  const msg =
+    `'${folder.name}' 폴더를 삭제할까요?` +
+    (parts.length ? `\n(안에 있던 ${parts.join("·")} → '${destName}'${ro} 이동, 삭제되지 않습니다)` : "");
+  if (!confirm(msg)) return;
+  const newParent = folder.parent || null;
   library.folders = library.folders.filter((x) => x.id !== folder.id);
+  for (const k of library.folders) if ((k.parent || null) === folder.id) k.parent = newParent; // 하위 폴더 승격
   for (const h of Object.keys(library.assignments)) {
-    if (library.assignments[h] === folder.id) delete library.assignments[h];
+    if (library.assignments[h] === folder.id) {
+      if (newParent) library.assignments[h] = newParent; // 부모 폴더로 이동
+      else delete library.assignments[h]; // 최상위 폴더였으면 미분류
+    }
   }
   collapsedFolders.delete(folder.id);
   saveCollapsed();
+  saveLibrary();
+  renderHistory();
+}
+
+// 폴더 자체를 다른 폴더 안으로 이동(또는 최상위로). 자기 자신·후손은 선택 대상에서 제외해
+// 순환을 원천 차단하고, 깊이 상한을 넘는 대상도 막는다.
+function openFolderParentMenu(folder, anchor) {
+  closeFolderMenu();
+  const descendants = new Set();
+  const collect = (id) => library.folders.forEach((x) => { if ((x.parent || null) === id) { descendants.add(x.id); collect(x.id); } });
+  collect(folder.id);
+  const depthOf = (fo) => { let d = 0, p = fo.parent; while (p) { const u = library.folders.find((x) => x.id === p); if (!u) break; d++; p = u.parent; } return d; };
+  const subtreeHeight = (id) => {
+    const kids = library.folders.filter((x) => (x.parent || null) === id);
+    return kids.length ? 1 + Math.max(...kids.map((k) => subtreeHeight(k.id))) : 0;
+  };
+  const height = subtreeHeight(folder.id); // 이 폴더 밑에 몇 단계가 딸려 있나
+  const pathOf = (fo) => {
+    const names = [fo.name];
+    let p = fo.parent;
+    while (p) { const u = library.folders.find((x) => x.id === p); if (!u) break; names.unshift(u.name); p = u.parent; }
+    return names.join(" / ");
+  };
+  const menu = document.createElement("div");
+  menu.className = "sb-foldermenu";
+  menu.id = "sb-foldermenu";
+  const row = (label, onClick, marked, disabled) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sb-fm-row" + (marked ? " marked" : "");
+    b.textContent = (marked ? "✓ " : "") + label;
+    if (disabled) { b.disabled = true; b.style.opacity = "0.4"; b.title = "깊이 제한(최대 4단계)을 넘습니다"; }
+    else b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); closeFolderMenu(); });
+    menu.appendChild(b);
+  };
+  const title = document.createElement("div");
+  title.className = "sb-fm-title";
+  title.textContent = `'${folder.name}'을(를) 옮길 위치`;
+  menu.appendChild(title);
+  row("📂 최상위", () => setFolderParent(folder, null), !folder.parent);
+  library.folders
+    .filter((fo) => fo.id !== folder.id && !descendants.has(fo.id))
+    .forEach((fo) => row("📁 " + pathOf(fo), () => setFolderParent(folder, fo.id), folder.parent === fo.id, depthOf(fo) + 1 + height > 3));
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 10)) + "px";
+  menu.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - menu.offsetHeight - 10)) + "px";
+  setTimeout(() => document.addEventListener("click", closeFolderMenu, { once: true }), 0);
+}
+function setFolderParent(folder, parentId) {
+  folder.parent = parentId || null;
+  if (parentId) collapsedFolders.delete(parentId), saveCollapsed(); // 옮긴 결과가 보이게 부모 펼침
   saveLibrary();
   renderHistory();
 }
@@ -3549,7 +3654,14 @@ function openFolderMenu(hash, anchor) {
     b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); closeFolderMenu(); });
     menu.appendChild(b);
   };
-  library.folders.forEach((fo) => row("📁 " + fo.name, () => moveToFolder(hash, fo.id), cur === fo.id));
+  // 하위 폴더는 "부모 / 자식" 경로로 보여 어디에 속한 폴더인지 알 수 있게 한다
+  const pathOf = (fo) => {
+    const names = [fo.name];
+    let p = fo.parent;
+    while (p) { const u = library.folders.find((x) => x.id === p); if (!u) break; names.unshift(u.name); p = u.parent; }
+    return names.join(" / ");
+  };
+  library.folders.forEach((fo) => row("📁 " + pathOf(fo), () => moveToFolder(hash, fo.id), cur === fo.id));
   row("미분류", () => moveToFolder(hash, null), !cur);
   const nf = document.createElement("button");
   nf.type = "button";
@@ -3560,7 +3672,7 @@ function openFolderMenu(hash, anchor) {
     closeFolderMenu();
     const name = (prompt("새 폴더 이름") || "").trim();
     if (!name) return;
-    const folder = { id: newFolderId(), name: name.slice(0, 60) };
+    const folder = { id: newFolderId(), name: name.slice(0, 60), parent: null };
     library.folders.push(folder);
     moveToFolder(hash, folder.id); // 저장 + 재렌더
   });
