@@ -10,9 +10,15 @@ require("dotenv").config();
 //     `claude setup-token`으로 발급한 CLAUDE_CODE_OAUTH_TOKEN을 그대로 쓴다.
 //     대신 계정 전환(브라우저 OAuth)은 불가 → /settings/status의 canSwitchAccount=false.
 //   (어느 쪽이든 자격증명을 서버가 읽거나 저장하지 않는다 — CLI/SDK가 직접 가져간다.)
+//   · USE_ENV_TOKEN=1 — macOS에서도 키체인 대신 .env 토큰을 쓰게 하는 탈출구.
+//     `claude` CLI를 못 깔거나 로그인이 안 되는 맥(출장 중 새 노트북 등)에서 쓴다.
+//     이 경우 계정 전환은 못 하고 토큰 교체 + 재시작으로 바꿔야 한다.
 const IS_MAC = process.platform === "darwin";
+const USE_ENV_TOKEN = process.env.USE_ENV_TOKEN === "1";
 if (process.env.ANTHROPIC_API_KEY) delete process.env.ANTHROPIC_API_KEY;
-if (IS_MAC && process.env.CLAUDE_CODE_OAUTH_TOKEN) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+if (IS_MAC && !USE_ENV_TOKEN && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+}
 
 const crypto = require("crypto");
 const path = require("path");
@@ -1994,7 +2000,7 @@ function getAuthStatus() {
       (err, stdout) => {
         // 서버 배포(비-macOS)는 키체인 대신 env 토큰으로 인증한다. CLI가 상태를 못 읽어도
         // 토큰이 설정돼 있으면 "토큰 구성됨"으로 보고한다 — 실제 유효성은 첫 호출에서 판명.
-        const byToken = !IS_MAC && !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+        const byToken = (!IS_MAC || USE_ENV_TOKEN) && !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
         if (err) return resolve(byToken ? { loggedIn: true, source: "token" } : { loggedIn: false });
         try {
           const j = JSON.parse(String(stdout));
@@ -2037,7 +2043,7 @@ const SWITCH_UNAVAILABLE_MSG =
   "이 서버에서는 계정 전환을 쓸 수 없습니다(브라우저·키체인 없음). " +
   "다른 계정으로 바꾸려면 `claude setup-token`으로 발급한 토큰을 CLAUDE_CODE_OAUTH_TOKEN에 넣고 서버를 재시작하세요.";
 function requireMac(res) {
-  if (IS_MAC) return false;
+  if (IS_MAC && !USE_ENV_TOKEN) return false;
   res.status(501).json({ error: SWITCH_UNAVAILABLE_MSG });
   return true;
 }
@@ -2047,8 +2053,8 @@ app.get("/settings/status", async (req, res) => {
     auth: await getAuthStatus(),
     accounts: readAccounts(),
     model: MODEL,
-    canSwitchAccount: IS_MAC,
-    switchHint: IS_MAC ? "" : SWITCH_UNAVAILABLE_MSG,
+    canSwitchAccount: IS_MAC && !USE_ENV_TOKEN,
+    switchHint: IS_MAC && !USE_ENV_TOKEN ? "" : SWITCH_UNAVAILABLE_MSG,
     appAuth: auth.enabled, // 앱 로그인 게이트가 켜져 있나(=로그아웃 버튼을 보일지)
   });
 });
