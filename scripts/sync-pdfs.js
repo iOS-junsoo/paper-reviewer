@@ -3,7 +3,7 @@
 /**
  * 기기 간 원문 PDF 동기화 — 상대 기기에만 있는 PDF를 받아온다.
  *
- *   node scripts/sync-pdfs.js <상대_주소> [--password PW] [--dry-run]
+ *   node scripts/sync-pdfs.js <상대_주소> [--password PW] [--dry-run] [--quiet]
  *
  *   예) 맥스튜디오에서:  node scripts/sync-pdfs.js http://100.99.40.60:3000
  *       맥북에어에서:    node scripts/sync-pdfs.js http://100.124.186.12:3000
@@ -36,6 +36,9 @@ const PDF_DIR = path.join(DATA_DIR, "pdfs");
 const args = process.argv.slice(2);
 const peerRaw = args.find((a) => !a.startsWith("--"));
 const dryRun = args.includes("--dry-run");
+// 예약 실행(launchd)용 — 실제로 받은 게 있을 때만 로그를 남겨 로그가 불어나지 않게 한다
+const quiet = args.includes("--quiet");
+const say = (...m) => { if (!quiet) console.log(...m); };
 const pwIdx = args.indexOf("--password");
 const password = pwIdx >= 0 ? args[pwIdx + 1] : process.env.APP_PASSWORD || "";
 
@@ -68,7 +71,7 @@ async function main() {
   const local = new Set(
     fs.readdirSync(PDF_DIR).filter((f) => f.endsWith(".pdf")).map((f) => f.slice(0, -4))
   );
-  console.log(`이 기기: ${local.size}편`);
+  say(`이 기기: ${local.size}편`);
 
   let cookie = "";
   try {
@@ -86,6 +89,9 @@ async function main() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     manifest = await res.json();
   } catch (e) {
+    // 상대 기기가 꺼져 있는 것은 정상 상황이다(노트북을 덮어두는 등).
+    // 예약 실행에서 이걸 실패로 남기면 로그만 지저분해지므로 조용히 넘어간다.
+    if (quiet) process.exit(0);
     console.error(`❌ 상대(${peer}) 조회 실패: ${e.message}`);
     console.error("   상대 기기가 켜져 있고 같은 테일넷에 있는지 확인하세요.");
     process.exit(1);
@@ -93,11 +99,11 @@ async function main() {
 
   const remote = manifest.hashes || [];
   const missing = remote.filter((h) => !local.has(h));
-  console.log(`상대   : ${remote.length}편`);
-  console.log(`받을 것: ${missing.length}편`);
+  say(`상대   : ${remote.length}편`);
+  say(`받을 것: ${missing.length}편`);
 
   if (!missing.length) {
-    console.log("\n✅ 이미 최신입니다 — 받을 것이 없습니다.");
+    say("\n✅ 이미 최신입니다 — 받을 것이 없습니다.");
     return;
   }
   if (dryRun) {
@@ -130,10 +136,11 @@ async function main() {
     }
   }
 
-  console.log(`\n완료: ${done}편 받음 (${(bytes / 1048576).toFixed(0)}MB)${failed ? ` · 실패 ${failed}편` : ""}`);
+  const stamp = new Date().toLocaleString("ko-KR", { hour12: false });
+  console.log(`\n[${stamp}] 완료: ${done}편 받음 (${(bytes / 1048576).toFixed(0)}MB)${failed ? ` · 실패 ${failed}편` : ""}`);
   if (failed) process.exit(1);
-  console.log("반대 방향도 맞추려면 상대 기기에서 이 명령을 실행하세요:");
-  console.log(`  node scripts/sync-pdfs.js <이 기기 주소>`);
+  say("반대 방향도 맞추려면 상대 기기에서 이 명령을 실행하세요:");
+  say(`  node scripts/sync-pdfs.js <이 기기 주소>`);
 }
 
 main().catch((e) => {
