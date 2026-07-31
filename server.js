@@ -30,6 +30,7 @@ const multer = require("multer");
 const { query } = require("@anthropic-ai/claude-agent-sdk");
 const { PDFDocument } = require("pdf-lib");
 const { createAuth } = require("./lib/auth");
+const { parseLenient } = require("./lib/jsonrepair");
 
 // ---------------------------------------------------------------------------
 // 제한 상수
@@ -681,6 +682,10 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac, mode =
       `시스템 프롬프트의 스키마대로 JSON 객체 하나만 최종 출력하세요.`;
 
   let resultText = null;
+  // SDK의 msg.result는 "마지막" 어시스턴트 메시지다. 모델이 JSON을 여러 메시지에 걸쳐
+  // 쓰면 앞부분이 빠진 조각만 오는 경우가 실측됐다(응답이 JSON 중간부터 시작).
+  // 그래서 어시스턴트 텍스트를 따로 모아 두고, result가 파싱되지 않으면 이쪽으로 재시도한다.
+  let textAccum = "";
 
   // ── 실제 진행도 계산 ──
   // 읽은 페이지/전체 페이지를 0~75%로(실측), 검색 완료 85%, 정리 시작 92%, 결과 100%.
@@ -728,8 +733,9 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac, mode =
               const q = ((block.input && block.input.query) || "").slice(0, 40);
               onProgress(`해설 자료 검색 중: "${q}"`, bump(Math.max(pct, 85)));
             }
-          } else if (block.type === "text" && block.text && block.text.trim().length > 40) {
-            onProgress("분석 결과를 정리하는 중…", bump(92));
+          } else if (block.type === "text" && block.text) {
+            textAccum += block.text; // 조각난 응답 대비용 백업 (아래 result 파싱 실패 시 사용)
+            if (block.text.trim().length > 40) onProgress("분석 결과를 정리하는 중…", bump(92));
           }
         }
       }
@@ -754,10 +760,10 @@ async function runAnalysis(pdfPath, pageCount, onProgress = () => {}, ac, mode =
     throw tagAuth(e); // for-await가 던진 조기 인증 실패도 AUTH로 표시
   }
 
-  if (resultText == null) {
+  if (resultText == null && !textAccum) {
     throw new Error("분석 에이전트가 결과를 반환하지 않았습니다.");
   }
-  return resultText;
+  return { result: resultText == null ? "" : resultText, accum: textAccum };
 }
 
 // ---------------------------------------------------------------------------
@@ -839,8 +845,24 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
   let lastRaw = "";
   for (let attempt = 1; attempt <= 2 && !analysis; attempt++) {
     try {
-      lastRaw = await runAnalysis(pdfPath, pageCount, onProgress, ac, mode);
-      analysis = parseModelJson(lastRaw);
+      const out = await runAnalysis(pdfPath, pageCount, onProgress, ac, mode);
+      lastRaw = out.result || out.accum;
+      let parsed;
+      try {
+        parsed = parseModelJson(out.result);
+      } catch (e1) {
+        // result가 조각이면 누적 텍스트로 재시도 — 모델 재호출 없이 살릴 수 있는 경우가 있다
+        if (!out.accum || out.accum === out.result) throw e1;
+        console.warn("[분석] result 파싱 실패 → 누적 텍스트로 재시도");
+        lastRaw = out.accum;
+        parsed = parseModelJson(out.accum);
+      }
+      // 복구가 됐더라도 앞부분이 잘려 조각만 남았을 수 있다. 조각을 분석 결과로 저장하면
+      // 제목 없는 레코드가 조용히 쌓이므로, 통짜 결과인지 필수 필드로 확인한다.
+      if (!parsed || typeof parsed.title !== "string" || !parsed.title.trim()) {
+        throw new Error("응답에 title이 없습니다 — 결과가 잘린 것으로 보입니다.");
+      }
+      analysis = parsed;
     } catch (e) {
       // 클라이언트가 취소(연결 종료)한 경우: 재시도·에러 전송 없이 조용히 종료
       if (aborted()) {
@@ -866,6 +888,13 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
         // 재시도: 클라 구간시계를 리셋하고 추정치를 1.3배로 부풀린다.
         sseSend(res, { type: "eta", phase: "analysis", estMs: Math.round(est.analysisMs * 1.3), estTotalMs: estTotal, retry: true });
       } else {
+        // 원본 응답을 남긴다 — 500자 미리보기만으로는 원인을 특정할 수 없다.
+        try {
+          fs.mkdirSync(STATS_DIR, { recursive: true });
+          const dump = path.join(STATS_DIR, `parse-fail-${hash.slice(0, 12)}-${Date.now()}.txt`);
+          fs.writeFileSync(dump, String(lastRaw).slice(0, 400000));
+          console.warn(`[분석 실패] 원본 응답 저장: ${dump}`);
+        } catch (err) {}
         sseSend(res, {
           type: "error",
           error: `분석에 실패했습니다 (2회 시도): ${e.message || ""}`,
@@ -948,17 +977,14 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
 
 // --- 방어적 JSON 파싱 ---------------------------------------------------------
 function parseModelJson(raw) {
-  let text = raw.trim();
-  // ```json ... ``` 펜스 제거
-  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  if (fence) text = fence[1].trim();
-  // 펜스가 아니어도 앞뒤에 잡설이 붙은 경우: 첫 { 부터 마지막 } 까지 시도
-  if (!text.startsWith("{")) {
-    const first = text.indexOf("{");
-    const last = text.lastIndexOf("}");
-    if (first !== -1 && last > first) text = text.slice(first, last + 1);
+  // 엄격 파싱 → 균형 잡힌 객체 추출 → 문법 복구 순으로 시도한다(lib/jsonrepair.js).
+  // 긴 JSON에서 모델이 이따금 문자열 안 따옴표를 이스케이프하지 않는데, 재분석은
+  // 사용량을 그만큼 더 쓰므로 고칠 수 있는 건 로컬에서 고친다.
+  const { data, stage } = parseLenient(raw);
+  if (stage !== "strict") {
+    console.warn(`[JSON 복구] ${stage} 단계에서 살려냄 (${String(raw).length}자)`);
   }
-  return JSON.parse(text); // 실패 시 호출부에서 처리
+  return data; // 실패 시 parseLenient가 던진다 → 호출부에서 처리
 }
 
 // --- Express ----------------------------------------------------------------
