@@ -1,0 +1,18 @@
+# 비밀·자격증명 — 이미지에 절대 들어가면 안 된다 (환경변수로 주입할 것)
+.env
+.env.*
+serviceAccountKey.json
+.claude/
+
+# 상태 데이터 — 볼륨(/data)으로 마운트한다
+pdfs/
+.stats/
+.mviz_gen/
+
+# 빌드 시 재설치하므로 로컬 것을 넣지 않는다 (플랫폼별 바이너리가 macOS용이라 섞이면 깨진다)
+node_modules/
+
+.git/
+.gitignore
+*.log
+plans/

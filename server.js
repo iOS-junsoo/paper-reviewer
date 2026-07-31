@@ -1,13 +1,18 @@
 require("dotenv").config();
 
-// ── 구독 인증 강제 + 키체인 계정 전환 활성화 ──────────────────────────────────
-// - ANTHROPIC_API_KEY 제거: API 과금 경로를 차단해 항상 구독(OAuth)만 쓰게 한다.
-// - CLAUDE_CODE_OAUTH_TOKEN 제거: SDK가 .env 고정 토큰 대신 macOS 키체인의 OAuth
-//   자격증명(= `claude auth login`이 관리하는, 설정 화면에서 전환하는 그 계정)을 쓴다.
-//   → '계정 전환'이 서버 재시작 없이 다음 분석부터 실제로 반영된다. .env 값은 백업으로 남음.
-//   (자격증명은 서버가 읽지/저장하지 않는다 — CLI/SDK가 키체인에서 직접 가져간다.)
+// ── 구독 인증 강제 + (macOS 한정) 키체인 계정 전환 활성화 ─────────────────────
+// - ANTHROPIC_API_KEY 제거: API 과금 경로를 차단해 항상 구독(OAuth)만 쓰게 한다. 플랫폼 무관.
+// - CLAUDE_CODE_OAUTH_TOKEN: macOS에서만 제거한다.
+//   · macOS  — 키체인에 OAuth 자격증명이 있다(= `claude auth login`이 관리하는, 설정 화면에서
+//     전환하는 그 계정). env 토큰을 지워야 SDK가 키체인을 보고, '계정 전환'이 서버 재시작
+//     없이 다음 분석부터 반영된다. .env 값은 백업으로 남음.
+//   · Linux(서버 배포) — 키체인이 없다. 여기서 토큰까지 지우면 인증 수단이 사라지므로
+//     `claude setup-token`으로 발급한 CLAUDE_CODE_OAUTH_TOKEN을 그대로 쓴다.
+//     대신 계정 전환(브라우저 OAuth)은 불가 → /settings/status의 canSwitchAccount=false.
+//   (어느 쪽이든 자격증명을 서버가 읽거나 저장하지 않는다 — CLI/SDK가 직접 가져간다.)
+const IS_MAC = process.platform === "darwin";
 if (process.env.ANTHROPIC_API_KEY) delete process.env.ANTHROPIC_API_KEY;
-if (process.env.CLAUDE_CODE_OAUTH_TOKEN) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+if (IS_MAC && process.env.CLAUDE_CODE_OAUTH_TOKEN) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 
 const crypto = require("crypto");
 const path = require("path");
@@ -18,6 +23,7 @@ const express = require("express");
 const multer = require("multer");
 const { query } = require("@anthropic-ai/claude-agent-sdk");
 const { PDFDocument } = require("pdf-lib");
+const { createAuth } = require("./lib/auth");
 
 // ---------------------------------------------------------------------------
 // 제한 상수
@@ -37,6 +43,13 @@ const MAX_FOLDER_DEPTH = 3; // 폴더 중첩 상한(조상 3개 = 최대 4단계
 
 const MODEL = process.env.MODEL || "claude-opus-5";
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
+
+// 상태 데이터 루트 — 원문 PDF·크롭 캐시·통계가 모두 여기 아래에 쌓인다.
+// 기본은 코드와 같은 폴더(로컬 개발 그대로). 서버 배포 시 DATA_DIR을 퍼시스턴트
+// 볼륨으로 지정하면 컨테이너를 다시 만들어도 업로드한 논문이 남는다.
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : __dirname;
+const STATS_DIR = path.join(DATA_DIR, ".stats");
 
 // 인증(토큰) 만료·실패 감지 — Agent SDK/CLI가 던지는 메시지나 결과 텍스트에서
 // 로그인·OAuth·인증 관련 신호를 찾아 사용자에게 "토큰 재발급" 안내를 띄운다.
@@ -94,7 +107,7 @@ function parseLimitReset(text) {
 }
 
 // 업로드된 원문 PDF 보관 (뷰어·재분석·질문 답변에 사용)
-const PDF_DIR = path.join(__dirname, "pdfs");
+const PDF_DIR = path.join(DATA_DIR, "pdfs");
 fs.mkdirSync(PDF_DIR, { recursive: true });
 // 그림 해설용으로 잘라낸 그림 이미지 캐시 (poppler pdftoppm으로 페이지 영역 크롭)
 const CROP_DIR = path.join(PDF_DIR, "crops");
@@ -153,15 +166,29 @@ rotateLogIfHuge(path.join(process.env.HOME || "", "Library/Logs/paper-reviewer.l
 const serviceAccountPath =
   process.env.FIREBASE_SERVICE_ACCOUNT || "./serviceAccountKey.json";
 
+// 서버 배포용: 키 파일을 이미지·저장소에 넣지 않고 환경변수로 주입한다.
+// (FIREBASE_SERVICE_ACCOUNT_JSON = serviceAccountKey.json의 내용 전체)
+// 파일 방식보다 우선하며, 값은 읽어서 admin에 넘길 뿐 디스크에 쓰지 않는다.
+let inlineServiceAccount = null;
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  try {
+    inlineServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  } catch (e) {
+    console.error("[저장소] FIREBASE_SERVICE_ACCOUNT_JSON 파싱 실패 — 파일/메모리로 폴백:", e.message);
+  }
+}
+
 let store;
 let firestoreReady = false;
 
 // 서비스 계정 키가 있으면 Firestore 시도 — 손상/오류 시 던지지 말고 메모리로 폴백
-if (fs.existsSync(serviceAccountPath)) {
+if (inlineServiceAccount || fs.existsSync(serviceAccountPath)) {
  try {
   const admin = require("firebase-admin");
   admin.initializeApp({
-    credential: admin.credential.cert(require(path.resolve(serviceAccountPath))),
+    credential: admin.credential.cert(
+      inlineServiceAccount || require(path.resolve(serviceAccountPath))
+    ),
   });
   const db = admin.firestore();
   const analyses = db.collection("analyses");
@@ -360,14 +387,14 @@ const METHOD_VIZ_V4 = fs.readFileSync(path.join(__dirname, "prompts", "method_vi
 // 타입 기반 HTML 시각화 생성 지시문 — method 섹션 재생성 시 별도 파이프라인으로 주입.
 const METHOD_VIZ_HTML_GEN = fs.readFileSync(path.join(__dirname, "prompts", "method_viz_html_gen.md"), "utf8");
 // 생성 HTML 산출 디렉터리(자가검증·디버깅용으로 파일 보존; .gitignore 대상).
-const MVIZ_GEN_DIR = path.join(__dirname, ".mviz_gen");
+const MVIZ_GEN_DIR = path.join(DATA_DIR, ".mviz_gen");
 try { fs.mkdirSync(MVIZ_GEN_DIR, { recursive: true }); } catch (e) {}
 pruneCacheDir(MVIZ_GEN_DIR, 30, 30 * 1024 * 1024); // 시각화 산출물 캐시 상한 30MB
 
 // ── ETA(예상 남은 시간) 예측 통계 ─────────────────────────────────────────────
 // 성공한 분석의 실측 소요 {pages, analysis_ms, viz_ms}를 롤링 보관해 다음 실행의 ETA를
 // 자가학습으로 예측한다(.gitignore 대상). 히스토리가 부족하면 시드값으로 폴백한다.
-const STATS_FILE = path.join(__dirname, ".stats", "durations.json");
+const STATS_FILE = path.join(STATS_DIR, "durations.json");
 const STATS_MAX = 40; // 최근 N회만 유지 — 중앙값 안정 + 파일 소형
 // 시드: 실측 기반 보수적 기본값(예: Balancing Act 20p ≈ 분석 324s · 시각화 334s).
 // 모드별 — simple(간단 분석)은 시각화 생략 + 출력 섹션 축소 + WebSearch 생략이라 훨씬 짧다.
@@ -943,6 +970,17 @@ if (process.env.ALLOWED_ORIGIN) {
   });
 }
 
+// 리버스 프록시(Caddy/nginx) 뒤에 두면 X-Forwarded-* 를 신뢰해야 클라이언트 IP와
+// https 여부를 제대로 읽는다. 프록시 없이 직접 노출할 때 켜면 IP 위조가 가능하므로 기본 off.
+if (process.env.TRUST_PROXY) app.set("trust proxy", process.env.TRUST_PROXY === "1" ? 1 : process.env.TRUST_PROXY);
+
+// ── 로그인 게이트 ────────────────────────────────────────────────────────────
+// express.static보다 반드시 앞. 뒤에 두면 index.html·app.js가 무인증으로 새어나간다.
+// urlencoded는 로그인 폼(POST /login) 본문을 읽기 위해 게이트보다 앞에 둔다.
+app.use(express.urlencoded({ extended: false, limit: "4kb" }));
+const auth = createAuth({ dataDir: STATS_DIR });
+app.use(auth.middleware);
+
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json({ limit: "1mb" })); // /api/ask·/api/notes 본문 (메모 최대치가 100kb 기본 한도 초과 가능)
 
@@ -1142,7 +1180,7 @@ app.post("/api/reanalyze/:hash", async (req, res) => {
 // --- GET /api/eta?pages=N — 모드별 예상 소요(모드 선택 다이얼로그용) -------------
 // 섹션 재생성 소요 자가학습 — 섹션별 최근 실측(ms) 롤링 보관, 중앙값으로 예측.
 // method는 시각화 자가검증 루프 포함이라 5분대, 텍스트 섹션은 1~2분대로 편차가 커 분리 기록.
-const SECTION_STATS_FILE = path.join(__dirname, ".stats", "section_durations.json");
+const SECTION_STATS_FILE = path.join(STATS_DIR, "section_durations.json");
 const SECTION_ETA_SEED = { method: 300000, figures: 130000, default: 90000 };
 function readSectionStats() {
   try { return JSON.parse(fs.readFileSync(SECTION_STATS_FILE, "utf8")); } catch (e) { return {}; }
@@ -1937,9 +1975,9 @@ app.put("/api/notes/:hash", async (req, res) => {
 // --- 설정: 구독 계정 상태 조회 + 재로그인 전환 (CLI 위임) -----------------------
 // 자격증명은 서버가 절대 읽거나 저장하지 않는다. 로그인은 `claude` CLI에 위임하고,
 // 서버는 CLI를 실행해 상태만 조회한다. macOS 키체인은 계정 1칸이라 전환 = 다시 로그인(직렬).
-// 보호: 이 앱은 앱 레벨 인증이 없고 네트워크 경계(로컬/Tailscale 전용, 공개 인터넷 미노출)로
-// 보호된다 — /settings/* 도 동일 서버·동일 경계를 탄다(별도 미들웨어 없음). 로그인 트리거는
-// 서버 머신에 브라우저 OAuth를 띄우는 민감 동작이므로 공개 배포 금지.
+// 보호: /settings/* 는 앞단의 로그인 게이트(lib/auth.js)를 반드시 통과한다 — 무인증 노출 금지.
+// 로그인 트리거는 "서버 머신"에 브라우저 OAuth 창을 띄우는 민감 동작이라, 화면 없는 서버
+// (Linux VPS 등)에서는 애초에 성립하지 않는다. 그래서 macOS에서만 허용한다.
 function resolveClaudeBin() {
   // env → PATH("claude") → homebrew → usr/local 순. launchd는 PATH가 빈약할 수 있어
   // 절대경로 후보는 존재할 때만 채택하고, 없으면 PATH의 "claude"로 폴백한다.
@@ -1954,11 +1992,20 @@ function getAuthStatus() {
       ["auth", "status", "--json"],
       { timeout: 15000, env: { ...process.env, CI: "1" } },
       (err, stdout) => {
-        if (err) return resolve({ loggedIn: false });
+        // 서버 배포(비-macOS)는 키체인 대신 env 토큰으로 인증한다. CLI가 상태를 못 읽어도
+        // 토큰이 설정돼 있으면 "토큰 구성됨"으로 보고한다 — 실제 유효성은 첫 호출에서 판명.
+        const byToken = !IS_MAC && !!process.env.CLAUDE_CODE_OAUTH_TOKEN;
+        if (err) return resolve(byToken ? { loggedIn: true, source: "token" } : { loggedIn: false });
         try {
           const j = JSON.parse(String(stdout));
-          resolve(j && typeof j === "object" ? j : { loggedIn: false });
-        } catch (e) { resolve({ loggedIn: false }); }
+          if (j && typeof j === "object") {
+            if (byToken && !j.loggedIn) j.loggedIn = true, j.source = "token";
+            return resolve(j);
+          }
+          resolve(byToken ? { loggedIn: true, source: "token" } : { loggedIn: false });
+        } catch (e) {
+          resolve(byToken ? { loggedIn: true, source: "token" } : { loggedIn: false });
+        }
       }
     );
   });
@@ -1975,7 +2022,7 @@ function startLogin(email) {
   return { ok: true };
 }
 // 자주 쓰는 계정 바로가기 — email은 전환 시 미리채우는 편의값일 뿐 자격증명이 아니다.
-const ACCOUNTS_FILE = path.join(__dirname, ".stats", "accounts.json");
+const ACCOUNTS_FILE = path.join(STATS_DIR, "accounts.json");
 function readAccounts() {
   try { const a = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, "utf8")); return Array.isArray(a) ? a : []; } catch (e) { return []; }
 }
@@ -1983,16 +2030,37 @@ function writeAccounts(arr) {
   try { fs.mkdirSync(path.dirname(ACCOUNTS_FILE), { recursive: true }); fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(arr)); } catch (e) {}
 }
 
+// 계정 전환은 서버 머신의 브라우저 OAuth + macOS 키체인에 의존한다.
+// 화면·키체인이 없는 서버(Linux)에서는 CLAUDE_CODE_OAUTH_TOKEN 환경변수로만 인증하므로,
+// 계정을 바꾸려면 `claude setup-token`으로 새 토큰을 발급해 env를 교체하고 재시작해야 한다.
+const SWITCH_UNAVAILABLE_MSG =
+  "이 서버에서는 계정 전환을 쓸 수 없습니다(브라우저·키체인 없음). " +
+  "다른 계정으로 바꾸려면 `claude setup-token`으로 발급한 토큰을 CLAUDE_CODE_OAUTH_TOKEN에 넣고 서버를 재시작하세요.";
+function requireMac(res) {
+  if (IS_MAC) return false;
+  res.status(501).json({ error: SWITCH_UNAVAILABLE_MSG });
+  return true;
+}
+
 app.get("/settings/status", async (req, res) => {
-  res.json({ auth: await getAuthStatus(), accounts: readAccounts(), model: MODEL });
+  res.json({
+    auth: await getAuthStatus(),
+    accounts: readAccounts(),
+    model: MODEL,
+    canSwitchAccount: IS_MAC,
+    switchHint: IS_MAC ? "" : SWITCH_UNAVAILABLE_MSG,
+    appAuth: auth.enabled, // 앱 로그인 게이트가 켜져 있나(=로그아웃 버튼을 보일지)
+  });
 });
 app.post("/settings/login", (req, res) => {
+  if (requireMac(res)) return;
   const email = req.body && typeof req.body.email === "string" ? req.body.email.trim().slice(0, 120) : "";
   console.log(`[계정 전환] 로그인 트리거${email ? " (" + email + ")" : ""} — 서버 머신에 브라우저가 열립니다`);
   startLogin(email);
   res.json({ ok: true });
 });
 app.post("/settings/logout", (req, res) => {
+  if (requireMac(res)) return;
   const child = spawn(resolveClaudeBin(), ["auth", "logout"], { detached: true, stdio: "ignore", env: { ...process.env } });
   child.on("error", () => {});
   child.unref();
@@ -2367,8 +2435,9 @@ getAuthStatus().then((a) => {
   }
 }).catch(() => {});
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(
-    `Paper Reviewer 실행 중: http://localhost:${PORT} (모델: ${MODEL}, 저장소: ${store.kind})`
+    `Paper Reviewer 실행 중: http://localhost:${PORT} (모델: ${MODEL}, 저장소: ${store.kind}, ` +
+    `인증: ${auth.enabled ? "비밀번호" : "로컬 전용"}, 데이터: ${DATA_DIR})`
   );
 });

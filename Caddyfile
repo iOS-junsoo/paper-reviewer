@@ -1,0 +1,39 @@
+# Caddy — 자동 HTTPS(Let's Encrypt) + 앱으로 리버스 프록시.
+# DOMAIN 환경변수는 docker-compose.yml이 .env에서 넘겨준다.
+{$DOMAIN} {
+	encode {
+		zstd gzip
+		# 압축 대상을 명시적으로 지정한다. text/event-stream(SSE)을 압축하면 프록시가
+		# 버퍼링해 분석 진행 상황이 실시간으로 안 오고 마지막에 몰아서 도착한다.
+		match {
+			header Content-Type text/html*
+			header Content-Type text/css*
+			header Content-Type text/plain*
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	reverse_proxy app:3000 {
+		# -1 = 버퍼링 없이 즉시 흘려보냄. SSE(진행률·부분 응답 스트리밍)에 필수.
+		flush_interval -1
+		transport http {
+			# 논문 한 편 정밀 분석이 10분을 넘길 수 있다. 기본 타임아웃이면 도중에 끊긴다.
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	# 업로드 상한은 앱(multer, 50MB)이 강제한다. 프록시에서는 여유 있게 잡아 둔다.
+	request_body {
+		max_size 60MB
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 3
+		}
+	}
+}

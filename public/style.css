@@ -3419,3 +3419,11 @@ footer {
   /* 채팅 FAB이 하단 도구/내용과 겹치지 않게 살짝 위로 */
   .chat-fab { bottom: 18px; right: 16px; }
 }
+
+/* 설정 모달 하단 — 앱 세션 로그아웃 (배포 환경에서만 노출) */
+.settings-applogout {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.settings-applogout .rtool { width: 100%; }

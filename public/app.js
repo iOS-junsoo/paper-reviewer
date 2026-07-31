@@ -1,3 +1,28 @@
+// ── 세션 만료 처리 ───────────────────────────────────────────────────────────
+// 서버 배포 시 로그인 게이트가 붙는다. 세션이 끊기면 모든 /api 응답이 401 JSON이 되는데,
+// 각 호출부가 이를 "분석 실패"로 오해하지 않도록 fetch를 한 겹 감싸 로그인 화면으로 보낸다.
+// (로컬 실행처럼 인증이 꺼져 있으면 401 자체가 없어 아무 영향이 없다.)
+(function guardSession() {
+  const raw = window.fetch.bind(window);
+  let redirecting = false;
+  window.fetch = async (...args) => {
+    const res = await raw(...args);
+    if (res.status === 401 && !redirecting) {
+      // 외부 API의 401까지 로그인 화면으로 보내면 안 되므로 같은 출처일 때만 처리.
+      // 출처를 못 읽으면(비정상 URL) 아무것도 하지 않고 호출부에 그대로 넘긴다.
+      let sameOrigin = false;
+      try {
+        sameOrigin = new URL(res.url || String(args[0]), location.href).origin === location.origin;
+      } catch (e) {}
+      if (sameOrigin) {
+        redirecting = true;
+        location.href = "/login";
+      }
+    }
+    return res;
+  };
+})();
+
 const dropzone = document.getElementById("dropzone");
 const pickBtn = document.getElementById("pick-btn");
 const fileInput = document.getElementById("file-input");
@@ -117,6 +142,16 @@ function renderSettings(ov, data) {
   }
   body.appendChild(card);
 
+  // 서버(Linux 등)에는 브라우저·키체인이 없어 계정 전환이 성립하지 않는다.
+  // 전환 UI를 숨기고 대체 방법만 안내한 뒤, 앱 로그아웃 버튼을 붙이고 끝낸다.
+  if (data.canSwitchAccount === false) {
+    const n = document.createElement("p");
+    n.className = "settings-note muted";
+    n.textContent = data.switchHint || "이 서버에서는 계정 전환을 쓸 수 없습니다.";
+    body.append(n, buildAppLogout(data) || document.createComment(''));
+    return;
+  }
+
   // 전환 안내
   const note = document.createElement("p");
   note.className = "settings-note muted";
@@ -174,6 +209,19 @@ function renderSettings(ov, data) {
     renderSettings(ov, await fetchSettings());
   });
   body.appendChild(form);
+  const out = buildAppLogout(data);
+  if (out) body.appendChild(out);
+}
+// 앱 세션 로그아웃 — 로그인 게이트가 켜진 배포 환경에서만 의미가 있다.
+// (Claude 계정 로그아웃이 아니라 이 서비스 접속 세션을 끊는 것)
+function buildAppLogout(data) {
+  if (!data || !data.appAuth) return null;
+  const f = document.createElement("form");
+  f.method = "POST";
+  f.action = "/logout";
+  f.className = "settings-applogout";
+  f.innerHTML = '<button type="submit" class="rtool">🚪 이 기기에서 로그아웃</button>';
+  return f;
 }
 async function startSwitch(ov, targetEmail, prevEmail) {
   const body = ov.querySelector(".settings-body");

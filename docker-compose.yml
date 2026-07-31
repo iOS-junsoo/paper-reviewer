@@ -1,0 +1,40 @@
+# Paper Reviewer — VPS 배포 구성 (앱 + Caddy 자동 HTTPS)
+#
+#   docker compose up -d --build
+#
+# 필요한 것: 같은 폴더의 .env (.env.example 참고), DNS A레코드가 이 서버를 가리킬 것.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Caddy 뒤에 있으므로 X-Forwarded-* 를 신뢰해야 클라이언트 IP(무차별 대입 잠금)와
+      # https 여부(Secure 쿠키)를 올바르게 읽는다. 프록시 1단계만 신뢰한다.
+      TRUST_PROXY: "1"
+    volumes:
+      # 업로드한 논문 원본·크롭 캐시·ETA 통계. 이 볼륨이 없으면 재배포마다 논문이 날아간다.
+      - paper_data:/data
+    expose:
+      - "3000"
+    # 앱을 호스트 포트로 직접 열지 않는다 — 반드시 Caddy(HTTPS)를 거치게 한다.
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN을 .env에 설정하세요 (예: paper.example.com)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # 발급받은 인증서 — 지우면 매번 재발급(Let's Encrypt 한도 주의)
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  paper_data:
+  caddy_data:
+  caddy_config:
