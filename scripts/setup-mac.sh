@@ -116,7 +116,7 @@ fi
 hdr "7. 논문 원본 PDF"
 if [ -d pdfs ]; then
   N=$(find pdfs -maxdepth 1 -name '*.pdf' 2>/dev/null | wc -l | tr -d ' ')
-  ok "pdfs/ 있음 — $N개"
+  ok "pdfs/ 있음 — ${N}개"
   [ "$N" -eq 0 ] && warn "PDF가 0개입니다. 분석 결과는 Firestore에서 보이지만 뷰어·그림·재분석은 원본이 필요합니다."
 else
   warn "pdfs/ 없음 — 새 논문 분석은 되지만 기존 논문의 뷰어·그림 탭은 동작하지 않습니다."
