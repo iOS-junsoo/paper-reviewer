@@ -1232,6 +1232,23 @@ app.get("/api/pdf/:hash", (req, res) => {
   res.sendFile(p);
 });
 
+// --- GET /api/pdf-manifest — 이 기기가 보관 중인 원문 PDF 해시 목록 ---------------
+// 기기 간 PDF 동기화(scripts/sync-pdfs.js)용. 분석 결과는 Firestore로 공유되지만
+// 원문 PDF는 로컬 디스크에만 있어 뷰어·그림 크롭·재분석이 기기마다 갈린다.
+// 파일명이 내용 해시라 서로 다른 기기의 목록을 합쳐도 충돌이 원천적으로 없다.
+app.get("/api/pdf-manifest", (req, res) => {
+  try {
+    const hashes = fs
+      .readdirSync(PDF_DIR)
+      .filter((f) => f.endsWith(".pdf"))
+      .map((f) => f.slice(0, -4))
+      .filter((h) => isValidHash(h));
+    res.json({ count: hashes.length, hashes });
+  } catch (e) {
+    res.status(500).json({ error: `목록 조회 실패: ${e.message}` });
+  }
+});
+
 // 그림 크롭 박스 결정은 lib/figurebox.js로 이동 (계획 1: 텍스트 "추론" → 실체 "실측").
 // Table→텍스트 스캔(L3), Figure→임베디드 이미지(L1)→잉크 밀도(L2)→L3 라우팅 +
 // 백지·절단 검증(L4). 모델 bbox는 방향·컬럼 힌트와 최종 폴백으로만 쓴다.
