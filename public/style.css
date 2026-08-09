@@ -3427,3 +3427,89 @@ footer {
   border-top: 1px solid var(--line);
 }
 .settings-applogout .rtool { width: 100%; }
+
+/* ── 수식 "숫자로 확인" 블록 ─────────────────────────────────────────────── */
+.eq-demo {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-deep);
+  overflow: hidden;
+}
+.eq-demo > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  list-style: none;
+}
+.eq-demo > summary::-webkit-details-marker { display: none; }
+.eq-demo > summary::after {
+  content: "▾";
+  margin-left: auto;
+  color: var(--ink-faint);
+  font-size: 11px;
+}
+.eq-demo:not([open]) > summary::after { content: "▸"; }
+.eq-demo-tag {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.eq-demo-purpose { color: var(--ink-soft); }
+.eq-demo-body { padding: 0 12px 12px; }
+.eq-demo-setup {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--ink-faint);
+  line-height: 1.6;
+}
+.eq-demo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* 숫자가 세로로 정렬되어야 경향이 눈에 들어온다 */
+  font-variant-numeric: tabular-nums;
+}
+.eq-demo-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--ink-soft);
+  padding: 4px 8px 6px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.eq-demo-table td {
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+}
+.eq-demo-table tr:last-child td { border-bottom: 0; }
+.eq-demo-out { font-weight: 600; }
+.eq-demo-sym { margin-right: 2px; }
+/* 막대 칸은 남는 폭을 전부 먹어 표 오른쪽에 추세를 그린다 */
+.eq-demo-barcol { width: 45%; }
+.eq-demo-bar {
+  display: block;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--accent);
+  opacity: 0.55;
+}
+.eq-demo-insight {
+  margin: 10px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--ink);
+  line-height: 1.65;
+}
+@media (max-width: 640px) {
+  .eq-demo-barcol { display: none; } /* 좁은 화면에선 숫자만 */
+}

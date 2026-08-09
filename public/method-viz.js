@@ -2044,6 +2044,150 @@ function fmtNum(n) {
   return Math.abs(n) >= 1000 ? n.toLocaleString() : String(Math.round(n * 100) / 100);
 }
 
+// ── 수식 실습: 모델이 낸 식을 화면에서 실제로 계산한다 ────────────────────────
+// 모델에게 숫자를 직접 쓰게 하면 산술이 틀려 표 전체를 못 믿게 된다. 그래서 모델은
+// 식만 내고 계산은 여기서 한다. 다만 모델 출력을 그대로 실행하는 셈이므로,
+// 허용된 토큰(x·Math·숫자·연산자)만 있는지 먼저 검사하고 아니면 조용히 표를 뺀다.
+const DEMO_ALLOWED = new Set([
+  "x", "Math", "abs", "sqrt", "cbrt", "exp", "expm1", "log", "log1p", "log2", "log10",
+  "pow", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+  "min", "max", "round", "floor", "ceil", "trunc", "sign", "hypot", "PI", "E", "LN2", "LN10",
+]);
+function compileDemo(expr) {
+  const src = String(expr || "").trim();
+  if (!src || src.length > 200) return null;
+  if (/[=;`\[\]]|=>|\bnew\b|\bfunction\b/.test(src)) return null; // 대입·구문·인덱싱 차단
+  const idents = src.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || [];
+  if (idents.some((id) => !DEMO_ALLOWED.has(id))) return null;
+  try {
+    const fn = new Function("x", "Math", `"use strict"; return (${src});`);
+    const probe = fn(1, Math); // 한 번 돌려 실제로 수를 내는지 확인
+    if (typeof probe !== "number") return null;
+    return (v) => {
+      try {
+        const r = fn(v, Math);
+        return typeof r === "number" && Number.isFinite(r) ? r : null;
+      } catch (e) { return null; }
+    };
+  } catch (e) { return null; }
+}
+// 자릿수가 제각각인 값들(0.0007과 1024가 한 표에)을 읽기 좋게 맞춘다
+function fmtDemo(v) {
+  if (v === null) return "—";
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  if (a >= 1e6 || a < 1e-4) return v.toExponential(2);
+  if (Number.isInteger(v)) return String(v);
+  return v.toFixed(a < 1 ? 4 : a < 100 ? 3 : 2);
+}
+function katexInto(el, latex, fallback) {
+  try { katex.render(latex, el, { displayMode: false, throwOnError: true }); }
+  catch (e) { el.textContent = fallback != null ? fallback : latex; }
+}
+
+/**
+ * 수식 하나의 숫자 실습 블록을 만든다. 만들 수 없으면 null(표를 아예 안 그린다).
+ * 값은 전부 여기서 계산하므로 표에 틀린 숫자가 실릴 수 없다.
+ */
+function buildNumericDemo(demo) {
+  if (!demo || typeof demo !== "object") return null;
+  const samples = (Array.isArray(demo.samples) ? demo.samples : [])
+    .map(Number).filter(Number.isFinite).slice(0, 12);
+  const f = compileDemo(demo.compute);
+  if (!f || samples.length < 2) return null;
+
+  const rows = samples.map((s) => ({ in: s, out: f(s) })).filter((r) => r.out !== null);
+  if (rows.length < 2) return null;
+
+  const wrap = document.createElement("details");
+  wrap.className = "eq-demo";
+  wrap.open = true;
+
+  const sum = document.createElement("summary");
+  sum.innerHTML = '<span class="eq-demo-tag">숫자로 확인</span>';
+  const purpose = document.createElement("span");
+  purpose.className = "eq-demo-purpose";
+  renderRich(purpose, demo.purpose || "값을 넣어 결과를 확인합니다.");
+  sum.appendChild(purpose);
+  wrap.appendChild(sum);
+
+  const body = document.createElement("div");
+  body.className = "eq-demo-body";
+
+  // 전제 + 고정값 — 무엇을 가정하고 계산한 표인지 밝혀야 숫자를 믿을 수 있다
+  const fixed = (Array.isArray(demo.fixed) ? demo.fixed : []).filter((v) => v && v.symbol != null);
+  if (demo.setup || fixed.length) {
+    const setup = document.createElement("p");
+    setup.className = "eq-demo-setup";
+    const parts = [];
+    if (demo.setup) parts.push(demo.setup);
+    if (fixed.length) {
+      parts.push(fixed.map((v) => `${v.symbol} = ${v.value}${v.meaning ? ` (${v.meaning})` : ""}`).join(" · "));
+    }
+    renderRich(setup, parts.join(" — "));
+    body.appendChild(setup);
+  }
+
+  const inLabel = (demo.input && demo.input.label) || "입력";
+  const outLabel = (demo.output && demo.output.label) || "결과";
+  const inSym = demo.input && demo.input.symbol;
+  const outSym = demo.output && demo.output.symbol;
+
+  // ── 추세 막대 — 표만 보면 경향이 안 보인다. 값의 상대 크기를 옆에 같이 그린다 ──
+  const outs = rows.map((r) => r.out);
+  const lo = Math.min(...outs, 0);
+  const hi = Math.max(...outs, 0);
+  const span = hi - lo || 1;
+
+  const table = document.createElement("table");
+  table.className = "eq-demo-table";
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  [[inLabel, inSym], [outLabel, outSym], ["", null]].forEach(([label, sym], i) => {
+    const th = document.createElement("th");
+    if (sym) {
+      const s = document.createElement("span");
+      s.className = "eq-demo-sym";
+      katexInto(s, sym, sym);
+      th.append(s, document.createTextNode(" " + label));
+    } else th.textContent = label;
+    if (i === 2) th.className = "eq-demo-barcol";
+    htr.appendChild(th);
+  });
+  thead.appendChild(htr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+    const tdIn = document.createElement("td");
+    tdIn.textContent = fmtDemo(r.in);
+    const tdOut = document.createElement("td");
+    tdOut.className = "eq-demo-out";
+    tdOut.textContent = fmtDemo(r.out);
+    const tdBar = document.createElement("td");
+    tdBar.className = "eq-demo-barcol";
+    const bar = document.createElement("span");
+    bar.className = "eq-demo-bar";
+    bar.style.width = `${Math.max(2, ((r.out - lo) / span) * 100)}%`;
+    tdBar.appendChild(bar);
+    tr.append(tdIn, tdOut, tdBar);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  body.appendChild(table);
+
+  if (demo.insight) {
+    const ins = document.createElement("p");
+    ins.className = "eq-demo-insight";
+    renderRich(ins, demo.insight);
+    body.appendChild(ins);
+  }
+
+  wrap.appendChild(body);
+  return wrap;
+}
+
 function renderEquations(equations, equationFlow, methodSteps = []) {
   const panel = document.getElementById("panel-equations");
   panel.innerHTML = "";
@@ -2240,6 +2384,11 @@ function renderEquations(equations, equationFlow, methodSteps = []) {
       renderRich(ana, eq.analogy);
       item.appendChild(ana);
     }
+
+    // 숫자로 확인 — 설명·비유 다음에 두어 "읽고 → 직접 값을 본다" 순서가 되게 한다.
+    // 옛 분석에는 numeric_demo가 없으므로 그냥 안 그려진다(섹션 재생성하면 생김).
+    const demoEl = buildNumericDemo(eq.numeric_demo);
+    if (demoEl) item.appendChild(demoEl);
     panel.appendChild(item);
   });
 }
