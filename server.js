@@ -540,14 +540,27 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "analogy": "이 수식 전체를 일상 상황에 빗댄, 읽자마자 그림이 그려지는 비유 한 문장",
       "variables": [ { "symbol": "Q", "meaning": "query 행렬 — '내가 지금 찾고 있는 것'에 해당" } ],
       "numeric_demo": {
-        "purpose": "이 수식이 무엇을 하는지 숫자로 확인하는 한 줄 (무엇이 커지면 무엇이 어떻게 되는가)",
-        "setup": "샘플의 전제 한 줄 (예: q·k 성분이 평균 0, 분산 1인 경우)",
-        "input": { "symbol": "d_k", "label": "키 차원" },
-        "output": { "symbol": "\\sqrt{d_k}", "label": "스케일링 계수" },
-        "samples": [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048],
-        "compute": "Math.sqrt(x)",
-        "fixed": [ { "symbol": "h", "value": 8, "meaning": "헤드 수" } ],
-        "insight": "표를 보고 읽어내야 할 결론 한 문장"
+        "purpose": "이 계산으로 확인할 것 한 줄",
+        "setup": "전제 한 줄 (없으면 null)",
+        "constants": [ { "key": "tau", "symbol": "\\tau", "value": 0.07, "meaning": "온도 (논문 설정값)" } ],
+        "inputs": [
+          { "key": "sp", "symbol": "s_p", "label": "양성 쌍 유사도" },
+          { "key": "sn", "symbol": "s_n", "label": "음성 쌍 유사도" }
+        ],
+        "steps": [
+          { "key": "pos", "label": "양성 점수 지수화", "latex": "\\exp(s_p/\\tau)", "compute": "Math.exp(sp/tau)" },
+          { "key": "neg", "label": "음성 점수 지수화", "latex": "\\exp(s_n/\\tau)", "compute": "Math.exp(sn/tau)" },
+          { "key": "prob", "label": "양성이 뽑힐 확률", "latex": "\\frac{pos}{pos+neg}", "compute": "pos/(pos+neg)" },
+          { "key": "loss", "label": "손실", "latex": "-\\log(prob)", "compute": "-Math.log(prob)" }
+        ],
+        "result": { "key": "loss", "symbol": "\\mathcal{L}", "label": "대조 손실" },
+        "samples": [
+          { "name": "확실히 맞는 쌍", "group": "쉬운 예", "values": { "sp": 0.95, "sn": 0.10 } },
+          { "name": "애매한 쌍", "group": "어려운 예", "values": { "sp": 0.55, "sn": 0.50 } }
+        ],
+        "walkthrough": 0,
+        "aggregate": "mean",
+        "insight": "성향별로 값이 어떻게 갈리는지 + 그래서 무엇을 뜻하는지 한두 문장"
       }
     }
   ]
@@ -592,13 +605,17 @@ ${METHOD_VIZ_V4}
 - suggested_questions: 세미나 발표에서 청중이 실제로 던질 법한 날카로운 질문 4~6개. 각 질문은 category(핵심 공백/방법/실험 설계/선행 연구 대비)로 분류하고, why에 "이 질문이 왜 나올지 + 어떻게 답하면 좋을지"를 한 줄로 쓰세요(가능하면 limitations·ablations 내용에 근거). 발표자의 'Q&A 준비'에 쓰이며, 클릭하면 질문하기로 연결됩니다. 가장 날카로운(답하기 까다로운) 순서로.
 - glossary: 이 논문을 따라가는 데 꼭 필요한 핵심 기호·전문 용어 6~15개. term은 영어 원어나 기호 이름, latex는 수학 기호일 때만 KaTeX 문자열(아니면 null), meaning은 한 줄 쉬운 뜻. 발표 중 표기를 잊지 않도록 돕는 용어집입니다. 수식 변수표와 중복돼도 좋으니 한 곳에 모으세요.
 - related_papers: 이 논문을 이해하기 위해 ==먼저 읽으면 좋은 선행 논문 3~5편==. 본문에서 중요하게 인용된 것 위주로, reason에 "왜 먼저"를 한 줄로. link는 WebSearch로 실제 arXiv URL(https://arxiv.org/abs/...)을 확인해 넣고, 확인 못 하면 null (가짜 URL 금지).
-- equations[].numeric_demo: 수식을 ==실제 숫자로 돌려본 결과 표==를 만들기 위한 재료. 독자가 "이 수식이 무엇을 하는지"를 값의 변화로 체감하게 하는 것이 목적입니다.
-  · ==숫자를 직접 계산해서 적지 마세요.== compute에 JavaScript 식만 쓰면 화면이 실제로 계산합니다. (직접 계산한 값은 틀리기 쉬워 표 전체를 못 믿게 됩니다.)
-  · compute: 입력값 x와 Math만 쓰는 순수 식 하나 (예: "Math.sqrt(x)", "1/(1+Math.exp(-x))", "-Math.log(x)"). 다른 변수가 필요하면 fixed에 뜻을 적고 식에는 그 숫자를 직접 써넣으세요. 대입·세미콜론·함수 정의는 쓸 수 없습니다.
-  · samples: 8~12개. ==변화가 눈에 보이도록== 고르세요 — 배수로 키우거나(4,8,16,…) 의미 있는 구간을 고르게 훑거나. 논문이 실제로 쓴 값(예: d_k=64, T=0.07)이 있으면 반드시 포함하세요.
-  · 수식이 벡터·행렬 연산이면 ==대표 스칼라 지표 하나로 축약==하세요 (예: 점수의 표준편차, 노름, 손실값, 확률). 무리하게 전체를 재현할 필요 없습니다.
-  · purpose는 "무엇이 커지면 무엇이 어떻게 되는가", insight는 표를 보고 얻을 결론. 둘 다 한 문장.
-  · ==숫자로 보여줄 것이 없는 수식이면 numeric_demo는 null==로 두세요 (억지로 만들지 말 것).
+- equations[].numeric_demo: 수식에 ==실제 숫자를 넣어 손으로 풀듯 전개==해 보여주기 위한 재료. 화면은 이걸로 ① 샘플 하나의 단계별 계산 과정 ② 샘플 전체의 집계값 ③ 샘플 성향별 비교, 세 가지를 그립니다. 독자가 "이 수식이 무슨 일을 하는지"를 값의 흐름으로 체감하는 것이 목적입니다.
+  · ==숫자를 직접 계산해서 적지 마세요.== compute에 JavaScript 식만 쓰면 화면이 전부 계산합니다. (직접 쓴 값은 틀리기 쉬워 표 전체를 못 믿게 됩니다.) samples의 values는 "입력값"이므로 당연히 직접 씁니다 — 계산 결과만 쓰지 않는 것입니다.
+  · inputs: 샘플마다 달라지는 입력 변수들. key는 JS 식별자(영문 소문자, 예 "sp"), symbol은 논문 기호의 LaTeX.
+  · constants: 샘플과 무관하게 고정된 값. ==논문이 실제로 쓴 값을 그대로== 쓰세요(예: τ=0.07, d_k=64).
+  · steps: 계산을 ==사람이 손으로 푸는 순서대로 3~6단계==로 쪼개세요. 한 줄로 끝내지 말고 중간 산물을 드러내야 과정이 보입니다. 각 단계의 key는 뒤 단계에서 변수로 쓸 수 있습니다. compute에는 inputs·constants·앞선 steps의 key와 Math만 쓸 수 있습니다(대입·세미콜론·함수 정의 불가).
+  · latex는 그 단계를 기호로 쓴 식. 화면이 이걸 렌더한 뒤 바로 아래에 숫자를 대입한 형태와 결과를 붙입니다.
+  · samples: 8~12개. ==group에 성향을 붙여 2~4개 부류로 나누세요== (예: "쉬운 예"/"어려운 예", "정렬됨"/"어긋남", "짧은 문장"/"긴 문장"). 부류에 따라 결과가 갈리는 것을 보여주는 것이 이 기능의 핵심입니다. name은 그 샘플을 한눈에 알아볼 짧은 이름.
+  · walkthrough: 단계별로 자세히 전개할 샘플의 인덱스. ==가장 전형적인 것== 하나를 고르세요.
+  · aggregate: 나머지 샘플들을 어떻게 합칠지 — "mean"(평균) | "sum"(합) | "max" | "min". 손실·확률처럼 배치 평균이 의미 있으면 mean.
+  · 수식이 벡터·행렬 연산이면 ==대표 스칼라로 축약==하세요(성분 하나, 노름, 평균 등). 무리하게 전체를 재현할 필요 없습니다.
+  · ==숫자로 풀어 보일 것이 없는 수식이면 numeric_demo는 null==로 두세요 (억지로 만들지 말 것).
 - equation_flow: 수식 탭 맨 위에 표시되는 "수식 로드맵". equations의 순서를 따라 각 수식을 하나의 노드로 잇고, goal에는 그 수식이 구하는 것을 짧게, why에는 왜 그걸 구해야 전체 그림이 완성되는지를 쓰세요. 사용자가 개별 수식을 읽기 전에 "왜 이 수식들이 이 순서로 필요한가"를 먼저 이해하는 용도입니다. 수식이 없으면 null.
 
 강조 마크업 (background / problem / description / role / explanation / analogy / meaning 텍스트 안에서 사용):

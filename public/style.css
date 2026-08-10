@@ -3428,7 +3428,7 @@ footer {
 }
 .settings-applogout .rtool { width: 100%; }
 
-/* ── 수식 "숫자로 확인" 블록 ─────────────────────────────────────────────── */
+/* ── 수식 "숫자로 확인" — ① 단계별 전개 ② 전체 표 ③ 성향별 비교 ───────────── */
 .eq-demo {
   margin-top: 14px;
   border: 1px solid var(--line);
@@ -3437,79 +3437,116 @@ footer {
   overflow: hidden;
 }
 .eq-demo > summary {
-  cursor: pointer;
-  padding: 10px 12px;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 13px;
-  list-style: none;
+  cursor: pointer; padding: 10px 12px; display: flex; align-items: baseline; gap: 8px;
+  font-size: 13px; list-style: none;
 }
 .eq-demo > summary::-webkit-details-marker { display: none; }
-.eq-demo > summary::after {
-  content: "▾";
-  margin-left: auto;
-  color: var(--ink-faint);
-  font-size: 11px;
-}
+.eq-demo > summary::after { content: "▾"; margin-left: auto; color: var(--ink-faint); font-size: 11px; }
 .eq-demo:not([open]) > summary::after { content: "▸"; }
 .eq-demo-tag {
-  flex: none;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: var(--accent-soft);
-  color: var(--accent);
+  flex: none; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 5px;
+  background: var(--accent-soft); color: var(--accent);
 }
 .eq-demo-purpose { color: var(--ink-soft); }
-.eq-demo-body { padding: 0 12px 12px; }
-.eq-demo-setup {
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--ink-faint);
-  line-height: 1.6;
+.eq-demo-body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 16px; }
+.eq-demo-setup { margin: 0; font-size: 12px; color: var(--ink-faint); line-height: 1.6; }
+
+/* 세 층 공통 머리말 */
+.eqd-walk-head { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.eqd-step-tag {
+  flex: none; width: 19px; height: 19px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+  display: grid; place-items: center;
 }
-.eq-demo-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-  /* 숫자가 세로로 정렬되어야 경향이 눈에 들어온다 */
+.eqd-walk-title { font-size: 13px; font-weight: 600; }
+.eqd-sym { display: inline-block; }
+
+/* ── ① 단계별 전개 ── */
+.eqd-walk-sample { display: flex; align-items: center; gap: 7px; font-size: 13px; margin-bottom: 6px; }
+.eqd-group-chip {
+  font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+  background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+}
+.eqd-given { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 11px; }
+.eqd-chip {
+  font-size: 12px; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--card);
   font-variant-numeric: tabular-nums;
 }
-.eq-demo-table th {
-  text-align: left;
-  font-weight: 600;
-  font-size: 12px;
-  color: var(--ink-soft);
-  padding: 4px 8px 6px 0;
-  border-bottom: 1px solid var(--line);
-  white-space: nowrap;
+.eqd-chip-const { opacity: 0.72; }
+.eqd-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.eqd-step {
+  padding: 9px 11px; border-radius: 8px; background: var(--card);
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
 }
-.eq-demo-table td {
-  padding: 3px 8px 3px 0;
+.eqd-step-label { font-size: 12px; font-weight: 600; color: var(--ink-soft); margin-bottom: 5px; }
+.eqd-step-latex { margin-bottom: 6px; overflow-x: auto; }
+/* 숫자를 대입한 식 — 과정을 눈으로 따라가는 핵심 줄 */
+.eqd-step-calc {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 7px;
+  font-variant-numeric: tabular-nums;
+}
+.eqd-subst {
+  font-size: 12.5px; color: var(--ink-soft); background: var(--paper-deep);
+  padding: 2px 7px; border-radius: 5px; overflow-wrap: anywhere;
+}
+.eqd-eq { color: var(--ink-faint); }
+.eqd-val { font-size: 13.5px; font-weight: 700; color: var(--accent); }
+.eqd-final {
+  margin-top: 11px; padding: 9px 11px; border-radius: 8px;
+  background: var(--accent-soft); display: flex; align-items: baseline; gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+.eqd-final-label { font-size: 12px; color: var(--ink-soft); }
+.eqd-final-val { font-size: 15px; font-weight: 700; color: var(--accent); margin-left: auto; }
+
+/* ── ② 전체 샘플 표 ── */
+.eqd-table {
+  width: 100%; border-collapse: collapse; font-size: 12.5px;
+  font-variant-numeric: tabular-nums; /* 숫자가 세로로 맞아야 경향이 보인다 */
+}
+.eqd-table th {
+  text-align: left; font-weight: 600; font-size: 11.5px; color: var(--ink-soft);
+  padding: 4px 8px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.eqd-table td {
+  padding: 4px 8px 4px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
 }
-.eq-demo-table tr:last-child td { border-bottom: 0; }
-.eq-demo-out { font-weight: 600; }
-.eq-demo-sym { margin-right: 2px; }
-/* 막대 칸은 남는 폭을 전부 먹어 표 오른쪽에 추세를 그린다 */
-.eq-demo-barcol { width: 45%; }
-.eq-demo-bar {
-  display: block;
-  height: 7px;
-  border-radius: 4px;
-  background: var(--accent);
-  opacity: 0.55;
+.eqd-table tr:last-child td { border-bottom: 0; }
+.eqd-name { display: flex; align-items: center; gap: 6px; }
+.eqd-out { font-weight: 700; }
+/* ①에서 손으로 푼 그 샘플을 표에서 바로 찾을 수 있게 */
+.eqd-row-walk { background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+.eqd-barcol { width: 32%; }
+.eqd-bar { display: block; height: 7px; border-radius: 4px; background: var(--accent); opacity: 0.55; }
+.eqd-agg {
+  margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line);
+  display: flex; align-items: baseline; gap: 8px; font-variant-numeric: tabular-nums;
 }
+.eqd-agg-label { font-size: 12px; color: var(--ink-soft); }
+.eqd-agg-val { font-size: 15px; font-weight: 700; color: var(--accent); margin-left: auto; }
+
+/* ── ③ 성향별 비교 ── */
+.eqd-group-list { display: flex; flex-direction: column; gap: 8px; }
+.eqd-group-row { display: grid; grid-template-columns: minmax(90px, 26%) 1fr auto; align-items: center; gap: 10px; }
+.eqd-group-name { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.eqd-group-n { font-size: 11px; color: var(--ink-faint); }
+.eqd-group-barwrap {
+  background: color-mix(in srgb, var(--line) 40%, transparent); border-radius: 4px; overflow: hidden;
+}
+.eqd-group-val { text-align: right; font-variant-numeric: tabular-nums; }
+.eqd-group-val strong { font-size: 13.5px; }
+.eqd-group-range { display: block; font-size: 10.5px; color: var(--ink-faint); }
+.eqd-group-note { margin: 9px 0 0; font-size: 11px; color: var(--ink-faint); }
+
 .eq-demo-insight {
-  margin: 10px 0 0;
-  padding-top: 9px;
-  border-top: 1px solid var(--line);
-  font-size: 13px;
-  color: var(--ink);
-  line-height: 1.65;
+  margin: 0; padding-top: 11px; border-top: 1px solid var(--line);
+  font-size: 13px; line-height: 1.65;
 }
+
 @media (max-width: 640px) {
-  .eq-demo-barcol { display: none; } /* 좁은 화면에선 숫자만 */
+  .eqd-barcol { display: none; }
+  .eqd-group-row { grid-template-columns: 1fr auto; }
+  .eqd-group-barwrap { grid-column: 1 / -1; }
 }

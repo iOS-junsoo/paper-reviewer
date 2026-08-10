@@ -2044,146 +2044,418 @@ function fmtNum(n) {
   return Math.abs(n) >= 1000 ? n.toLocaleString() : String(Math.round(n * 100) / 100);
 }
 
-// ── 수식 실습: 모델이 낸 식을 화면에서 실제로 계산한다 ────────────────────────
-// 모델에게 숫자를 직접 쓰게 하면 산술이 틀려 표 전체를 못 믿게 된다. 그래서 모델은
-// 식만 내고 계산은 여기서 한다. 다만 모델 출력을 그대로 실행하는 셈이므로,
-// 허용된 토큰(x·Math·숫자·연산자)만 있는지 먼저 검사하고 아니면 조용히 표를 뺀다.
-const DEMO_ALLOWED = new Set([
-  "x", "Math", "abs", "sqrt", "cbrt", "exp", "expm1", "log", "log1p", "log2", "log10",
+// ── 수식 실습: 실제 숫자를 넣어 손으로 풀듯 전개한다 ──────────────────────────
+// 세 층으로 보여준다.
+//   ① 샘플 하나를 단계별로 — 기호식 → 숫자를 대입한 식 → 값
+//   ② 샘플 전체를 같은 계산에 통과시킨 표 + 집계값(평균 등)
+//   ③ 샘플 성향(group)별 비교 — 부류에 따라 결과가 어떻게 갈리는지
+//
+// 값은 전부 여기서 계산한다. 모델에게 숫자를 쓰게 하면 산술이 틀려 표 전체를 못 믿게
+// 되기 때문이다. 대신 모델이 낸 식을 실행하는 셈이므로, 허용된 이름만 쓰였는지
+// 먼저 검사하고 하나라도 어긋나면 블록을 통째로 그리지 않는다.
+const DEMO_MATH = [
+  "abs", "sqrt", "cbrt", "exp", "expm1", "log", "log1p", "log2", "log10",
   "pow", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
-  "min", "max", "round", "floor", "ceil", "trunc", "sign", "hypot", "PI", "E", "LN2", "LN10",
-]);
-function compileDemo(expr) {
+  "min", "max", "round", "floor", "ceil", "trunc", "sign", "hypot",
+  "PI", "E", "LN2", "LN10", "SQRT2",
+];
+const DEMO_MATH_SET = new Set(DEMO_MATH);
+
+/**
+ * 모델이 낸 식을 검사해 실행 가능한 함수로 만든다. 안 되면 null.
+ * @param {string} expr  예: "Math.exp(sp/tau)"
+ * @param {string[]} vars 이 식에서 쓸 수 있는 변수명 (inputs·constants·앞선 steps의 key)
+ */
+function compileExpr(expr, vars) {
   const src = String(expr || "").trim();
-  if (!src || src.length > 200) return null;
-  if (/[=;`\[\]]|=>|\bnew\b|\bfunction\b/.test(src)) return null; // 대입·구문·인덱싱 차단
-  const idents = src.match(/[A-Za-z_$][A-Za-z0-9_$]*/g) || [];
-  if (idents.some((id) => !DEMO_ALLOWED.has(id))) return null;
+  if (!src || src.length > 240) return null;
+  // 구문을 늘리거나 객체를 타고 들어갈 수 있는 것은 전부 차단.
+  //  · \ — 유니코드 이스케이프로 식별자 검사를 우회하는 길을 막는다 (Math 등)
+  //  · // /* — 주석으로 뒷부분을 숨기는 길
+  //  · [ ] { } ` ; = => new function return — 인덱싱·구문 확장
+  //  · .foo( — Math 외의 메서드 호출 (Math.xxx는 아래에서 따로 허용)
+  if (/\\|\/\/|\/\*/.test(src)) return null;
+  if (/[=;`\[\]{}]|=>|\bnew\b|\bfunction\b|\breturn\b|\.\s*\w+\s*\(/.test(src.replace(/Math\s*\.\s*\w+/g, "M"))) {
+    return null;
+  }
+  const allowed = new Set(vars);
+  allowed.add("Math");
+  // 식별자 검사 — Math.xxx 의 xxx는 Math 멤버 목록에 있어야 한다
+  const idRe = /(Math\s*\.\s*)?([A-Za-z_$][A-Za-z0-9_$]*)/g;
+  let m;
+  while ((m = idRe.exec(src)) !== null) {
+    const isMember = !!m[1];
+    const name = m[2];
+    if (isMember) {
+      if (!DEMO_MATH_SET.has(name)) return null;
+    } else if (name !== "Math" && !allowed.has(name)) {
+      return null;
+    }
+  }
+  const names = Array.from(allowed).filter((n) => n !== "Math");
   try {
-    const fn = new Function("x", "Math", `"use strict"; return (${src});`);
-    const probe = fn(1, Math); // 한 번 돌려 실제로 수를 내는지 확인
-    if (typeof probe !== "number") return null;
-    return (v) => {
+    const fn = new Function(...names, "Math", `"use strict"; return (${src});`);
+    return (scope) => {
       try {
-        const r = fn(v, Math);
+        const r = fn(...names.map((n) => scope[n]), Math);
         return typeof r === "number" && Number.isFinite(r) ? r : null;
-      } catch (e) { return null; }
+      } catch (e) {
+        return null;
+      }
     };
-  } catch (e) { return null; }
+  } catch (e) {
+    return null;
+  }
 }
-// 자릿수가 제각각인 값들(0.0007과 1024가 한 표에)을 읽기 좋게 맞춘다
+
+// 자릿수가 제각각인 값들(0.0007과 1024가 한 화면에)을 읽기 좋게 맞춘다
 function fmtDemo(v) {
-  if (v === null) return "—";
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
   const a = Math.abs(v);
   if (a === 0) return "0";
   if (a >= 1e6 || a < 1e-4) return v.toExponential(2);
   if (Number.isInteger(v)) return String(v);
   return v.toFixed(a < 1 ? 4 : a < 100 ? 3 : 2);
 }
-function katexInto(el, latex, fallback) {
-  try { katex.render(latex, el, { displayMode: false, throwOnError: true }); }
-  catch (e) { el.textContent = fallback != null ? fallback : latex; }
+
+/**
+ * 대입식에 쓸 숫자 표기. 표(fmtDemo)보다 정밀하다.
+ *
+ * 왜 따로 두는가: 표시용 반올림을 그대로 쓰면 대입식이 "− log(1.0000) = 5.33e-6"처럼
+ * 계산이 틀린 것으로 보인다(실제 확률은 0.99999467). 과정을 믿게 하려고 만든 기능이
+ * 오히려 신뢰를 깎는다. 그래서 ==원값과 사실상 구분되지 않을 만큼== 자리수를 늘리되,
+ * 그 조건을 만족하는 ==가장 짧은== 표기를 고른다.
+ *
+ * 기준을 1e-8로 잡은 이유: 1에 아주 가까운 확률은 상대오차가 작아도 뒤이은 log를 지나며
+ * 오차가 크게 벌어진다. 0.999995(상대오차 5e-7)로 줄이면 -log가 5.00e-6이 되어 실제
+ * 결과 5.33e-6과 눈에 띄게 어긋난다. 1e-8이면 그 연쇄까지 맞아떨어진다.
+ */
+function fmtPrecise(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
+  if (v === 0) return "0";
+  if (Number.isInteger(v) && Math.abs(v) < 1e15) return String(v);
+  const a = Math.abs(v);
+  // 아주 크거나 작은 값은 지수 표기 — 0.0000053262677 같은 줄은 읽히지 않는다.
+  // 가수 자리를 넉넉히(6자리) 둬서 정밀도는 유지한다.
+  if (a >= 1e7 || a < 1e-4) return v.toExponential(6).replace(/\.?0+e/, "e");
+  for (let p = 4; p <= 12; p++) {
+    const s = Number(v.toPrecision(p));
+    if (Math.abs(s - v) <= a * 1e-8) return String(s);
+  }
+  return String(Number(v.toPrecision(12)));
 }
 
 /**
- * 수식 하나의 숫자 실습 블록을 만든다. 만들 수 없으면 null(표를 아예 안 그린다).
- * 값은 전부 여기서 계산하므로 표에 틀린 숫자가 실릴 수 없다.
+ * 계산식을 "숫자를 대입한 모습"으로 바꾼다 — 과정을 눈으로 따라가게 하는 핵심.
+ *   "Math.exp(sp/tau)" + {sp:0.95, tau:0.07}  →  "exp(0.95 / 0.07)"
+ * Math. 접두사를 떼고 변수는 값으로 치환하며, 연산자 둘레에 공백을 넣어 읽기 쉽게 한다.
+ */
+function substituteExpr(expr, scope) {
+  let out = String(expr || "").replace(/Math\s*\.\s*/g, "");
+  out = out.replace(/[A-Za-z_$][A-Za-z0-9_$]*/g, (name) => {
+    if (Object.prototype.hasOwnProperty.call(scope, name) && typeof scope[name] === "number") {
+      return fmtPrecise(scope[name]);
+    }
+    return name; // exp·log 같은 함수 이름은 그대로 둔다
+  });
+  return out.replace(/([+\-*/])/g, " $1 ").replace(/\s{2,}/g, " ").trim();
+}
+
+function katexInto(el, latex, fallback) {
+  try {
+    katex.render(latex, el, { displayMode: false, throwOnError: true });
+  } catch (e) {
+    el.textContent = fallback != null ? fallback : latex;
+  }
+}
+
+/**
+ * numeric_demo를 실행 가능한 형태로 준비한다. 하나라도 어긋나면 null(블록을 안 그린다).
+ * 여기서 모든 검사를 끝내므로, 이후 렌더 코드는 데이터가 성립한다고 가정해도 된다.
+ */
+function prepareDemo(demo) {
+  if (!demo || typeof demo !== "object") return null;
+
+  const isKey = (k) => typeof k === "string" && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k);
+
+  const constants = (Array.isArray(demo.constants) ? demo.constants : [])
+    .filter((c) => c && isKey(c.key) && Number.isFinite(Number(c.value)))
+    .map((c) => ({ ...c, value: Number(c.value) }));
+  const inputs = (Array.isArray(demo.inputs) ? demo.inputs : []).filter((v) => v && isKey(v.key));
+  const rawSteps = (Array.isArray(demo.steps) ? demo.steps : []).filter((st) => st && isKey(st.key));
+  if (!rawSteps.length || !inputs.length) return null;
+
+  // 단계는 앞선 단계의 결과만 쓸 수 있다 — 순서를 강제해야 계산이 성립한다
+  const known = new Set([...constants.map((c) => c.key), ...inputs.map((v) => v.key)]);
+  const steps = [];
+  for (const st of rawSteps) {
+    const fn = compileExpr(st.compute, Array.from(known));
+    if (!fn) return null; // 하나라도 못 믿으면 전체를 포기한다
+    steps.push({ ...st, fn });
+    known.add(st.key);
+  }
+
+  const samples = (Array.isArray(demo.samples) ? demo.samples : [])
+    .filter((sp) => sp && sp.values && typeof sp.values === "object")
+    .map((sp, i) => {
+      const values = {};
+      let ok = true;
+      inputs.forEach((v) => {
+        const n = Number(sp.values[v.key]);
+        if (!Number.isFinite(n)) ok = false;
+        values[v.key] = n;
+      });
+      return ok ? { name: sp.name || `샘플 ${i + 1}`, group: sp.group || "", values } : null;
+    })
+    .filter(Boolean)
+    .slice(0, 14);
+  if (samples.length < 2) return null;
+
+  const resultKey = (demo.result && demo.result.key) || steps[steps.length - 1].key;
+  if (!known.has(resultKey)) return null;
+
+  // 샘플별로 전 단계를 실제 계산 — 여기서 나온 값만 화면에 쓴다
+  const base = {};
+  constants.forEach((c) => { base[c.key] = c.value; });
+  const runs = samples.map((sp) => {
+    const scope = { ...base, ...sp.values };
+    const trace = [];
+    for (const st of steps) {
+      const v = st.fn(scope);
+      trace.push({ step: st, value: v, scopeBefore: { ...scope } });
+      if (v === null) break;
+      scope[st.key] = v;
+    }
+    return { sample: sp, scope, trace, result: scope[resultKey] };
+  });
+
+  const valid = runs.filter((r) => typeof r.result === "number" && Number.isFinite(r.result));
+  if (valid.length < 2) return null;
+
+  const wi = Number.isInteger(demo.walkthrough) && runs[demo.walkthrough] ? demo.walkthrough : 0;
+  // 상세 전개용 샘플은 끝까지 계산된 것이어야 한다
+  const walk = (typeof runs[wi].result === "number" && Number.isFinite(runs[wi].result)) ? runs[wi] : valid[0];
+
+  return {
+    demo, constants, inputs, steps, runs, valid, walk,
+    result: demo.result || { key: resultKey, label: "결과" },
+    aggregate: ["mean", "sum", "max", "min"].includes(demo.aggregate) ? demo.aggregate : "mean",
+  };
+}
+
+const AGG_LABEL = { mean: "평균", sum: "합", max: "최댓값", min: "최솟값" };
+function aggregateOf(kind, nums) {
+  if (!nums.length) return null;
+  if (kind === "sum") return nums.reduce((a, b) => a + b, 0);
+  if (kind === "max") return Math.max(...nums);
+  if (kind === "min") return Math.min(...nums);
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+/** ① 한 샘플을 단계별로 전개 */
+function buildWalkthrough(D) {
+  const box = el("div", "eqd-walk");
+  const head = el("div", "eqd-walk-head");
+  head.append(el("span", "eqd-step-tag", "①"), el("span", "eqd-walk-title", "한 샘플로 직접 계산해 보기"));
+  box.appendChild(head);
+
+  // 이 샘플이 무엇인지 + 넣은 값들
+  const who = el("div", "eqd-walk-sample");
+  who.appendChild(el("strong", null, D.walk.sample.name));
+  if (D.walk.sample.group) who.appendChild(el("span", "eqd-group-chip", D.walk.sample.group));
+  const given = el("div", "eqd-given");
+  D.inputs.forEach((v) => {
+    const chip = el("span", "eqd-chip");
+    const sym = el("span", "eqd-sym");
+    katexInto(sym, v.symbol || v.key, v.key);
+    chip.append(sym, document.createTextNode(" = " + fmtPrecise(D.walk.sample.values[v.key])));
+    if (v.label) chip.title = v.label;
+    given.appendChild(chip);
+  });
+  D.constants.forEach((c) => {
+    const chip = el("span", "eqd-chip eqd-chip-const");
+    const sym = el("span", "eqd-sym");
+    katexInto(sym, c.symbol || c.key, c.key);
+    chip.append(sym, document.createTextNode(" = " + fmtPrecise(c.value)));
+    if (c.meaning) chip.title = c.meaning;
+    given.appendChild(chip);
+  });
+  box.append(who, given);
+
+  // 단계별 — 기호식 → 숫자 대입 → 값
+  const list = el("ol", "eqd-steps");
+  D.walk.trace.forEach((t) => {
+    const li = el("li", "eqd-step");
+    li.appendChild(el("div", "eqd-step-label", t.step.label || t.step.key));
+    if (t.step.latex) {
+      const lx = el("div", "eqd-step-latex");
+      katexInto(lx, t.step.latex, t.step.latex);
+      li.appendChild(lx);
+    }
+    const calc = el("div", "eqd-step-calc");
+    calc.appendChild(el("code", "eqd-subst", substituteExpr(t.step.compute, t.scopeBefore)));
+    calc.appendChild(el("span", "eqd-eq", "="));
+    calc.appendChild(el("span", "eqd-val", fmtPrecise(t.value)));
+    li.appendChild(calc);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+
+  // 최종 결과
+  const fin = el("div", "eqd-final");
+  const fsym = el("span", "eqd-sym");
+  katexInto(fsym, D.result.symbol || D.result.key, D.result.key);
+  fin.append(el("span", "eqd-final-label", D.result.label || "결과"), fsym,
+             el("span", "eqd-final-val", "= " + fmtPrecise(D.walk.result)));
+  box.appendChild(fin);
+  return box;
+}
+
+/** ② 샘플 전체 표 + 집계 */
+function buildAllSamples(D) {
+  const box = el("div", "eqd-all");
+  const head = el("div", "eqd-walk-head");
+  head.append(el("span", "eqd-step-tag", "②"),
+              el("span", "eqd-walk-title", `나머지 샘플도 같은 계산 (${D.valid.length}개)`));
+  box.appendChild(head);
+
+  const nums = D.valid.map((r) => r.result);
+  const lo = Math.min(...nums), hi = Math.max(...nums);
+  const span = hi - lo || 1;
+
+  const table = el("table", "eqd-table");
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  htr.appendChild(el("th", null, "샘플"));
+  D.inputs.forEach((v) => {
+    const th = document.createElement("th");
+    const sym = el("span", "eqd-sym");
+    katexInto(sym, v.symbol || v.key, v.key);
+    th.appendChild(sym);
+    htr.appendChild(th);
+  });
+  const thR = document.createElement("th");
+  const rsym = el("span", "eqd-sym");
+  katexInto(rsym, D.result.symbol || D.result.key, D.result.key);
+  thR.appendChild(rsym);
+  htr.appendChild(thR);
+  htr.appendChild(el("th", "eqd-barcol", ""));
+  thead.appendChild(htr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  D.valid.forEach((r) => {
+    const tr = document.createElement("tr");
+    if (r === D.walk) tr.className = "eqd-row-walk"; // ①에서 푼 샘플을 표에서도 찾을 수 있게
+    const tdN = el("td", "eqd-name");
+    tdN.appendChild(document.createTextNode(r.sample.name));
+    if (r.sample.group) tdN.appendChild(el("span", "eqd-group-chip", r.sample.group));
+    tr.appendChild(tdN);
+    D.inputs.forEach((v) => tr.appendChild(el("td", null, fmtDemo(r.sample.values[v.key]))));
+    tr.appendChild(el("td", "eqd-out", fmtDemo(r.result)));
+    const tdBar = el("td", "eqd-barcol");
+    const bar = el("span", "eqd-bar");
+    bar.style.width = `${Math.max(2, ((r.result - lo) / span) * 100)}%`;
+    tdBar.appendChild(bar);
+    tr.appendChild(tdBar);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  box.appendChild(table);
+
+  const agg = aggregateOf(D.aggregate, nums);
+  const aggRow = el("div", "eqd-agg");
+  aggRow.append(el("span", "eqd-agg-label", `전체 ${AGG_LABEL[D.aggregate]}`),
+                el("span", "eqd-agg-val", fmtDemo(agg)));
+  box.appendChild(aggRow);
+  return box;
+}
+
+/** ③ 성향(group)별 비교 — 부류에 따라 값이 어떻게 갈리는지 */
+function buildGroups(D) {
+  const map = new Map();
+  D.valid.forEach((r) => {
+    const g = r.sample.group || "기타";
+    if (!map.has(g)) map.set(g, []);
+    map.get(g).push(r.result);
+  });
+  if (map.size < 2) return null; // 부류가 하나뿐이면 비교할 게 없다
+
+  const box = el("div", "eqd-groups");
+  const head = el("div", "eqd-walk-head");
+  head.append(el("span", "eqd-step-tag", "③"), el("span", "eqd-walk-title", "샘플 성향에 따라 어떻게 달라지나"));
+  box.appendChild(head);
+
+  const rows = Array.from(map.entries()).map(([g, nums]) => ({
+    group: g, n: nums.length, agg: aggregateOf(D.aggregate, nums),
+    lo: Math.min(...nums), hi: Math.max(...nums),
+  }));
+  const allAgg = rows.map((r) => r.agg);
+  const lo = Math.min(...allAgg, 0), hi = Math.max(...allAgg, 0);
+  const span = hi - lo || 1;
+
+  const list = el("div", "eqd-group-list");
+  rows.forEach((r) => {
+    const row = el("div", "eqd-group-row");
+    const label = el("div", "eqd-group-name");
+    label.append(el("span", "eqd-group-chip", r.group), el("span", "eqd-group-n", `${r.n}개`));
+    const barWrap = el("div", "eqd-group-barwrap");
+    const bar = el("span", "eqd-bar");
+    bar.style.width = `${Math.max(3, ((r.agg - lo) / span) * 100)}%`;
+    barWrap.appendChild(bar);
+    const val = el("div", "eqd-group-val");
+    val.append(el("strong", null, fmtDemo(r.agg)),
+               el("span", "eqd-group-range", `${fmtDemo(r.lo)} ~ ${fmtDemo(r.hi)}`));
+    row.append(label, barWrap, val);
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  box.appendChild(el("p", "eqd-group-note",
+    `막대는 부류별 ${AGG_LABEL[D.aggregate]}, 오른쪽 작은 글씨는 그 부류 안에서의 최소~최대 범위입니다.`));
+  return box;
+}
+
+/**
+ * 수식 하나의 "숫자로 확인" 블록. 만들 수 없으면 null(아무것도 그리지 않는다).
  */
 function buildNumericDemo(demo) {
-  if (!demo || typeof demo !== "object") return null;
-  const samples = (Array.isArray(demo.samples) ? demo.samples : [])
-    .map(Number).filter(Number.isFinite).slice(0, 12);
-  const f = compileDemo(demo.compute);
-  if (!f || samples.length < 2) return null;
-
-  const rows = samples.map((s) => ({ in: s, out: f(s) })).filter((r) => r.out !== null);
-  if (rows.length < 2) return null;
+  const D = prepareDemo(demo);
+  if (!D) return null;
 
   const wrap = document.createElement("details");
   wrap.className = "eq-demo";
   wrap.open = true;
 
   const sum = document.createElement("summary");
-  sum.innerHTML = '<span class="eq-demo-tag">숫자로 확인</span>';
-  const purpose = document.createElement("span");
-  purpose.className = "eq-demo-purpose";
-  renderRich(purpose, demo.purpose || "값을 넣어 결과를 확인합니다.");
+  sum.appendChild(el("span", "eq-demo-tag", "숫자로 확인"));
+  const purpose = el("span", "eq-demo-purpose");
+  renderRich(purpose, demo.purpose || "실제 값을 넣어 계산 과정을 따라갑니다.");
   sum.appendChild(purpose);
   wrap.appendChild(sum);
 
-  const body = document.createElement("div");
-  body.className = "eq-demo-body";
-
-  // 전제 + 고정값 — 무엇을 가정하고 계산한 표인지 밝혀야 숫자를 믿을 수 있다
-  const fixed = (Array.isArray(demo.fixed) ? demo.fixed : []).filter((v) => v && v.symbol != null);
-  if (demo.setup || fixed.length) {
-    const setup = document.createElement("p");
-    setup.className = "eq-demo-setup";
-    const parts = [];
-    if (demo.setup) parts.push(demo.setup);
-    if (fixed.length) {
-      parts.push(fixed.map((v) => `${v.symbol} = ${v.value}${v.meaning ? ` (${v.meaning})` : ""}`).join(" · "));
-    }
-    renderRich(setup, parts.join(" — "));
+  const body = el("div", "eq-demo-body");
+  if (demo.setup) {
+    const setup = el("p", "eq-demo-setup");
+    renderRich(setup, demo.setup);
     body.appendChild(setup);
   }
-
-  const inLabel = (demo.input && demo.input.label) || "입력";
-  const outLabel = (demo.output && demo.output.label) || "결과";
-  const inSym = demo.input && demo.input.symbol;
-  const outSym = demo.output && demo.output.symbol;
-
-  // ── 추세 막대 — 표만 보면 경향이 안 보인다. 값의 상대 크기를 옆에 같이 그린다 ──
-  const outs = rows.map((r) => r.out);
-  const lo = Math.min(...outs, 0);
-  const hi = Math.max(...outs, 0);
-  const span = hi - lo || 1;
-
-  const table = document.createElement("table");
-  table.className = "eq-demo-table";
-  const thead = document.createElement("thead");
-  const htr = document.createElement("tr");
-  [[inLabel, inSym], [outLabel, outSym], ["", null]].forEach(([label, sym], i) => {
-    const th = document.createElement("th");
-    if (sym) {
-      const s = document.createElement("span");
-      s.className = "eq-demo-sym";
-      katexInto(s, sym, sym);
-      th.append(s, document.createTextNode(" " + label));
-    } else th.textContent = label;
-    if (i === 2) th.className = "eq-demo-barcol";
-    htr.appendChild(th);
-  });
-  thead.appendChild(htr);
-  table.appendChild(thead);
-
-  const tbody = document.createElement("tbody");
-  rows.forEach((r) => {
-    const tr = document.createElement("tr");
-    const tdIn = document.createElement("td");
-    tdIn.textContent = fmtDemo(r.in);
-    const tdOut = document.createElement("td");
-    tdOut.className = "eq-demo-out";
-    tdOut.textContent = fmtDemo(r.out);
-    const tdBar = document.createElement("td");
-    tdBar.className = "eq-demo-barcol";
-    const bar = document.createElement("span");
-    bar.className = "eq-demo-bar";
-    bar.style.width = `${Math.max(2, ((r.out - lo) / span) * 100)}%`;
-    tdBar.appendChild(bar);
-    tr.append(tdIn, tdOut, tdBar);
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  body.appendChild(table);
+  body.appendChild(buildWalkthrough(D));
+  body.appendChild(buildAllSamples(D));
+  const groups = buildGroups(D);
+  if (groups) body.appendChild(groups);
 
   if (demo.insight) {
-    const ins = document.createElement("p");
-    ins.className = "eq-demo-insight";
+    const ins = el("p", "eq-demo-insight");
     renderRich(ins, demo.insight);
     body.appendChild(ins);
   }
-
   wrap.appendChild(body);
   return wrap;
 }
