@@ -17,7 +17,10 @@ function grab(name, re) {
 }
 const code = [
   grab("DEMO_MATH", /const DEMO_MATH = \[[\s\S]*?\];/),
-  grab("DEMO_MATH_SET", /const DEMO_MATH_SET = new Set\(DEMO_MATH\);/),
+  grab("DEMO_MATH_CONST", /const DEMO_MATH_CONST = \[[\s\S]*?\];/),
+  grab("DEMO_MATH_FN_SET", /const DEMO_MATH_FN_SET = new Set\(DEMO_MATH\);/),
+  grab("DEMO_MATH_CONST_SET", /const DEMO_MATH_CONST_SET = new Set\(DEMO_MATH_CONST\);/),
+  grab("DEMO_FORBIDDEN_KEYS", /const DEMO_FORBIDDEN_KEYS = new Set\(\[[\s\S]*?\]\);/),
   grab("compileExpr", /function compileExpr\(expr, vars\) \{[\s\S]*?\n\}/),
   grab("fmtDemo", /function fmtDemo\(v\) \{[\s\S]*?\n\}/),
   grab("fmtPrecise", /function fmtPrecise\(v\) \{[\s\S]*?\n\}/),
@@ -223,6 +226,96 @@ console.log("\n=== ③ 대입식 정밀도 — 표시된 값으로 재계산해�
     ? ok("1에 가까운 확률이 1로 뭉개지지 않는다")
     : bad("반올림", `"${M.fmtPrecise(prob)}"로 뭉개짐`);
 }
+
+console.log("\n=== ④ 적대적 검토에서 확인된 실제 익스플로잇 (회귀 방지) ===");
+// 화이트리스트가 모델이 정한 key에서 나온다는 점을 악용한 우회들.
+// 모델이 key를 "constructor"로 선언하면 프로퍼티 접근이 열리고,
+// 호출을 괄호 밖으로 빼면 메서드호출 탐지를 피할 수 있었다. Number.constructor === Function.
+const PWN_VARS = ["sp", "sn", "tau", "constructor", "pwn", "fetch", "document", "cookie", "alert", "exfil"];
+const EXPLOITS = [
+  ["Function 도달 (변수 발판)", '(sp.constructor.constructor)("pwn()")()'],
+  ["Function 도달 (Math 발판)", '(Math.abs.constructor)("pwn()")()'],
+  ["쿠키 탈취 페이로드", '(sp.constructor.constructor)("fetch(document.cookie)")()'],
+  ["alert 페이로드", '(sp.constructor.constructor)("alert(1)")()'],
+  ["프로퍼티 읽기만", "sp.constructor"],
+  ["스텔스: 쉼표 연산자로 감춤", '((sp.constructor.constructor)("exfil()")(), sp - sn)'],
+  ["문자열 리터럴 자체", '"payload"'],
+  ["작은따옴표 문자열", "'payload'"],
+  ["Math 함수를 값으로 넘기기", "Math.exp"],
+  ["Math 상수를 호출", "Math.PI(sp)"],
+  ["괄호로 감싼 호출", "(sp)(1)"],
+  ["숫자 뒤 호출", "1(sp)"],
+];
+EXPLOITS.forEach(([name, expr]) => {
+  M.compileExpr(expr, PWN_VARS) ? bad(name, `통과됨 — RCE 경로: ${expr}`) : ok(name);
+});
+
+// 위험한 이름은 변수로 선언해도 쓸 수 없어야 한다
+["constructor", "prototype", "__proto__", "Math", "this", "arguments"].forEach((k) => {
+  M.compileExpr(`${k} + 1`, ["sp", k])
+    ? bad(`위험한 키 "${k}" 사용`, "변수로 통과됨")
+    : ok(`위험한 키 "${k}" 거부`);
+});
+
+// 쉼표는 Math 인자 구분으로는 필요하다 — 정상 사용까지 막지 않았는지 확인
+{
+  const f = M.compileExpr("Math.max(sp, sn)", ["sp", "sn"]);
+  f && near(f({ sp: 0.3, sn: 0.8 }), 0.8) ? ok("Math.max(sp, sn) 정상 동작") : bad("Math.max", "거부되거나 값 오류");
+}
+
+console.log("\n=== ④ 계산 결과가 조용히 오염되던 경로 ===");
+{
+  // result.key가 입력을 가리키면 계산을 하나도 안 하고 입력값을 "결과"라고 내놓았다
+  const d = {
+    inputs: [{ key: "a" }],
+    steps: [{ key: "s1", compute: "a*2" }],
+    result: { key: "a" },
+    samples: [{ values: { a: 1 } }, { values: { a: 2 } }],
+  };
+  M.prepareDemo(d) ? bad("result.key가 입력을 가리킴", "블록이 만들어짐") : ok("result.key가 입력을 가리키면 거부");
+}
+{
+  // 중간 단계가 실패한 샘플은 표·평균에서 빠져야 한다 (예전엔 앞선 중간값이 결과로 실렸다)
+  const d = {
+    inputs: [{ key: "a" }],
+    steps: [
+      { key: "s1", compute: "a" },
+      { key: "s2", compute: "Math.log(0-a)" }, // a>0이면 NaN → null
+      { key: "s3", compute: "s2+1" },
+    ],
+    result: { key: "s3" },
+    samples: [{ values: { a: 1 } }, { values: { a: 2 } }, { values: { a: 3 } }],
+  };
+  M.prepareDemo(d) ? bad("전 샘플이 중간 실패", "블록이 만들어짐") : ok("모든 샘플이 중간 실패하면 거부");
+}
+{
+  // 빠진 값이 0으로 둔갑하지 않아야 한다
+  const mk = (v) => ({
+    inputs: [{ key: "a" }, { key: "b" }],
+    steps: [{ key: "s", compute: "a+b" }],
+    samples: [{ values: { a: 1, b: v } }, { values: { a: 2, b: 3 } }, { values: { a: 3, b: 4 } }],
+  });
+  [["null", null], ["false", false], ["빈 문자열", ""], ["배열", []]].forEach(([nm, v]) => {
+    const D2 = M.prepareDemo(mk(v));
+    !D2 || D2.valid.length === 2 ? ok(`샘플 값 ${nm} 은 제외됨`) : bad(`샘플 값 ${nm}`, `0으로 통과 (valid=${D2.valid.length})`);
+  });
+}
+{
+  // 집계 오버플로 → "Infinity" 대신 null
+  M.aggregateOf("sum", [1e308, 1e308]) === null ? ok("집계 오버플로는 null") : bad("집계 오버플로", "Infinity 반환");
+  M.fmtDemo(Infinity) === "—" ? ok('fmtDemo(Infinity) = "—"') : bad("fmtDemo(Infinity)", M.fmtDemo(Infinity));
+  M.fmtPrecise(-Infinity) === "—" ? ok('fmtPrecise(-Infinity) = "—"') : bad("fmtPrecise(-Infinity)", M.fmtPrecise(-Infinity));
+}
+
+console.log("\n=== ④ 대입식 표기 버그 ===");
+[
+  ["지수 표기를 연산자로 쪼개지 않는다", "Math.sqrt(v)+eps", { v: 0.25, eps: 1e-8 }, "sqrt(0.25) + 1e-8"],
+  ["변수명이 Math 함수명과 겹쳐도 함수명을 안 바꾼다", "Math.max(x, min)", { x: 0.8, min: 0.3 }, "max(0.8, 0.3)"],
+  ["Math.exp와 변수 exp가 공존", "Math.exp(exp)", { exp: 2 }, "exp(2)"],
+].forEach(([name, expr, scope, want]) => {
+  const got = M.substituteExpr(expr, scope);
+  got === want ? ok(`${name} → ${got}`) : bad(name, `"${got}" ≠ "${want}"`);
+});
 
 console.log(`\n════ 통과 ${pass} · 실패 ${fail} ════`);
 process.exit(fail ? 1 : 0);

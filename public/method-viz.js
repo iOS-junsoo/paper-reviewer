@@ -2057,42 +2057,94 @@ const DEMO_MATH = [
   "abs", "sqrt", "cbrt", "exp", "expm1", "log", "log1p", "log2", "log10",
   "pow", "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
   "min", "max", "round", "floor", "ceil", "trunc", "sign", "hypot",
-  "PI", "E", "LN2", "LN10", "SQRT2",
 ];
-const DEMO_MATH_SET = new Set(DEMO_MATH);
+const DEMO_MATH_CONST = ["PI", "E", "LN2", "LN10", "SQRT2"];
+const DEMO_MATH_FN_SET = new Set(DEMO_MATH);
+const DEMO_MATH_CONST_SET = new Set(DEMO_MATH_CONST);
+// 변수 이름으로 절대 받아서는 안 되는 것들. 키 이름은 모델이 정하므로, 이걸 막지 않으면
+// 화이트리스트를 모델이 직접 늘려 프로퍼티 접근을 열 수 있다.
+const DEMO_FORBIDDEN_KEYS = new Set(["constructor", "prototype", "__proto__", "Math", "this", "arguments"]);
 
 /**
- * 모델이 낸 식을 검사해 실행 가능한 함수로 만든다. 안 되면 null.
+ * 모델이 낸 식을 검사해 실행 가능한 함수로 만든다. 조금이라도 어긋나면 null.
+ *
+ * 왜 토크나이저인가 — 이전에는 "위험한 패턴을 정규식으로 막는" 방식이었는데 뚫렸다.
+ * 허용 식별자 목록이 모델이 정한 key에서 나오다 보니, 모델이 key를 "constructor"로
+ * 지으면 `sp.constructor`가 통과했고, 호출을 괄호 밖으로 빼면(`(a.constructor.constructor)("…")()`)
+ * 메서드호출 탐지 정규식도 빗나갔다. Number.constructor === Function 이므로 그대로
+ * 임의 코드 실행이었다. prepareDemo가 렌더 준비 중에 식을 실행하므로 탭을 여는 것만으로 발화한다.
+ *
+ * 그래서 "무엇을 막을까"가 아니라 ==무엇만 허용할까==로 뒤집었다. 아래 토큰만 통과한다.
+ *   숫자 · 선언된 변수 이름 · Math.<허용멤버> · + - * / % · 괄호 · 쉼표
+ * 그 외 문자(. " ' [ ] { } ` ; = ! < > & | ? : ~ ^ \)는 하나만 있어도 거부다.
+ * 프로퍼티 접근·문자열 리터럴·임의 호출이 문법적으로 표현 불가능해진다.
+ *
  * @param {string} expr  예: "Math.exp(sp/tau)"
  * @param {string[]} vars 이 식에서 쓸 수 있는 변수명 (inputs·constants·앞선 steps의 key)
  */
 function compileExpr(expr, vars) {
   const src = String(expr || "").trim();
   if (!src || src.length > 240) return null;
-  // 구문을 늘리거나 객체를 타고 들어갈 수 있는 것은 전부 차단.
-  //  · \ — 유니코드 이스케이프로 식별자 검사를 우회하는 길을 막는다 (Math 등)
-  //  · // /* — 주석으로 뒷부분을 숨기는 길
-  //  · [ ] { } ` ; = => new function return — 인덱싱·구문 확장
-  //  · .foo( — Math 외의 메서드 호출 (Math.xxx는 아래에서 따로 허용)
-  if (/\\|\/\/|\/\*/.test(src)) return null;
-  if (/[=;`\[\]{}]|=>|\bnew\b|\bfunction\b|\breturn\b|\.\s*\w+\s*\(/.test(src.replace(/Math\s*\.\s*\w+/g, "M"))) {
-    return null;
-  }
+
   const allowed = new Set(vars);
-  allowed.add("Math");
-  // 식별자 검사 — Math.xxx 의 xxx는 Math 멤버 목록에 있어야 한다
-  const idRe = /(Math\s*\.\s*)?([A-Za-z_$][A-Za-z0-9_$]*)/g;
-  let m;
-  while ((m = idRe.exec(src)) !== null) {
-    const isMember = !!m[1];
-    const name = m[2];
-    if (isMember) {
-      if (!DEMO_MATH_SET.has(name)) return null;
-    } else if (name !== "Math" && !allowed.has(name)) {
-      return null;
+  DEMO_FORBIDDEN_KEYS.forEach((k) => allowed.delete(k));
+
+  const toks = [];
+  let i = 0;
+  while (i < src.length) {
+    const rest = src.slice(i);
+    const c = src[i];
+
+    if (/\s/.test(c)) { i++; continue; }
+
+    // 숫자 (1, 1.5, .5, 1e-8) — 지수부의 +/-는 연산자가 아니라 숫자의 일부다
+    if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1] || ""))) {
+      const m = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(rest);
+      if (!m) return null;
+      toks.push({ t: "num", v: m[0] });
+      i += m[0].length;
+      continue;
+    }
+
+    // Math.<허용멤버> 를 통째로 한 토큰으로 — 점(.)은 여기서만 허용된다
+    if (/^Math\b/.test(rest)) {
+      const m = /^Math\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)/.exec(rest);
+      if (!m) return null;
+      const isFn = DEMO_MATH_FN_SET.has(m[1]);
+      if (!isFn && !DEMO_MATH_CONST_SET.has(m[1])) return null;
+      toks.push({ t: "math", v: m[1], isFn });
+      i += m[0].length;
+      continue;
+    }
+
+    // 선언된 변수
+    if (/[A-Za-z_$]/.test(c)) {
+      const m = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(rest);
+      if (!allowed.has(m[0])) return null;
+      toks.push({ t: "id", v: m[0] });
+      i += m[0].length;
+      continue;
+    }
+
+    if ("+-*/%(),".indexOf(c) >= 0) { toks.push({ t: "op", v: c }); i++; continue; }
+    return null; // 허용 목록에 없는 문자 — 문자열·프로퍼티·인덱싱 등이 전부 여기서 죽는다
+  }
+  if (!toks.length) return null;
+
+  // 호출은 Math.<함수>( 뿐. 변수·숫자·닫는괄호 뒤에 여는 괄호가 오면 호출 시도로 보고 거부한다
+  // (`(f)(x)` 처럼 괄호로 감싸 부르는 형태를 막는다).
+  for (let k = 0; k < toks.length; k++) {
+    const cur = toks[k], prev = toks[k - 1], next = toks[k + 1];
+    if (cur.t === "op" && cur.v === "(") {
+      if (prev && (prev.t === "id" || prev.t === "num" || (prev.t === "op" && prev.v === ")"))) return null;
+      if (prev && prev.t === "math" && !prev.isFn) return null; // Math.PI(…) 금지
+    }
+    if (cur.t === "math" && cur.isFn) {
+      if (!next || next.t !== "op" || next.v !== "(") return null; // Math.exp를 값으로 넘기는 것 금지
     }
   }
-  const names = Array.from(allowed).filter((n) => n !== "Math");
+
+  const names = Array.from(allowed);
   try {
     const fn = new Function(...names, "Math", `"use strict"; return (${src});`);
     return (scope) => {
@@ -2108,9 +2160,10 @@ function compileExpr(expr, vars) {
   }
 }
 
-// 자릿수가 제각각인 값들(0.0007과 1024가 한 화면에)을 읽기 좋게 맞춘다
+// 자릿수가 제각각인 값들(0.0007과 1024가 한 화면에)을 읽기 좋게 맞춘다.
+// ±Infinity·NaN은 "—" — 그대로 두면 한국어 UI에 "Infinity"가 찍히고 막대 폭이 NaN%가 된다.
 function fmtDemo(v) {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  if (typeof v !== "number" || !Number.isFinite(v)) return "—";
   const a = Math.abs(v);
   if (a === 0) return "0";
   if (a >= 1e6 || a < 1e-4) return v.toExponential(2);
@@ -2148,17 +2201,35 @@ function fmtPrecise(v) {
 /**
  * 계산식을 "숫자를 대입한 모습"으로 바꾼다 — 과정을 눈으로 따라가게 하는 핵심.
  *   "Math.exp(sp/tau)" + {sp:0.95, tau:0.07}  →  "exp(0.95 / 0.07)"
- * Math. 접두사를 떼고 변수는 값으로 치환하며, 연산자 둘레에 공백을 넣어 읽기 쉽게 한다.
+ *
+ * 두 가지를 조심한다.
+ *  · Math 멤버를 먼저 자리표시자로 빼둔다. 그냥 "Math."만 떼면, 변수 이름이 exp·min처럼
+ *    Math 함수명과 겹칠 때 함수 이름까지 숫자로 치환돼 "0.5(0.9 / 0.07)"이 된다.
+ *  · 연산자 둘레에 공백을 넣되 지수부는 건드리지 않는다. 그러지 않으면 1e-8이 "1e - 8"이 된다.
  */
 function substituteExpr(expr, scope) {
-  let out = String(expr || "").replace(/Math\s*\.\s*/g, "");
-  out = out.replace(/[A-Za-z_$][A-Za-z0-9_$]*/g, (name) => {
+  const math = [];
+  // 자리표시자는 \u0001…\u0001 — 식에도 fmtPrecise 출력에도 나올 수 없는 문자라야,
+  // 복원할 때 실제 숫자("… + 0")를 함수 이름으로 잘못 되돌리지 않는다.
+  const P = "\u0001";
+  let out = String(expr || "").replace(/Math\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)/g, function (_, name) {
+    math.push(name);
+    return P + (math.length - 1) + P;
+  });
+  out = out.replace(/[A-Za-z_$][A-Za-z0-9_$]*/g, function (name) {
     if (Object.prototype.hasOwnProperty.call(scope, name) && typeof scope[name] === "number") {
       return fmtPrecise(scope[name]);
     }
-    return name; // exp·log 같은 함수 이름은 그대로 둔다
+    return name;
   });
-  return out.replace(/([+\-*/])/g, " $1 ").replace(/\s{2,}/g, " ").trim();
+  const spaced = out;
+  out = out.replace(/([+\-*\/])/g, function (op, _g, off) {
+    // 숫자의 지수부(1e-8의 -)는 연산자가 아니다 — 띄우면 "1e - 8"이 되어 식이 깨져 보인다
+    if ((op === "+" || op === "-") && /[0-9][eE]$/.test(spaced.slice(0, off))) return op;
+    return " " + op + " ";
+  });
+  out = out.replace(new RegExp(P + "(\\d+)" + P, "g"), function (_, k) { return math[Number(k)]; });
+  return out.replace(/\s{2,}/g, " ").trim();
 }
 
 function katexInto(el, latex, fallback) {
@@ -2201,7 +2272,11 @@ function prepareDemo(demo) {
       const values = {};
       let ok = true;
       inputs.forEach((v) => {
-        const n = Number(sp.values[v.key]);
+        // Number()는 null·false·[]·"" 를 0으로 바꾼다. 빠진 값이 0으로 둔갑해
+        // 표에 실리면 사용자가 알아챌 방법이 없으므로 숫자(또는 숫자 문자열)만 받는다.
+        const raw = sp.values[v.key];
+        const n = typeof raw === "number" ? raw
+          : (typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN);
         if (!Number.isFinite(n)) ok = false;
         values[v.key] = n;
       });
@@ -2211,8 +2286,12 @@ function prepareDemo(demo) {
     .slice(0, 14);
   if (samples.length < 2) return null;
 
+  // 결과는 반드시 "계산된 단계"의 산물이어야 한다. known에는 입력·상수도 들어 있어서
+  // result.key가 입력 이름을 가리키면 계산을 하나도 하지 않고 입력값을 결과라고 내놓게 된다.
+  // 이 블록의 존재 이유(화면이 직접 계산해 보여준다)가 통째로 무너지는 경로였다.
+  const stepKeys = new Set(steps.map((st) => st.key));
   const resultKey = (demo.result && demo.result.key) || steps[steps.length - 1].key;
-  if (!known.has(resultKey)) return null;
+  if (!stepKeys.has(resultKey)) return null;
 
   // 샘플별로 전 단계를 실제 계산 — 여기서 나온 값만 화면에 쓴다
   const base = {};
@@ -2226,15 +2305,19 @@ function prepareDemo(demo) {
       if (v === null) break;
       scope[st.key] = v;
     }
-    return { sample: sp, scope, trace, result: scope[resultKey] };
+    // 중간에 실패하면 그 뒤 단계는 아예 실행되지 않는다 — 완주 여부를 따로 들고 간다.
+    const complete = trace.length === steps.length && trace.every((t) => t.value !== null);
+    return { sample: sp, scope, trace, complete, result: complete ? scope[resultKey] : null };
   });
 
-  const valid = runs.filter((r) => typeof r.result === "number" && Number.isFinite(r.result));
+  // 완주한 샘플만 표·집계·비교에 쓴다. 예전에는 결과값만 보고 판정해서, 중간에 계산이
+  // 깨진 샘플의 앞선 중간값이 "최종 결과"로 표와 평균에 섞여 들어갔다.
+  const valid = runs.filter((r) => r.complete && typeof r.result === "number" && Number.isFinite(r.result));
   if (valid.length < 2) return null;
 
   const wi = Number.isInteger(demo.walkthrough) && runs[demo.walkthrough] ? demo.walkthrough : 0;
   // 상세 전개용 샘플은 끝까지 계산된 것이어야 한다
-  const walk = (typeof runs[wi].result === "number" && Number.isFinite(runs[wi].result)) ? runs[wi] : valid[0];
+  const walk = runs[wi] && runs[wi].complete ? runs[wi] : valid[0];
 
   return {
     demo, constants, inputs, steps, runs, valid, walk,
@@ -2246,10 +2329,14 @@ function prepareDemo(demo) {
 const AGG_LABEL = { mean: "평균", sum: "합", max: "최댓값", min: "최솟값" };
 function aggregateOf(kind, nums) {
   if (!nums.length) return null;
-  if (kind === "sum") return nums.reduce((a, b) => a + b, 0);
-  if (kind === "max") return Math.max(...nums);
-  if (kind === "min") return Math.min(...nums);
-  return nums.reduce((a, b) => a + b, 0) / nums.length;
+  let r;
+  if (kind === "sum") r = nums.reduce((a, b) => a + b, 0);
+  else if (kind === "max") r = Math.max(...nums);
+  else if (kind === "min") r = Math.min(...nums);
+  else r = nums.reduce((a, b) => a + b, 0) / nums.length;
+  // 합이 배정밀도 상한을 넘으면 Infinity가 된다. 그대로 두면 화면에 "Infinity"가 찍히고
+  // 막대 폭이 NaN%가 되어(선언이 버려져) 모든 막대가 꽉 찬 것처럼 보인다.
+  return Number.isFinite(r) ? r : null;
 }
 
 function el(tag, cls, text) {
@@ -2327,8 +2414,15 @@ function buildAllSamples(D) {
   box.appendChild(head);
 
   const nums = D.valid.map((r) => r.result);
-  const lo = Math.min(...nums), hi = Math.max(...nums);
-  const span = hi - lo || 1;
+  // 0을 기준에 포함해 ③(성향별)과 척도를 맞춘다. 최솟값을 0%로 잡으면 절대 크기가 사라져,
+  // 표에 "1.0000 1.0000 1.0000"으로 똑같이 찍히는 값들이 막대에서는 2%↔100%로 갈린다.
+  // 포화된 확률(σ(10)~σ(14))처럼 흔한 경우에 없는 차이를 만들어 보이고, 바로 아래 ③이
+  // 정반대 그림을 그려 서로를 반박하게 된다.
+  const lo = Math.min(...nums, 0), hi = Math.max(...nums, 0);
+  const rawSpan = hi - lo;
+  // 값 폭이 표시 정밀도보다 작으면 "차이 없음"으로 본다 — 부동소수 잔차를 경향으로 오독하지 않게.
+  const flat = rawSpan <= Math.max(Math.abs(hi), Math.abs(lo)) * 1e-6;
+  const span = rawSpan || 1;
 
   const table = el("table", "eqd-table");
   const thead = document.createElement("thead");
@@ -2362,7 +2456,8 @@ function buildAllSamples(D) {
     tr.appendChild(el("td", "eqd-out", fmtDemo(r.result)));
     const tdBar = el("td", "eqd-barcol");
     const bar = el("span", "eqd-bar");
-    bar.style.width = `${Math.max(2, ((r.result - lo) / span) * 100)}%`;
+    const w = flat ? 100 : ((r.result - lo) / span) * 100;
+    bar.style.width = `${Number.isFinite(w) ? Math.max(2, Math.min(100, w)) : 2}%`;
     tdBar.appendChild(bar);
     tr.appendChild(tdBar);
     tbody.appendChild(tr);
@@ -2370,6 +2465,11 @@ function buildAllSamples(D) {
   table.appendChild(tbody);
   box.appendChild(table);
 
+  if (flat) {
+    box.appendChild(el("p", "eqd-group-note", "샘플 간 결과 차이가 표시 정밀도보다 작습니다 — 막대는 모두 같은 길이입니다."));
+  } else {
+    box.appendChild(el("p", "eqd-group-note", "막대는 0을 기준으로 한 결과의 상대 크기입니다."));
+  }
   const agg = aggregateOf(D.aggregate, nums);
   const aggRow = el("div", "eqd-agg");
   aggRow.append(el("span", "eqd-agg-label", `전체 ${AGG_LABEL[D.aggregate]}`),
@@ -2408,7 +2508,8 @@ function buildGroups(D) {
     label.append(el("span", "eqd-group-chip", r.group), el("span", "eqd-group-n", `${r.n}개`));
     const barWrap = el("div", "eqd-group-barwrap");
     const bar = el("span", "eqd-bar");
-    bar.style.width = `${Math.max(3, ((r.agg - lo) / span) * 100)}%`;
+    const w = ((r.agg - lo) / span) * 100;
+    bar.style.width = `${Number.isFinite(w) ? Math.max(3, Math.min(100, w)) : 3}%`;
     barWrap.appendChild(bar);
     const val = el("div", "eqd-group-val");
     val.append(el("strong", null, fmtDemo(r.agg)),
