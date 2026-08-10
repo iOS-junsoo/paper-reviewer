@@ -440,14 +440,19 @@ function median(xs) {
 }
 // pages 논문의 분석·시각화 예상 소요(ms). 같은 모드의 히스토리 3회 이상이면 실측 중앙값, 아니면 시드.
 // (mode 필드가 없는 기존 레코드는 full로 간주 — 하위호환)
+//
+// ※ 실측 40건 분석 결과: 분석 시간은 페이지 수와 거의 무관하다(simple 상관계수 r≈-0.2,
+//   full r≈-1이나 표본 2건이라 무의미). per-page × pages 방식은 페이지당 편차(3~39s/p)를
+//   증폭시켜 오차가 중앙값 방식의 2~3배였다. 그래서 히스토리가 쌓이면 analysis_ms 중앙값을
+//   그대로 쓴다. 페이지 수는 히스토리가 부족할 때의 시드 폴백에만 반영한다.
 function predictDurations(pages, mode = "full") {
   const p = Math.max(1, pages || 1);
   const seed = ETA_SEED[mode] || ETA_SEED.full;
   const hist = readDurations().filter((h) => (h.mode || "full") === mode);
   let analysisMs, vizMs;
   if (hist.length >= 3) {
-    const perPage = median(hist.map((h) => h.analysis_ms / Math.max(1, h.pages)));
-    analysisMs = (perPage != null ? perPage : seed.perPage_ms) * p;
+    // 실측 분석 소요의 중앙값 — 페이지 수로 나누지 않는다(위 주석 참조)
+    analysisMs = median(hist.map((h) => h.analysis_ms)) ?? (seed.fixedA_ms + seed.perPage_ms * p);
     vizMs = mode === "simple" ? 0 : (median(hist.map((h) => h.viz_ms)) ?? seed.viz_ms);
   } else {
     analysisMs = seed.fixedA_ms + seed.perPage_ms * p;

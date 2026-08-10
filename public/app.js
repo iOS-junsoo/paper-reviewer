@@ -664,9 +664,11 @@ function setBarLabel(txt) {
   document.getElementById("loading-pct").textContent = txt;
   document.getElementById("rebar-pct").textContent = txt;
 }
-function fmtRemaining(ms) {
-  if (ms == null || ms <= 4000) return "곧 완료…";
-  const s = Math.round(ms / 1000);
+// allowSoon: '곧 완료…'를 허용할지. 완료가 실제로 임박했다는 신호가 있을 때만 true로 넘긴다.
+// 신호 없이 예측만 빗나가 남은 시간이 바닥난 경우엔 '곧 완료'가 아니라 실제 추정치를 보여준다.
+function fmtRemaining(ms, allowSoon) {
+  if (allowSoon && (ms == null || ms <= 10000)) return "곧 완료…";
+  const s = Math.max(5, Math.round((ms || 0) / 1000));
   if (s < 60) return `약 ${s}초 남음`;
   const m = Math.floor(s / 60), r = s % 60;
   return r ? `약 ${m}분 ${r}초 남음` : `약 ${m}분 남음`;
@@ -717,8 +719,28 @@ function tickEta() {
   width = Math.min(99, width);
   eta.lastWidth = Math.max(eta.lastWidth, width); // 단조 증가(뒤로 안 감)
   setBarWidth(eta.lastWidth);
-  const remaining = eta.estTotalMs - (now - eta.runStart);
-  const label = fmtRemaining(remaining);
+
+  // ── 남은 시간 추정 ────────────────────────────────────────────────────────
+  // 완료가 실제로 임박했다는 '신호'는 분석 구간의 실측 진행 pct뿐이다(viz는 신호 없음).
+  // eventFrac은 pct/92라 0.97이면 pct≈89 — 모델이 마지막 JSON을 뱉는 실제 끝단이다.
+  const elapsedTotal = now - eta.runStart;
+  const nearDone = eta.phase === "analysis" && eta.eventFrac >= 0.97;
+
+  let remaining = eta.estTotalMs - elapsedTotal; // 1차: 예측 잔여
+  // 예측이 실제보다 짧으면 잔여가 바닥나 '곧 완료'에 갇힌다. 완료 신호가 없는데 잔여가
+  // 12초 미만이면, 지금까지 걸린 시간과 화면 진행률로 남은 시간을 다시 추정한다(외삽).
+  if (!nearDone && remaining < 12000) {
+    // 진행률: 분석 구간은 실측 신호(eventFrac)를 시간 예측보다 우선한다. 예측이 초과되면
+    // fRaw가 1을 넘어 '거의 다 온 것'으로 부풀려지므로, 실제 진행을 아는 신호가 있으면 그걸 쓴다.
+    const phaseFrac =
+      eta.phase === "analysis" && eta.eventFrac > 0
+        ? eta.eventFrac
+        : Math.min(fRaw, 0.98); // viz: 신호가 없어 시간 예측 기반
+    const overall = Math.max(0.05, Math.min(0.98, eta.bandStart + phaseFrac * (eta.bandEnd - eta.bandStart)));
+    remaining = Math.max(12000, elapsedTotal * ((1 - overall) / overall));
+  }
+
+  const label = fmtRemaining(remaining, nearDone);
   setBarLabel(label);
   const prog = document.getElementById("sb-active-prog");
   if (prog) prog.textContent = `${label}${lastLoadingMsg ? " · " + lastLoadingMsg : ""}`.trim();
@@ -4925,8 +4947,17 @@ async function regenSection(section) {
     const fRaw = el / estMs;
     const f = fRaw < 0.9 ? fRaw : 0.9 + 0.1 * (1 - Math.exp(-(fRaw - 0.9) * 2));
     if (regenFill) regenFill.style.width = `${Math.min(99, f * 100)}%`;
-    if (regenEta) regenEta.textContent = fmtRemaining(estMs - el);
-    btn.textContent = `재생성 중 · ${fmtRemaining(estMs - el)}`;
+    // 재분석은 진행 신호(스트림)가 없어 예측만으로 간다. 예측이 짧으면 잔여가 바닥나므로,
+    // 초과 시 진행률로 외삽해 하한을 둔다. '곧 완료'는 신호가 없어 섣불리 못 쓰므로 금지하고,
+    // 실제 완료는 finally의 정리에서 즉시 반영한다.
+    let rem = estMs - el;
+    if (rem < 12000) {
+      const frac = Math.max(0.05, Math.min(0.98, fRaw < 1 ? f : 0.9));
+      rem = Math.max(12000, el * ((1 - frac) / frac));
+    }
+    const txt = fmtRemaining(rem, false);
+    if (regenEta) regenEta.textContent = txt;
+    btn.textContent = `재생성 중 · ${txt}`;
   };
   regenTimer = setInterval(tickRegen, 250);
   tickRegen();
