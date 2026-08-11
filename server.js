@@ -484,6 +484,45 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
       "analogy": "이 단계를 일상에 빗댄 비유 한 문장 (예: '도서관에서 질문과 가장 관련 있는 책들을 골라 가중 평균하는 것과 같다')"
     }
   ],
+  "equation_flow": {
+    "caption": "이 수식 체인이 최종적으로 무엇을 만들어내는지 한 줄",
+    "steps": [
+      { "eq_index": 0, "goal": "이 수식이 무엇을 구하는지 (15자 내외)", "why": "왜 이걸 구해야 다음으로 갈 수 있는지 한 문장" }
+    ]
+  },
+  "equations": [
+    {
+      "latex": "LaTeX 수식 문자열 (KaTeX로 렌더링 가능해야 함, $ 기호 없이 수식 본문만)",
+      "paper_ref": "원 논문에서의 위치 (수식 번호가 있으면 'Eq. 1', 없으면 'Section 3.2' 같은 절 표기, 그것도 없으면 null)",
+      "paper_page": "이 수식이 있는 원문 PDF 페이지 번호 (1부터, 모르면 null)",
+      "explanation": "이 수식이 무엇을 하는지, method_steps의 어느 단계에 해당하는지",
+      "analogy": "이 수식 전체를 일상 상황에 빗댄, 읽자마자 그림이 그려지는 비유 한 문장",
+      "variables": [ { "symbol": "Q", "meaning": "query 행렬 — '내가 지금 찾고 있는 것'에 해당" } ],
+      "numeric_demo": {
+        "purpose": "이 계산으로 확인할 것 한 줄",
+        "setup": "전제 한 줄 (없으면 null)",
+        "constants": [ { "key": "tau", "symbol": "\\tau", "value": 0.07, "meaning": "온도 (논문 설정값)" } ],
+        "inputs": [
+          { "key": "sp", "symbol": "s_p", "label": "양성 쌍 유사도" },
+          { "key": "sn", "symbol": "s_n", "label": "음성 쌍 유사도" }
+        ],
+        "steps": [
+          { "key": "pos", "label": "양성 점수 지수화", "latex": "\\exp(s_p/\\tau)", "compute": "Math.exp(sp/tau)" },
+          { "key": "neg", "label": "음성 점수 지수화", "latex": "\\exp(s_n/\\tau)", "compute": "Math.exp(sn/tau)" },
+          { "key": "prob", "label": "양성이 뽑힐 확률", "latex": "\\frac{pos}{pos+neg}", "compute": "pos/(pos+neg)" },
+          { "key": "loss", "label": "손실", "latex": "-\\log(prob)", "compute": "-Math.log(prob)" }
+        ],
+        "result": { "key": "loss", "symbol": "\\mathcal{L}", "label": "대조 손실" },
+        "samples": [
+          { "name": "확실히 맞는 쌍", "group": "쉬운 예", "values": { "sp": 0.95, "sn": 0.10 } },
+          { "name": "애매한 쌍", "group": "어려운 예", "values": { "sp": 0.55, "sn": 0.50 } }
+        ],
+        "walkthrough": 0,
+        "aggregate": "mean",
+        "insight": "성향별로 값이 어떻게 갈리는지 + 그래서 무엇을 뜻하는지 한두 문장"
+      }
+    }
+  ],
   "method_visualization": "방법 시각화 스펙(지원 유형) 또는 폴백 figures(미지원 유형). ==형식·9유형 판정·라우팅·생성 규칙·검증은 아래 [연구 방법론 시각화 생성 지시문 v4] 전문을 그대로 따른다== — paper_type_primary/secondary·paper_type_reason 포함. 방법 그림이 없거나 미지원 유형이면 지시문의 폴백(§10)을 따르거나 생략(null).",
   "experiments": {
     "takeaway": "전체 실험이 보여주는 핵심 결론 한 줄 (이 논문이 '무엇을 얼마나' 입증했는지)",
@@ -529,45 +568,6 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
   ],
   "related_papers": [
     { "title": "선행 논문 제목 (영어 원제)", "year": 2015, "reason": "이 논문을 이해하는 데 왜 먼저 읽으면 좋은지 한 줄", "link": "arXiv 등 실제 URL — WebSearch로 확인, 확실하지 않으면 null" }
-  ],
-  "equation_flow": {
-    "caption": "이 수식 체인이 최종적으로 무엇을 만들어내는지 한 줄",
-    "steps": [
-      { "eq_index": 0, "goal": "이 수식이 무엇을 구하는지 (15자 내외)", "why": "왜 이걸 구해야 다음으로 갈 수 있는지 한 문장" }
-    ]
-  },
-  "equations": [
-    {
-      "latex": "LaTeX 수식 문자열 (KaTeX로 렌더링 가능해야 함, $ 기호 없이 수식 본문만)",
-      "paper_ref": "원 논문에서의 위치 (수식 번호가 있으면 'Eq. 1', 없으면 'Section 3.2' 같은 절 표기, 그것도 없으면 null)",
-      "paper_page": "이 수식이 있는 원문 PDF 페이지 번호 (1부터, 모르면 null)",
-      "explanation": "이 수식이 무엇을 하는지, method_steps의 어느 단계에 해당하는지",
-      "analogy": "이 수식 전체를 일상 상황에 빗댄, 읽자마자 그림이 그려지는 비유 한 문장",
-      "variables": [ { "symbol": "Q", "meaning": "query 행렬 — '내가 지금 찾고 있는 것'에 해당" } ],
-      "numeric_demo": {
-        "purpose": "이 계산으로 확인할 것 한 줄",
-        "setup": "전제 한 줄 (없으면 null)",
-        "constants": [ { "key": "tau", "symbol": "\\tau", "value": 0.07, "meaning": "온도 (논문 설정값)" } ],
-        "inputs": [
-          { "key": "sp", "symbol": "s_p", "label": "양성 쌍 유사도" },
-          { "key": "sn", "symbol": "s_n", "label": "음성 쌍 유사도" }
-        ],
-        "steps": [
-          { "key": "pos", "label": "양성 점수 지수화", "latex": "\\exp(s_p/\\tau)", "compute": "Math.exp(sp/tau)" },
-          { "key": "neg", "label": "음성 점수 지수화", "latex": "\\exp(s_n/\\tau)", "compute": "Math.exp(sn/tau)" },
-          { "key": "prob", "label": "양성이 뽑힐 확률", "latex": "\\frac{pos}{pos+neg}", "compute": "pos/(pos+neg)" },
-          { "key": "loss", "label": "손실", "latex": "-\\log(prob)", "compute": "-Math.log(prob)" }
-        ],
-        "result": { "key": "loss", "symbol": "\\mathcal{L}", "label": "대조 손실" },
-        "samples": [
-          { "name": "확실히 맞는 쌍", "group": "쉬운 예", "values": { "sp": 0.95, "sn": 0.10 } },
-          { "name": "애매한 쌍", "group": "어려운 예", "values": { "sp": 0.55, "sn": 0.50 } }
-        ],
-        "walkthrough": 0,
-        "aggregate": "mean",
-        "insight": "성향별로 값이 어떻게 갈리는지 + 그래서 무엇을 뜻하는지 한두 문장"
-      }
-    }
   ]
 }
 
@@ -583,7 +583,7 @@ const SYSTEM_PROMPT = `당신은 논문을 구조적으로 분석하는 전문 �
 ======================== 연구 방법론 시각화 생성 지시문 v4 (시작) ========================
 ${METHOD_VIZ_V4}
 ======================== 연구 방법론 시각화 생성 지시문 v4 (끝) ========================
-- equations: 논문의 핵심 수식만 3~8개. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
+- equations: ==본문에 번호가 붙었거나(예: (1), Eq. 3) 별도 줄로 표시(display)된 수식을 하나도 빠짐없이 모두== 담으세요(개수 상한 없음 — 논문에 그런 수식이 12개면 12개). 인라인 기호($x$ 하나 같은)나 부록 수식은 제외합니다. ==배열 순서는 계산이 흘러가는 순서(앞 수식의 출력이 뒤 수식의 입력이 되는 순서)로 정렬하세요==. 순서를 재배열하더라도 paper_ref에 원 논문의 수식 번호(Eq. N)나 절 번호를 남겨 사용자가 원문과 대조할 수 있게 하세요. variables에는 수식에 등장하는 주요 기호를 하나도 빠짐없이 나열하고, meaning은 비전공자도 이해할 만큼 쉬운 말로 ("~에 해당", "~를 뜻함" 같은 직관적 설명). explanation은 수식의 역할과 방법론 단계 연결, analogy는 설명 바로 아래에 표시될 일상 비유 한 문장. ==paper_ref에는 원 논문의 수식 번호를 'Eq. 1' 형식으로 정확히== 남기세요(논문이 그 수식에 번호를 붙였다면). 프론트가 PDF에서 그 번호 "(1)"을 찾아 체크 표시를 합니다. 수식이 없는 논문이면 빈 배열 [].
 - experiments: 실험·결과 섹션 (전용 탭). ==논문의 Experiments(실험) 절을 보고, 실험을 논문에 나온 번호·순서대로 정리==하세요. 구성:
   · 맨 위 takeaway: 전체 실험이 입증한 핵심 결론 한 줄.
   · metrics_explained: 논문이 쓰는 측정 지표가 있으면 각각 "무엇을 재는지 + 클수록/작을수록 좋은지" 쉬운 설명. (지표가 없으면 빈 배열)
@@ -592,7 +592,7 @@ ${METHOD_VIZ_V4}
   · studies: ==각 실험을 하나씩, {title(논문 표현), purpose(목적), setup(실험 세팅: 데이터·모델·비교군·조건), result(결과 — 논문이 보고한 실제 수치 포함 + 의미), paper_page(그 실험이 시작되는 원문 PDF 페이지), anchor(원문에서 그 실험 위치를 찾을 짧은 검색 문구)}로==. ablation·분석 실험도 하나의 study로. paper_page·anchor는 실험 번호 클릭 시 원문 PDF의 그 위치에 ✓ 체크를 찍는 데 쓰입니다 — ==paper_page는 직접 확인한 페이지만, anchor는 본문에 글자 그대로 있는 제목/번호만(모르면 null)==.
   · limitations(선택): 저자가 인정한 한계·향후 연구.
   ==수치는 논문에서 실제로 읽은 값만 쓰고, 확인 못 한 항목은 비우세요(지어내기 절대 금지)==. 실험이 거의 없는 이론/서베이 논문이면 studies를 비우고 takeaway·limitations만 채우거나 experiments 자체를 생략하세요.
-- figure_guide: 논문에 실제로 들어 있는 ==모든 핵심 그림과 표(Figure·Table)를 등장 순서대로== 정리(전용 '그림 해설' 탭에 표시). 각 항목:
+- figure_guide: 본문에 번호가 붙은 ==모든 그림과 표(Figure 1·2·…, Table 1·2·… 전부)를 등장 순서대로 하나도 빠짐없이== 정리(전용 '그림 해설' 탭에 표시). ==번호가 연속이어야 합니다== — Figure 1·2·4만 담고 3을 빠뜨리면 안 됩니다. 해설거리가 적은 표(성능 비교·ablation)나 정성 예시 그림도 반드시 포함하세요(중요도로 취사선택 금지). 각 항목:
   · label(논문 표기 그대로 'Figure 1'/'Table 2'), page(해당 페이지), kind(유형).
   · ==caption_ko: 원문에 영어로 적힌 그 그림/표의 캡션을 '먼저' 한국어로 번역==(원문 caption의 뜻).
   · explanation: 그 위에 이어서, 이 그림/표가 무엇이고 어떻게 읽으면 되는지 해설(축·범례·색·비교 대상이 무엇을 뜻하는지).
@@ -640,7 +640,11 @@ ${METHOD_VIZ_V4}
 2-1. 비유(analogy)는 전문 용어 없이, 읽는 즉시 장면이 그려지는 일상 상황(도서관, 회의, 요리, 택배 등)으로 쓰세요.
 3. latex 문자열 안의 백슬래시는 JSON 규칙에 맞게 이스케이프하세요 (예: "\\\\frac{a}{b}").
 4. 정확하고 구체적으로 쓰되 불필요한 수사는 빼세요. 강조 마크업은 위 두 종류만 사용하고 다른 마크다운 문법은 쓰지 마세요.
-5. ==분석 범위는 논문 본문까지입니다 — 부록(Appendix)·보충자료(Supplementary/Supplemental Material)는 분석하지 마세요.== 본문 마지막 절(대개 Conclusion/Discussion) 뒤에 "Appendix"·"Supplementary"·"부록" 제목이 나오면 그 이후 내용은 ==어떤 필드에도 넣지 마세요== — seminar 절 목록, figure_guide의 그림·표(예: Figure A1, Table S2), equations, experiments.studies 모두 본문 것만 담습니다. (사용자가 필요하면 나중에 부록만 따로 분석하는 기능을 씁니다.) 단 References/참고문헌 목록 자체는 원래 분석 대상이 아닙니다.`;
+5. ==분석 범위는 논문 본문까지입니다 — 부록(Appendix)·보충자료(Supplementary/Supplemental Material)는 분석하지 마세요.== 본문 마지막 절(대개 Conclusion/Discussion) 뒤에 "Appendix"·"Supplementary"·"부록" 제목이 나오면 그 이후 내용은 ==어떤 필드에도 넣지 마세요== — seminar 절 목록, figure_guide의 그림·표(예: Figure A1, Table S2), equations, experiments.studies 모두 본문 것만 담습니다. (사용자가 필요하면 나중에 부록만 따로 분석하는 기능을 씁니다.) 단 References/참고문헌 목록 자체는 원래 분석 대상이 아닙니다.
+6. ==완성도 자가점검 (출력 직전 반드시 수행)==: JSON을 끝내기 전에, 본문을 처음부터 다시 훑어 아래를 빠뜨리지 않았는지 확인하세요.
+   · figure_guide — 본문에 번호가 붙은 ==모든 Figure와 Table==이 각각 항목으로 들어갔는가? 번호가 연속인가(1,2,3,… 중간에 빠진 번호 없이)? 다른 필드(explanation·seminar 등)에서 'Figure 5'를 언급했다면 figure_guide에도 Figure 5가 있어야 합니다.
+   · equations — 본문에 번호가 붙었거나 별도 줄로 표시된 ==모든 수식==이 들어갔는가? 개수를 줄이지 마세요. 빠진 게 있으면 지금 추가한 뒤 출력하세요.
+   길이가 길어져도 이 두 배열은 절대 줄이거나 생략하지 마세요 — 사용자에게 가장 중요한 부분입니다.`;
 
 // ── 최적화 프롬프트 (검증 완료: 결과 불변, 토큰 절감) ──────────────────────────
 // SYSTEM_PROMPT_CORE: 방법론 시각화(method_visualization)는 별도 HTML 파이프라인이
@@ -668,7 +672,7 @@ const LITE_STRIP_RES = [
   /^ {2}"seminar": \[[\s\S]*?\n {2}\],\n/m,
   /^ {2}"suggested_questions": \[[\s\S]*?\n {2}\],\n/m,
   /^ {2}"glossary": \[[\s\S]*?\n {2}\],\n/m,
-  /^ {2}"related_papers": \[[\s\S]*?\n {2}\],\n/m,
+  /^ {2}"related_papers": \[[\s\S]*?\n {2}\],?\n/m, // 재배치로 마지막 필드가 되어 닫힘이 '],' 또는 ']'
   /^- contributions: [^\n]*\n/m,
   /^- method_visualization: null로[^\n]*\n/m,
   /^- experiments: [\s\S]*?(?=^- figure_guide:)/m,
