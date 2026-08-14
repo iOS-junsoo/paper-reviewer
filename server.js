@@ -1569,6 +1569,121 @@ app.post("/api/ask/:hash", async (req, res) => {
   }
 });
 
+// --- POST /api/explain/:hash — 선택한 텍스트를 쉬운 수준으로 풀어 설명 -----------
+// 드래그 선택(용어·문장·문단) 또는 섹션 전체를 받아, 고등학생/입문 수준으로 다시 설명한다.
+// /api/ask와 달리 채팅 기록을 남기지 않는 일회성 설명이며, 컨텍스트를 가볍게 실어 빠르게 답한다.
+const EXPLAIN_LEVELS = {
+  highschool: {
+    label: "고등학생",
+    guide:
+      "==고등학생(전공 지식 0)도 한 번 읽고 이해==하도록 씁니다. 전문용어는 되도록 쓰지 말고, " +
+      "꼭 필요하면 즉시 쉬운 말로 풀어 주세요(예: 'gradient(기울기 — 어느 방향으로 조금 바꾸면 결과가 좋아지는지)'). " +
+      "가능하면 일상 비유를 하나 들어 직관을 주고, 수식은 기호 대신 '무엇을 무엇으로 나눈다'처럼 말로 풀어 설명하세요.",
+  },
+  college: {
+    label: "대학 입문",
+    guide:
+      "전공을 막 시작한 대학생 수준으로 씁니다. 핵심 용어는 괄호로 한 줄 풀이를 달되, " +
+      "고등학생용보다 조금 더 정확하고 밀도 있게 설명해도 됩니다. 필요하면 짧은 비유 하나.",
+  },
+};
+app.post("/api/explain/:hash", async (req, res) => {
+  const hash = req.params.hash.replace(/[^a-f0-9]/g, "");
+  const ac = new AbortController();
+  abortOnDisconnect(res, ac, "쉬운 설명");
+  try {
+    const b = req.body || {};
+    const selected = String(b.text || "").trim().slice(0, 4000); // 섹션 전체 선택도 수용
+    if (!selected) return res.status(400).json({ error: "설명할 텍스트가 비어 있습니다." });
+    const lv = EXPLAIN_LEVELS[b.level] ? b.level : "highschool";
+    const sectionName = String(b.section || "").slice(0, 40); // 어느 탭에서 선택했는지(맥락)
+    const whole = !!b.whole; // 섹션 전체 설명 여부
+
+    const record = await store.get(hash);
+    if (!record) return res.status(404).json({ error: "해당 논문의 분석 결과가 없습니다." });
+    const a = record.analysis;
+
+    // 컨텍스트는 가볍게 — 무엇에 관한 논문인지 + 방법 골자만. (선택 텍스트 해석의 배경)
+    const context = jsonContextUnderBudget({
+      title: a.title,
+      one_liner: a.one_liner,
+      background: a.background,
+      problem: a.problem,
+      method_steps: (a.method_steps || []).map((s) => ({ title: s.title, description: s.description })),
+    }, 8000, ["background", "problem", "method_steps"]);
+    const pdfPath = path.join(PDF_DIR, `${hash}.pdf`);
+
+    const prompt = [
+      `아래는 논문 "${a.title}"의 분석 화면에서 사용자가 ${whole ? "'" + (sectionName || "한 섹션") + "' 전체를" : "일부를"} 골라 "쉽게 설명"을 요청한 것입니다.`,
+      sectionName ? `선택 위치: ${sectionName} 탭` : "",
+      `배경(JSON): ${context}`,
+      fs.existsSync(pdfPath)
+        ? `원문 PDF: ${pdfPath} — 선택한 표현의 뜻이 배경만으로 불분명할 때만 Read로 해당 부분을 확인하세요.`
+        : "",
+      `── 사용자가 고른 내용 ──\n${selected}\n──────────────`,
+      `이 내용을 ${EXPLAIN_LEVELS[lv].guide}`,
+      whole
+        ? `섹션 전체이므로, 통째로 다시 풀어 쓰되 ==원래 순서와 논리를 유지==하세요. 문단을 나눠도 좋습니다.`
+        : `선택한 표현이 이 논문 맥락에서 무엇을 뜻하는지에 집중하세요. 선택한 게 한 단어·기호면 그 뜻과 왜 필요한지를, 한 문장이면 그 문장이 하려는 말을 풀어 주세요.`,
+      `형식: 한국어. 고유명사는 영어 원어 + 괄호 번역. 인라인 수식은 $...$, 강조는 **볼드**/==형광펜==. ` +
+        `마크다운 헤더·리스트·코드펜스는 쓰지 말고 설명 텍스트만 출력하세요. 서론("좋은 질문입니다")·끝맺음 요약은 쓰지 마세요.`,
+      whole
+        ? `길이: 원문 분량에 맞추되 늘어지지 않게. 핵심을 빠뜨리지 말 것.`
+        : `길이: ==3문장 이내, 400자 이내==로 짧게. 딱 이해에 필요한 만큼만.`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    console.log(`[쉬운 설명:${EXPLAIN_LEVELS[lv].label}] ${a.title}: "${selected.slice(0, 40)}${selected.length > 40 ? "…" : ""}"`);
+    sseInit(res);
+    let lastStep = "";
+    const step = (msg) => { if (msg === lastStep) return; lastStep = msg; sseSend(res, { type: "step", msg }); };
+    step("쉽게 풀어보는 중…");
+    let answer = null;
+    for await (const msg of query({
+      prompt,
+      options: {
+        model: MODEL, allowedTools: ["Read"], maxTurns: 8, cwd: PDF_DIR,
+        abortController: ac, includePartialMessages: true,
+      },
+    })) {
+      if (msg.type === "stream_event" && !msg.parent_tool_use_id) {
+        const ev = msg.event;
+        if (ev && ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta" && ev.delta.text) {
+          sseSend(res, { type: "delta", text: ev.delta.text });
+        }
+      }
+      if (msg.type === "assistant" && msg.message && Array.isArray(msg.message.content)) {
+        for (const blk of msg.message.content) {
+          if (blk.type === "tool_use" && blk.name === "Read") {
+            const pages = (blk.input && blk.input.pages) || "";
+            step(pages ? `📄 원문 ${pages}쪽 확인 중…` : "📄 원문 확인 중…");
+          }
+        }
+      }
+      if (msg.type === "result") {
+        if (msg.subtype !== "success") {
+          const detail = String(msg.result || (Array.isArray(msg.errors) ? msg.errors.join(" ") : "") || "");
+          if (isAuthError(detail)) { sseSend(res, { type: "error", error: AUTH_ERROR_MSG }); return res.end(); }
+          throw new Error(`설명 생성 실패 (${msg.subtype})${detail ? ": " + detail.slice(0, 120) : ""}`);
+        }
+        answer = msg.result;
+      }
+    }
+    sseSend(res, { type: "result", answer: answer || "(설명을 생성하지 못했습니다)" });
+    res.end();
+  } catch (e) {
+    if (ac.signal.aborted) return;
+    console.error("[/api/explain 오류]", e);
+    const friendly = e && (e.code === "AUTH" || isAuthError(e.message)) ? AUTH_ERROR_MSG : `설명 생성 실패: ${e.message}`;
+    if (res.headersSent) {
+      if (!res.writableEnded && !res.destroyed) { sseSend(res, { type: "error", error: friendly }); res.end(); }
+      return;
+    }
+    res.status(e && (e.code === "AUTH" || isAuthError(e.message)) ? 401 : 500).json({ error: friendly });
+  }
+});
+
 // --- GET /api/chat/:hash — 저장된 채팅 기록 ------------------------------------
 app.get("/api/chat/:hash", async (req, res) => {
   try {

@@ -5294,3 +5294,264 @@ document.getElementById("kbd-help").addEventListener("click", (e) => { if (e.tar
 
 loadHistory();
 restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
+
+// ── 쉽게 설명 (드래그 선택 → 팝업) ──────────────────────────────────────────
+// 분석 본문에서 아무 텍스트나 선택하면 "🎓 쉽게 설명" 칩이 뜨고, 누르면 이 논문 맥락에서
+// 그 표현을 고등학생/입문 수준으로 풀어 주는 팝업이 나온다. 서버 /api/explain을 SSE로 스트리밍.
+(function initExplain() {
+  const SECTION_KO = { seminar: "세미나 정리", background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리", figures: "그림 해설" };
+  const LEVELS = [{ id: "highschool", label: "고등학생" }, { id: "college", label: "대학 입문" }];
+  let chip = null, popup = null, abortCtl = null;
+  let curLevel = (() => { try { return localStorage.getItem("explainLevel") || "highschool"; } catch (e) { return "highschool"; } })();
+  const cache = new Map(); // `${level}::${text}` → 완성된 설명(재요청 방지)
+
+  const panelsEl = () => document.querySelector(".panels");
+  const sectionName = () => SECTION_KO[activeTab] || "";
+
+  // 현재 선택이 분석 본문(.panels) 안의 유효한 텍스트인지
+  function pickSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    const text = sel.toString().replace(/\s+/g, " ").trim();
+    if (text.length < 2 || text.length > 4000) return null;
+    const range = sel.getRangeAt(0);
+    const panels = panelsEl();
+    if (!panels || !panels.contains(range.commonAncestorContainer)) return null;
+    // 팝업/칩 자체를 선택한 경우 제외
+    if (popup && popup.contains(range.commonAncestorContainer)) return null;
+    const rect = range.getBoundingClientRect();
+    // 선택이 화면 밖(스크롤로 가려진 곳)이면 칩을 띄우지 않는다 — 안 보이는 데 그려져 봐야
+    // 누를 수 없고, 화면 구석에 떠 있는 유령 버튼이 된다.
+    if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) return null;
+    return { text, rect };
+  }
+
+  function hideChip() { if (chip) { chip.remove(); chip = null; } }
+
+  function showChip(info) {
+    hideChip();
+    chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "xchip";
+    chip.innerHTML = "🎓 쉽게 설명";
+    const r = info.rect;
+    const cw = 116;
+    chip.style.left = Math.max(8, Math.min(window.innerWidth - cw - 8, r.left + r.width / 2 - cw / 2)) + "px";
+    chip.style.top = (r.top > 46 ? r.top - 40 : r.bottom + 8) + "px";
+    chip.addEventListener("mousedown", (e) => e.preventDefault()); // 클릭해도 선택 유지
+    chip.addEventListener("click", () => { openPopup(info); });
+    document.body.appendChild(chip);
+  }
+
+  function closePopup() {
+    if (abortCtl) { abortCtl.abort(); abortCtl = null; }
+    if (popup) { popup.remove(); popup = null; }
+    document.removeEventListener("keydown", onKey, true);
+    document.removeEventListener("mousedown", onOutside, true);
+  }
+  const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closePopup(); } };
+  const onOutside = (e) => { if (popup && !popup.contains(e.target) && e.target !== chip) closePopup(); };
+
+  function openPopup(info) {
+    hideChip();
+    if (popup) closePopup();
+    const whole = info.text.length > 600; // 길게 선택하면 '섹션 전체 풀어쓰기' 모드
+
+    popup = document.createElement("div");
+    popup.className = "xpop";
+    popup.setAttribute("role", "dialog");
+    popup.innerHTML =
+      '<div class="xpop-head">' +
+        '<span class="xpop-title">🎓 쉽게 설명</span>' +
+        '<span class="xpop-levels"></span>' +
+        '<button type="button" class="xpop-close" title="닫기 (Esc)">✕</button>' +
+      '</div>' +
+      '<div class="xpop-sel"></div>' +
+      '<div class="xpop-body"><span class="xmuted">쉽게 풀어보는 중…</span></div>';
+
+    // 레벨 토글
+    const lv = popup.querySelector(".xpop-levels");
+    LEVELS.forEach((L) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "xlv" + (L.id === curLevel ? " on" : "");
+      b.textContent = L.label;
+      b.addEventListener("click", () => {
+        if (curLevel === L.id) return;
+        curLevel = L.id;
+        try { localStorage.setItem("explainLevel", curLevel); } catch (e) {}
+        lv.querySelectorAll(".xlv").forEach((x) => x.classList.toggle("on", x === b));
+        run(info, whole); // 레벨 바꾸면 다시 설명
+      });
+      lv.appendChild(b);
+    });
+
+    // 선택한 원문 미리보기(길면 자름)
+    const selEl = popup.querySelector(".xpop-sel");
+    selEl.textContent = "“" + (info.text.length > 140 ? info.text.slice(0, 140) + "…" : info.text) + "”";
+
+    popup.querySelector(".xpop-close").addEventListener("click", closePopup);
+    // 팝업 안에서의 선택은 칩을 띄우지 않게(자기 참조 방지)
+    popup.addEventListener("mouseup", (e) => e.stopPropagation());
+
+    // 위치: 선택 근처, 화면 밖으로 안 나가게
+    document.body.appendChild(popup);
+    const pw = popup.offsetWidth, ph = popup.offsetHeight;
+    const r = info.rect;
+    let left = Math.min(window.innerWidth - pw - 12, Math.max(12, r.left));
+    let top = r.bottom + 10;
+    if (top + ph > window.innerHeight - 12) top = Math.max(12, r.top - ph - 10);
+    popup.style.left = left + "px";
+    popup.style.top = top + "px";
+
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("mousedown", onOutside, true);
+    run(info, whole);
+  }
+
+  async function run(info, whole) {
+    return streamInto(popup.querySelector(".xpop-body"), info.text, whole);
+  }
+
+  // 설명을 받아 대상 엘리먼트에 스트리밍으로 그린다(팝업 본문·섹션 카드 공용).
+  async function streamInto(body, text, whole) {
+    const info = { text };
+    const key = curLevel + "::" + info.text;
+    if (cache.has(key)) { renderRich(body, cache.get(key)); return; }
+    if (!currentHash) { body.innerHTML = '<span class="xerr">분석이 로드되지 않았습니다.</span>'; return; }
+    // 중단 컨트롤러는 ==대상 엘리먼트마다== 따로 둔다. 하나를 공유하면 팝업과 섹션 카드가
+    // 동시에 떠 있을 때 서로의 요청을 끊는다(레벨 전환·재요청 시 실제로 발생).
+    if (body.__xAbort) body.__xAbort.abort();
+    const ctl = new AbortController();
+    body.__xAbort = ctl;
+    abortCtl = ctl; // 팝업 닫기(closePopup)에서 쓰는 최근 컨트롤러
+    body.innerHTML = '<span class="xmuted">쉽게 풀어보는 중…</span>';
+    let acc = "";
+    const scroll = () => { body.scrollTop = body.scrollHeight; };
+    try {
+      const res = await fetch(`${API_BASE}/api/explain/${currentHash}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: info.text, level: curLevel, section: sectionName(), whole }),
+        signal: ctl.signal,
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        body.innerHTML = `<span class="xerr">${(j.error || "설명 실패 (HTTP " + res.status + ")").replace(/</g, "&lt;")}</span>`;
+        return;
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop();
+        for (const p of parts) {
+          const line = p.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          let ev; try { ev = JSON.parse(line.slice(6)); } catch (e) { continue; }
+          if (ev.type === "step") { if (!acc) body.innerHTML = `<span class="xmuted">${(ev.msg || "").replace(/</g, "&lt;")}</span>`; }
+          else if (ev.type === "delta") { acc += ev.text; renderRich(body, acc); scroll(); }
+          else if (ev.type === "result") { acc = ev.answer || acc; renderRich(body, acc); cache.set(key, acc); scroll(); }
+          else if (ev.type === "error") { body.innerHTML = `<span class="xerr">${(ev.error || "오류").replace(/</g, "&lt;")}</span>`; }
+        }
+      }
+    } catch (e) {
+      if (e.name !== "AbortError") body.innerHTML = `<span class="xerr">오류: ${String(e.message).replace(/</g, "&lt;")}</span>`;
+    }
+  }
+
+  // ── 섹션 전체 쉽게 설명 (툴바 버튼) ──────────────────────────────────────
+  // 드래그가 번거롭거나 섹션 전체가 막막할 때. 팝업 대신 본문 아래 카드로 붙여
+  // 원문과 나란히 두고 읽을 수 있게 한다.
+  async function explainWholeSection() {
+    const btn = document.getElementById("tool-explain");
+    const panel = document.getElementById(`panel-${activeTab}`);
+    if (!panel || !currentHash) return;
+
+    const prev = panel.querySelector(".xsec");
+    if (prev) { // 토글: 다시 누르면 닫기
+      const b = prev.querySelector(".xsec-body");
+      if (b && b.__xAbort) b.__xAbort.abort();
+      prev.remove();
+      btn.classList.remove("on");
+      return;
+    }
+
+    // 이미 붙인 설명 카드는 빼고 원문만 추출
+    const clone = panel.cloneNode(true);
+    clone.querySelectorAll(".xsec").forEach((e) => e.remove());
+    const text = clone.textContent.replace(/\s+/g, " ").trim();
+    if (text.length < 30) { showError("이 섹션에는 설명할 내용이 없습니다."); return; }
+
+    btn.classList.add("on");
+    const card = document.createElement("div");
+    card.className = "xsec";
+    card.innerHTML =
+      '<div class="xsec-head">' +
+        '<span class="xsec-title">🎓 쉽게 설명 — ' + (SECTION_KO[activeTab] || "") + '</span>' +
+        '<span class="xpop-levels"></span>' +
+        '<button type="button" class="xsec-close" title="닫기">✕</button>' +
+      '</div>' +
+      '<div class="xsec-body"><span class="xmuted">쉽게 풀어보는 중…</span></div>';
+    panel.appendChild(card);
+    card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+
+    const lvWrap = card.querySelector(".xpop-levels");
+    LEVELS.forEach((L) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "xlv" + (L.id === curLevel ? " on" : "");
+      b.textContent = L.label;
+      b.addEventListener("click", () => {
+        if (curLevel === L.id) return;
+        curLevel = L.id;
+        try { localStorage.setItem("explainLevel", curLevel); } catch (e) {}
+        lvWrap.querySelectorAll(".xlv").forEach((x) => x.classList.toggle("on", x === b));
+        streamInto(card.querySelector(".xsec-body"), text, true);
+      });
+      lvWrap.appendChild(b);
+    });
+    card.querySelector(".xsec-close").addEventListener("click", () => {
+      const b = card.querySelector(".xsec-body");
+      if (b && b.__xAbort) b.__xAbort.abort(); // 이 카드의 요청만 중단(팝업은 건드리지 않는다)
+      card.remove();
+      btn.classList.remove("on");
+    });
+
+    streamInto(card.querySelector(".xsec-body"), text, true);
+  }
+
+  // 선택이 끝났을 때(마우스업) 칩 표시. 팝업이 열려 있으면 칩은 띄우지 않는다.
+  document.addEventListener("mouseup", (e) => {
+    if (popup) return;
+    if (chip && chip.contains(e.target)) return;
+    setTimeout(() => { // 브라우저가 선택을 확정한 뒤
+      const info = pickSelection();
+      if (info) showChip(info); else hideChip();
+    }, 10);
+  });
+  // 선택이 사라지면 칩도 정리
+  document.addEventListener("selectionchange", () => {
+    const sel = window.getSelection();
+    if ((!sel || sel.isCollapsed) && chip && !popup) hideChip();
+  });
+  // 스크롤/리사이즈 시 칩은 위치가 어긋나므로 닫는다(팝업은 유지)
+  window.addEventListener("scroll", () => hideChip(), true);
+  window.addEventListener("resize", () => hideChip());
+
+  const secBtn = document.getElementById("tool-explain");
+  if (secBtn) secBtn.addEventListener("click", explainWholeSection);
+  // 탭을 옮기면 이전 섹션의 버튼 활성 표시를 끈다(카드는 그 패널에 남아 있다)
+  document.addEventListener("click", (e) => {
+    if (e.target.closest && e.target.closest(".tab") && secBtn) {
+      setTimeout(() => {
+        const panel = document.getElementById(`panel-${activeTab}`);
+        secBtn.classList.toggle("on", !!(panel && panel.querySelector(".xsec")));
+      }, 50);
+    }
+  });
+})();
