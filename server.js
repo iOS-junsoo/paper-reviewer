@@ -716,10 +716,14 @@ const SYSTEM_PROMPT_LITE =
   }
 })();
 // Phase0: 쿼리 usage 실측 로깅(경로 태그) — 절감 확인용.
+// 사용량 로그. 끝의 금액은 SDK가 주는 total_cost_usd로, ==실제 청구액이 아니라
+// "API로 같은 작업을 했다면 이만큼"이라는 환산 추정치==다. 이 서비스는 Max 구독 OAuth로만
+// 동작하고(진입부에서 ANTHROPIC_API_KEY를 삭제해 과금 경로를 차단) 실제로 소모되는 것은
+// 구독의 세션 사용량이다. 헷갈리지 않게 "환산" 표기를 붙인다.
 function logUsage(tag, msg) {
   try {
     const u = msg.usage || {};
-    console.log(`[usage:${tag}] turns ${msg.num_turns} · in ${u.input_tokens} · cache_read ${u.cache_read_input_tokens} · cache_create ${u.cache_creation_input_tokens} · out ${u.output_tokens} · $${(msg.total_cost_usd || 0).toFixed(3)}`);
+    console.log(`[usage:${tag}] turns ${msg.num_turns} · in ${u.input_tokens} · cache_read ${u.cache_read_input_tokens} · cache_create ${u.cache_creation_input_tokens} · out ${u.output_tokens} · 환산 $${(msg.total_cost_usd || 0).toFixed(3)}(청구 아님)`);
   } catch (e) {}
 }
 
