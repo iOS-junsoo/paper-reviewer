@@ -20,6 +20,16 @@ if (IS_MAC && !USE_ENV_TOKEN && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 }
 
+// ── 응답 출력 토큰 상한 ──────────────────────────────────────────────────────
+// Claude Code의 기본 상한은 32,000이라, 정밀 분석 한 편의 JSON(모든 수식·그림·표 +
+// numeric_demo)이 이를 넘겨 "response exceeded the 32000 output token maximum"으로
+// 통째로 실패했다. 모델(Opus 5)은 출력 128K까지 지원하므로 기본값이 병목이었다.
+// 64K로 올려 여유를 준다 — 실측 최대 출력이 3만 토큰대라 2배 헤드룸.
+// (환경변수로 이미 지정돼 있으면 그 값을 존중한다.)
+if (!process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS) {
+  process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = "64000";
+}
+
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
@@ -616,7 +626,7 @@ ${METHOD_VIZ_V4}
   · constants: 샘플과 무관하게 고정된 값. ==논문이 실제로 쓴 값을 그대로== 쓰세요(예: τ=0.07, d_k=64).
   · steps: 계산을 ==사람이 손으로 푸는 순서대로 3~6단계==로 쪼개세요. 한 줄로 끝내지 말고 중간 산물을 드러내야 과정이 보입니다. 각 단계의 key는 뒤 단계에서 변수로 쓸 수 있습니다. compute에는 inputs·constants·앞선 steps의 key와 Math만 쓸 수 있습니다(대입·세미콜론·함수 정의 불가).
   · latex는 그 단계를 기호로 쓴 식. 화면이 이걸 렌더한 뒤 바로 아래에 숫자를 대입한 형태와 결과를 붙입니다.
-  · samples: 8~12개. ==group에 성향을 붙여 2~4개 부류로 나누세요== (예: "쉬운 예"/"어려운 예", "정렬됨"/"어긋남", "짧은 문장"/"긴 문장"). 부류에 따라 결과가 갈리는 것을 보여주는 것이 이 기능의 핵심입니다. name은 그 샘플을 한눈에 알아볼 짧은 이름.
+  · samples: 6~10개. ==group에 성향을 붙여 2~4개 부류로 나누세요== (예: "쉬운 예"/"어려운 예", "정렬됨"/"어긋남", "짧은 문장"/"긴 문장"). 부류에 따라 결과가 갈리는 것을 보여주는 것이 이 기능의 핵심입니다. name은 그 샘플을 한눈에 알아볼 짧은 이름.
   · walkthrough: 단계별로 자세히 전개할 샘플의 인덱스. ==가장 전형적인 것== 하나를 고르세요.
   · aggregate: 나머지 샘플들을 어떻게 합칠지 — "mean"(평균) | "sum"(합) | "max" | "min". 손실·확률처럼 배치 평균이 의미 있으면 mean.
   · 수식이 벡터·행렬 연산이면 ==대표 스칼라로 축약==하세요(성분 하나, 노름, 평균 등). 무리하게 전체를 재현할 필요 없습니다.
@@ -644,7 +654,10 @@ ${METHOD_VIZ_V4}
 6. ==완성도 자가점검 (출력 직전 반드시 수행)==: JSON을 끝내기 전에, 본문을 처음부터 다시 훑어 아래를 빠뜨리지 않았는지 확인하세요.
    · figure_guide — 본문에 번호가 붙은 ==모든 Figure와 Table==이 각각 항목으로 들어갔는가? 번호가 연속인가(1,2,3,… 중간에 빠진 번호 없이)? 다른 필드(explanation·seminar 등)에서 'Figure 5'를 언급했다면 figure_guide에도 Figure 5가 있어야 합니다.
    · equations — 본문에 번호가 붙었거나 별도 줄로 표시된 ==모든 수식==이 들어갔는가? 개수를 줄이지 마세요. 빠진 게 있으면 지금 추가한 뒤 출력하세요.
-   길이가 길어져도 이 두 배열은 절대 줄이거나 생략하지 마세요 — 사용자에게 가장 중요한 부분입니다.`;
+   길이가 길어져도 이 두 배열은 절대 줄이거나 생략하지 마세요 — 사용자에게 가장 중요한 부분입니다.
+   · ==단, 줄이지 말라는 것은 '항목 수'이지 '항목당 분량'이 아닙니다.== 전체 출력이 길어지면
+     각 항목의 explanation·caption_ko·takeaway를 간결하게 쓰세요(각 1~3문장). 모든 그림·표·수식을
+     담되 설명이 늘어지지 않게 하는 것이 목표입니다. numeric_demo도 samples는 6~10개면 충분합니다.`;
 
 // ── 최적화 프롬프트 (검증 완료: 결과 불변, 토큰 절감) ──────────────────────────
 // SYSTEM_PROMPT_CORE: 방법론 시각화(method_visualization)는 별도 HTML 파이프라인이
@@ -932,12 +945,16 @@ async function runAnalysisJobInner(res, hash, pageCount, fallbackTitle, ac, opts
         sseSend(res, { type: "eta", phase: "analysis", estMs: Math.round(est.analysisMs * 1.3), estTotalMs: estTotal, retry: true });
       } else {
         // 원본 응답을 남긴다 — 500자 미리보기만으로는 원인을 특정할 수 없다.
-        try {
-          fs.mkdirSync(STATS_DIR, { recursive: true });
-          const dump = path.join(STATS_DIR, `parse-fail-${hash.slice(0, 12)}-${Date.now()}.txt`);
-          fs.writeFileSync(dump, String(lastRaw).slice(0, 400000));
-          console.warn(`[분석 실패] 원본 응답 저장: ${dump}`);
-        } catch (err) {}
+        // 단 API가 요청 자체를 거부한 경우(출력 토큰 상한 초과 등)엔 응답 텍스트가 없어
+        // 빈 파일만 쌓인다 — 내용이 있을 때만 저장한다.
+        if (String(lastRaw || "").trim()) {
+          try {
+            fs.mkdirSync(STATS_DIR, { recursive: true });
+            const dump = path.join(STATS_DIR, `parse-fail-${hash.slice(0, 12)}-${Date.now()}.txt`);
+            fs.writeFileSync(dump, String(lastRaw).slice(0, 400000));
+            console.warn(`[분석 실패] 원본 응답 저장: ${dump}`);
+          } catch (err) {}
+        }
         sseSend(res, {
           type: "error",
           error: `분석에 실패했습니다 (2회 시도): ${e.message || ""}`,
@@ -2645,6 +2662,7 @@ getAuthStatus().then((a) => {
 app.listen(PORT, HOST, () => {
   console.log(
     `Paper Reviewer 실행 중: http://localhost:${PORT} (모델: ${MODEL}, 저장소: ${store.kind}, ` +
-    `인증: ${auth.enabled ? "비밀번호" : "로컬 전용"}, 데이터: ${DATA_DIR})`
+    `인증: ${auth.enabled ? "비밀번호" : "로컬 전용"}, 출력상한: ${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS}, ` +
+    `데이터: ${DATA_DIR})`
   );
 });
