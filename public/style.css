@@ -2384,24 +2384,32 @@ body.chat-resizing .pdf-scroll { pointer-events: none; }
   100% { background: transparent; box-shadow: none; }
 }
 
-/* P5: 드래그 선택 → 바로 질문 플로팅 버튼 */
-.sel-ask {
+/* P5: 드래그 선택 → 선택 도구 툴바.
+   버튼이 여럿이라 각각 띄우면 같은 지점(선택 영역 위 중앙)에서 겹친다. 한 줄에 담는다. */
+.sel-tools {
   position: fixed;
-  z-index: 95;
+  z-index: 1000;
+  display: flex;
+  align-items: stretch;
+  background: var(--accent);
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  animation: selAskIn 0.12s ease-out;
+}
+.sel-tool {
   font-family: var(--sans);
   font-size: 0.8rem;
   font-weight: 600;
   color: #fff;
-  background: var(--accent);
+  background: transparent;
   border: none;
-  border-radius: 999px;
-  padding: 6px 13px;
+  padding: 7px 14px;
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
   white-space: nowrap;
-  animation: selAskIn 0.12s ease-out;
 }
-.sel-ask:hover { filter: brightness(1.12); }
+.sel-tool + .sel-tool { border-left: 1px solid rgba(255, 255, 255, 0.28); }
+.sel-tool:hover { background: rgba(255, 255, 255, 0.16); }
 @keyframes selAskIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
@@ -3551,26 +3559,7 @@ footer {
   .eqd-group-barwrap { grid-column: 1 / -1; }
 }
 
-/* ── 쉽게 설명: 선택 칩 + 팝업 ─────────────────────────────────────────────── */
-.xchip {
-  position: fixed;
-  z-index: 1000;
-  padding: 6px 11px;
-  font-size: 12.5px;
-  font-weight: 600;
-  font-family: inherit;
-  color: #fff;
-  background: var(--accent);
-  border: 0;
-  border-radius: 8px;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.22);
-  cursor: pointer;
-  white-space: nowrap;
-  animation: xchip-in 0.12s ease-out;
-}
-.xchip:hover { filter: brightness(1.08); }
-@keyframes xchip-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-
+/* ── 쉽게 설명: 팝업 (선택 진입점은 .sel-tools 툴바가 담당) ───────────────── */
 .xpop {
   position: fixed;
   z-index: 1001;

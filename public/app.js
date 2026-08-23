@@ -4148,7 +4148,8 @@ function maybeShowSelAsk() {
   const sel = window.getSelection ? window.getSelection() : null;
   if (!sel || sel.isCollapsed) return;
   const text = String(sel.toString() || "").replace(/\s+/g, " ").trim();
-  if (text.length < 8) return; // 더블클릭 단어 선택 같은 오탐 방지
+  // 단어 하나(예: "CLIP")를 골라 설명받는 것이 '쉽게 설명'의 핵심 용도라 2자로 낮춘다.
+  if (text.length < 2 || text.length > 4000) return;
   // 분석 결과 영역 안에서의 선택만 (PDF 패널은 canvas라 선택 불가, 채팅 드로어·메모 입력 제외)
   const node = sel.anchorNode;
   const el = node && (node.nodeType === 1 ? node : node.parentElement);
@@ -4158,16 +4159,38 @@ function maybeShowSelAsk() {
   let rect;
   try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch { return; }
   if (!rect || (!rect.width && !rect.height)) return;
+  // 화면 밖 선택(패널 내부 스크롤로 가려진 영역 등)에는 툴바를 띄우지 않는다
+  if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) return;
 
   selAskText = text;
-  const b = document.createElement("button");
-  b.type = "button";
-  b.id = "sel-ask";
-  b.className = "sel-ask";
-  b.textContent = "💬 이 부분 질문";
-  b.title = "선택한 구절을 인용해 질문 입력란에 채웁니다";
-  b.addEventListener("mousedown", (e) => e.preventDefault()); // 클릭해도 선택 유지
-  b.addEventListener("click", () => {
+  // 선택 도구는 ==하나의 툴바==로 모은다. 예전엔 '질문' 칩과 '쉽게 설명' 칩이 각각
+  // "선택 영역 위 중앙"에 자리를 잡아 정확히 겹쳤다. 버튼이 늘어도 겹치지 않게 한 줄에 담는다.
+  const bar = document.createElement("div");
+  bar.id = "sel-ask";           // 기존 id 유지 — mouseup 핸들러의 자기클릭 판정이 이 id를 본다
+  bar.className = "sel-tools";
+  bar.addEventListener("mousedown", (e) => e.preventDefault()); // 클릭해도 선택 유지
+
+  const mkBtn = (label, title, onClick) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sel-tool";
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", onClick);
+    bar.appendChild(b);
+    return b;
+  };
+
+  // 쉽게 설명 — 팝업은 initExplain이 소유하므로 노출된 진입점을 호출한다
+  if (typeof window.__explainSelection === "function") {
+    mkBtn("🎓 쉽게 설명", "선택한 부분을 이 논문 맥락에서 쉬운 수준으로 풀어 설명합니다", () => {
+      const info = { text: selAskText, rect };
+      hideSelAsk();
+      window.__explainSelection(info);
+    });
+  }
+
+  mkBtn("💬 질문", "선택한 구절을 인용해 질문 입력란에 채웁니다", () => {
     const quote = selAskText.length > 120 ? selAskText.slice(0, 120) + "…" : selAskText;
     hideSelAsk();
     openChat();
@@ -4178,11 +4201,14 @@ function maybeShowSelAsk() {
     chatInput.focus();
     chatInput.setSelectionRange(chatInput.value.length, chatInput.value.length);
   });
-  document.body.appendChild(b);
-  const bw = b.offsetWidth || 120, bh = b.offsetHeight || 30;
-  b.style.left = `${Math.max(8, Math.min(rect.left + rect.width / 2 - bw / 2, window.innerWidth - bw - 8))}px`;
-  b.style.top = `${Math.max(8, rect.top - bh - 8)}px`;
-  selAskBtn = b;
+
+  document.body.appendChild(bar);
+  const bw = bar.offsetWidth || 200, bh = bar.offsetHeight || 32;
+  bar.style.left = `${Math.max(8, Math.min(rect.left + rect.width / 2 - bw / 2, window.innerWidth - bw - 8))}px`;
+  // 선택이 화면 맨 위에 있으면 위쪽에 공간이 없으니 아래로 붙인다
+  const above = rect.top - bh - 8;
+  bar.style.top = `${above >= 8 ? above : Math.min(rect.bottom + 8, window.innerHeight - bh - 8)}px`;
+  selAskBtn = bar;
 }
 document.addEventListener("mouseup", (e) => {
   if (e.target && e.target.closest && e.target.closest("#sel-ask")) return; // 버튼 자체 클릭
@@ -5301,47 +5327,14 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
 (function initExplain() {
   const SECTION_KO = { seminar: "세미나 정리", background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리", figures: "그림 해설" };
   const LEVELS = [{ id: "highschool", label: "고등학생" }, { id: "college", label: "대학 입문" }];
-  let chip = null, popup = null, abortCtl = null;
+  let popup = null, abortCtl = null;
   let curLevel = (() => { try { return localStorage.getItem("explainLevel") || "highschool"; } catch (e) { return "highschool"; } })();
   const cache = new Map(); // `${level}::${text}` → 완성된 설명(재요청 방지)
 
-  const panelsEl = () => document.querySelector(".panels");
   const sectionName = () => SECTION_KO[activeTab] || "";
 
-  // 현재 선택이 분석 본문(.panels) 안의 유효한 텍스트인지
-  function pickSelection() {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
-    const text = sel.toString().replace(/\s+/g, " ").trim();
-    if (text.length < 2 || text.length > 4000) return null;
-    const range = sel.getRangeAt(0);
-    const panels = panelsEl();
-    if (!panels || !panels.contains(range.commonAncestorContainer)) return null;
-    // 팝업/칩 자체를 선택한 경우 제외
-    if (popup && popup.contains(range.commonAncestorContainer)) return null;
-    const rect = range.getBoundingClientRect();
-    // 선택이 화면 밖(스크롤로 가려진 곳)이면 칩을 띄우지 않는다 — 안 보이는 데 그려져 봐야
-    // 누를 수 없고, 화면 구석에 떠 있는 유령 버튼이 된다.
-    if (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth) return null;
-    return { text, rect };
-  }
-
-  function hideChip() { if (chip) { chip.remove(); chip = null; } }
-
-  function showChip(info) {
-    hideChip();
-    chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "xchip";
-    chip.innerHTML = "🎓 쉽게 설명";
-    const r = info.rect;
-    const cw = 116;
-    chip.style.left = Math.max(8, Math.min(window.innerWidth - cw - 8, r.left + r.width / 2 - cw / 2)) + "px";
-    chip.style.top = (r.top > 46 ? r.top - 40 : r.bottom + 8) + "px";
-    chip.addEventListener("mousedown", (e) => e.preventDefault()); // 클릭해도 선택 유지
-    chip.addEventListener("click", () => { openPopup(info); });
-    document.body.appendChild(chip);
-  }
+  // 선택 판정과 툴바 표시는 maybeShowSelAsk가 담당한다(버튼이 겹치지 않게 한 곳에서 관리).
+  // 이 모듈은 팝업만 소유하고, 툴바가 부를 수 있게 진입점을 노출한다.
 
   function closePopup() {
     if (abortCtl) { abortCtl.abort(); abortCtl = null; }
@@ -5350,10 +5343,13 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
     document.removeEventListener("mousedown", onOutside, true);
   }
   const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closePopup(); } };
-  const onOutside = (e) => { if (popup && !popup.contains(e.target) && e.target !== chip) closePopup(); };
+  const onOutside = (e) => {
+    if (!popup || popup.contains(e.target)) return;
+    if (e.target && e.target.closest && e.target.closest("#sel-ask")) return; // 선택 툴바 클릭은 통과
+    closePopup();
+  };
 
   function openPopup(info) {
-    hideChip();
     if (popup) closePopup();
     const whole = info.text.length > 600; // 길게 선택하면 '섹션 전체 풀어쓰기' 모드
 
@@ -5391,7 +5387,7 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
     selEl.textContent = "“" + (info.text.length > 140 ? info.text.slice(0, 140) + "…" : info.text) + "”";
 
     popup.querySelector(".xpop-close").addEventListener("click", closePopup);
-    // 팝업 안에서의 선택은 칩을 띄우지 않게(자기 참조 방지)
+    // 팝업 안에서의 선택은 선택 툴바를 띄우지 않게(자기 참조 방지)
     popup.addEventListener("mouseup", (e) => e.stopPropagation());
 
     // 위치: 선택 근처, 화면 밖으로 안 나가게
@@ -5525,23 +5521,8 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
     streamInto(card.querySelector(".xsec-body"), text, true);
   }
 
-  // 선택이 끝났을 때(마우스업) 칩 표시. 팝업이 열려 있으면 칩은 띄우지 않는다.
-  document.addEventListener("mouseup", (e) => {
-    if (popup) return;
-    if (chip && chip.contains(e.target)) return;
-    setTimeout(() => { // 브라우저가 선택을 확정한 뒤
-      const info = pickSelection();
-      if (info) showChip(info); else hideChip();
-    }, 10);
-  });
-  // 선택이 사라지면 칩도 정리
-  document.addEventListener("selectionchange", () => {
-    const sel = window.getSelection();
-    if ((!sel || sel.isCollapsed) && chip && !popup) hideChip();
-  });
-  // 스크롤/리사이즈 시 칩은 위치가 어긋나므로 닫는다(팝업은 유지)
-  window.addEventListener("scroll", () => hideChip(), true);
-  window.addEventListener("resize", () => hideChip());
+  // 선택 툴바(maybeShowSelAsk)가 이 진입점을 호출해 팝업을 연다.
+  window.__explainSelection = openPopup;
 
   const secBtn = document.getElementById("tool-explain");
   if (secBtn) secBtn.addEventListener("click", explainWholeSection);
