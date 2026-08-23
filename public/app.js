@@ -5327,7 +5327,7 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
 (function initExplain() {
   const SECTION_KO = { seminar: "세미나 정리", background: "연구 배경", problem: "해결하려는 것", method: "연구 방법론", results: "실험·결과", equations: "수식 정리", figures: "그림 해설" };
   const LEVELS = [{ id: "highschool", label: "고등학생" }, { id: "college", label: "대학 입문" }];
-  let popup = null, abortCtl = null;
+  let popup = null, activeDrag = null;
   let curLevel = (() => { try { return localStorage.getItem("explainLevel") || "highschool"; } catch (e) { return "highschool"; } })();
   const cache = new Map(); // `${level}::${text}` → 완성된 설명(재요청 방지)
 
@@ -5337,8 +5337,14 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
   // 이 모듈은 팝업만 소유하고, 툴바가 부를 수 있게 진입점을 노출한다.
 
   function closePopup() {
-    if (abortCtl) { abortCtl.abort(); abortCtl = null; }
-    if (popup) { popup.remove(); popup = null; }
+    if (activeDrag) activeDrag();            // 진행 중이던 드래그 정리(리스너·userSelect)
+    if (popup) {
+      // 이 팝업의 요청만 중단한다. 공유 컨트롤러를 끊으면 동시에 떠 있는 섹션 카드의
+      // 스트리밍까지 함께 끊긴다(streamInto 주석 참조) — 그래서 대상별 __xAbort만 건드린다.
+      const b = popup.querySelector(".xpop-body");
+      if (b && b.__xAbort) b.__xAbort.abort();
+      popup.remove(); popup = null;
+    }
     document.removeEventListener("keydown", onKey, true);
     document.removeEventListener("mousedown", onOutside, true);
   }
@@ -5389,20 +5395,64 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
     popup.querySelector(".xpop-close").addEventListener("click", closePopup);
     // 팝업 안에서의 선택은 선택 툴바를 띄우지 않게(자기 참조 방지)
     popup.addEventListener("mouseup", (e) => e.stopPropagation());
+    // 헤더를 잡고 드래그해서 창을 옮긴다(레벨 토글·닫기 버튼 위에서는 드래그 시작 안 함)
+    popup.querySelector(".xpop-head").addEventListener("mousedown", startDrag);
 
-    // 위치: 선택 근처, 화면 밖으로 안 나가게
+    // 위치: 선택 근처, 화면 밖으로 안 나가게. 단, 문서 좌표(absolute)로 배치해
+    // 뒤 콘텐츠를 스크롤하면 창도 함께 내려가게 한다(화면 고정 아님).
     document.body.appendChild(popup);
     const pw = popup.offsetWidth, ph = popup.offsetHeight;
-    const r = info.rect;
-    let left = Math.min(window.innerWidth - pw - 12, Math.max(12, r.left));
-    let top = r.bottom + 10;
-    if (top + ph > window.innerHeight - 12) top = Math.max(12, r.top - ph - 10);
-    popup.style.left = left + "px";
-    popup.style.top = top + "px";
+    const r = info.rect; // getBoundingClientRect → 뷰포트 좌표
+    // 1) 뷰포트 기준으로 화면 안에 들어오도록 클램프
+    let vpLeft = Math.min(window.innerWidth - pw - 12, Math.max(12, r.left));
+    let vpTop = r.bottom + 10;
+    if (vpTop + ph > window.innerHeight - 12) vpTop = Math.max(12, r.top - ph - 10);
+    // 2) 스크롤 오프셋을 더해 문서 좌표로 변환 → absolute 배치
+    popup.style.left = (vpLeft + window.scrollX) + "px";
+    popup.style.top = (vpTop + window.scrollY) + "px";
 
     document.addEventListener("keydown", onKey, true);
     document.addEventListener("mousedown", onOutside, true);
     run(info, whole);
+  }
+
+  // 헤더 드래그로 창 이동. 위치는 문서 좌표(absolute)라 이동/스크롤이 자연스럽게 맞물린다.
+  function startDrag(e) {
+    if (e.button !== 0 || !popup) return;
+    if (e.target.closest && e.target.closest(".xlv, .xpop-close")) return; // 컨트롤은 클릭으로
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const rect = popup.getBoundingClientRect();
+    const origLeft = parseFloat(popup.style.left) || (rect.left + window.scrollX);
+    const origTop = parseFloat(popup.style.top) || (rect.top + window.scrollY);
+    const move = (ev) => {
+      if (!popup) return up();                 // 드래그 중 팝업이 닫혔으면(Esc 등) 정리하고 종료
+      if (!(ev.buttons & 1)) return up();       // 창 밖에서 버튼을 뗀 경우(mouseup 놓침) 종료
+      // 위치를 문서 좌표로 두되, 상한도 걸어 화면 밖으로 밀려나지 않게 한다.
+      // 최소한 헤더 일부(≈40px)는 보이게 유지 → 다시 잡아 끌 수 있다.
+      // 창 전체가 현재 뷰포트 안에 머물도록 상한을 건다(창이 뷰포트보다 크면 좌상단 고정).
+      const vw = document.documentElement.clientWidth;  // 스크롤바 제외 가시 폭
+      const vh = document.documentElement.clientHeight; // 스크롤바 제외 가시 높이
+      const minL = window.scrollX + 8, minT = window.scrollY + 8;
+      const maxL = window.scrollX + vw - popup.offsetWidth - 8;
+      const maxT = window.scrollY + vh - popup.offsetHeight - 8;
+      const nl = Math.min(Math.max(minL, origLeft + (ev.clientX - startX)), Math.max(minL, maxL));
+      const nt = Math.min(Math.max(minT, origTop + (ev.clientY - startY)), Math.max(minT, maxT));
+      popup.style.left = nl + "px";
+      popup.style.top = nt + "px";
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move, true);
+      document.removeEventListener("mouseup", up, true);
+      window.removeEventListener("blur", up, true);
+      document.body.style.userSelect = "";
+      activeDrag = null;
+    };
+    activeDrag = up;                            // closePopup이 진행 중 드래그를 끝낼 수 있게
+    document.body.style.userSelect = "none"; // 드래그 중 본문 텍스트 선택 방지
+    document.addEventListener("mousemove", move, true);
+    document.addEventListener("mouseup", up, true);
+    window.addEventListener("blur", up, true);  // 창이 포커스를 잃으면(밖에서 놓음) 종료
   }
 
   async function run(info, whole) {
@@ -5420,7 +5470,6 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
     if (body.__xAbort) body.__xAbort.abort();
     const ctl = new AbortController();
     body.__xAbort = ctl;
-    abortCtl = ctl; // 팝업 닫기(closePopup)에서 쓰는 최근 컨트롤러
     body.innerHTML = '<span class="xmuted">쉽게 풀어보는 중…</span>';
     let acc = "";
     const scroll = () => { body.scrollTop = body.scrollHeight; };
