@@ -5346,14 +5346,10 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
       popup.remove(); popup = null;
     }
     document.removeEventListener("keydown", onKey, true);
-    document.removeEventListener("mousedown", onOutside, true);
   }
+  // 닫기는 X 버튼(과 Esc)으로만. 바깥 클릭으로는 닫지 않는다 — 창을 띄운 채 다른
+  // 버튼을 눌러도 사라지지 않게(이동·크기조절 가능한 '창'이므로 명시적으로만 닫는다).
   const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); closePopup(); } };
-  const onOutside = (e) => {
-    if (!popup || popup.contains(e.target)) return;
-    if (e.target && e.target.closest && e.target.closest("#sel-ask")) return; // 선택 툴바 클릭은 통과
-    closePopup();
-  };
 
   function openPopup(info) {
     if (popup) closePopup();
@@ -5412,7 +5408,6 @@ restoreFromHash(); // URL에 #p=<hash>가 있으면 그 논문·탭을 복원
     popup.style.top = (vpTop + window.scrollY) + "px";
 
     document.addEventListener("keydown", onKey, true);
-    document.addEventListener("mousedown", onOutside, true);
     run(info, whole);
   }
 

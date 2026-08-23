@@ -3608,12 +3608,14 @@ footer {
 .xlv.on { background: var(--accent); color: #fff; border-color: transparent; font-weight: 600; }
 .xpop-close {
   flex: none;
-  width: 24px; height: 24px;
-  border: 0; border-radius: 6px;
-  background: transparent; color: var(--ink-faint);
-  cursor: pointer; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: var(--paper); color: var(--ink-soft);
+  cursor: pointer; font-size: 14px; line-height: 1;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.xpop-close:hover { background: var(--paper-deep); color: var(--ink); }
+.xpop-close:hover { background: var(--accent); color: #fff; border-color: transparent; }
 .xpop-sel {
   flex: none;
   padding: 8px 12px;
